@@ -1,0 +1,42 @@
+"""Quick extraction test script."""
+import asyncio
+import app.models  # noqa: F401
+from app.core.database import async_session_factory
+from sqlalchemy import text
+from app.services.extractor import V6ExtractorService
+
+
+async def main():
+    async with async_session_factory() as db:
+        await db.execute(text("DELETE FROM candidate_records WHERE source_paper_id=1"))
+        await db.execute(text("DELETE FROM evidence_items WHERE paper_id=1"))
+        await db.execute(text("DELETE FROM page_inventory WHERE paper_id=1"))
+        await db.execute(text("UPDATE papers SET status='uploaded' WHERE id=1"))
+        await db.commit()
+        print("Cleanup done, starting extraction...")
+
+        def progress(step, pct):
+            print(f"  Progress: {step} ({pct}%)")
+
+        try:
+            result = await V6ExtractorService.run_full_pipeline_for_paper(
+                db, 1, progress_callback=progress
+            )
+            print("Result:", result)
+
+            # Show candidates
+            rows = await db.execute(text(
+                "SELECT id, sample_id, performance_metric, performance_value, performance_unit, review_status FROM candidate_records"
+            ))
+            print("\n=== Candidates ===")
+            for r in rows:
+                print(f"  id={r[0]} sample={r[1]} metric={r[2]} value={r[3]} {r[4]} status={r[5]}")
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            print(f"FAILED: {e}")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
