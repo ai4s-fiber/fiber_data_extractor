@@ -47,6 +47,9 @@ else:
     engine = create_async_engine(
         sqlite_fallback_url,
         echo=settings.DEBUG,
+        connect_args={
+            "timeout": 30,  # Wait up to 30s for lock release
+        },
     )
 
 async_session_factory = async_sessionmaker(

@@ -24,6 +24,7 @@ interface CandidateRow {
   ai_confidence: number | null;
   source_location: string | null;
   paper_title: string | null;
+  source_paper_id: number | null;
   created_at: string;
 }
 
@@ -123,6 +124,7 @@ export default function ReviewPage() {
   const [editValues, setEditValues] = useState<Record<string, any>>({});
   const [statusFilter, setStatusFilter] = useState<string | undefined>(undefined);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [extractionSummary, setExtractionSummary] = useState<Record<string, any> | null>(null);
 
   const pid = currentProject?.id;
 
@@ -140,7 +142,15 @@ export default function ReviewPage() {
   const loadDetail = (id: number) => {
     if (!pid) return;
     api.get(`/projects/${pid}/candidates/${id}`)
-      .then(r => { setDetail(r.data); setEditValues(r.data); })
+      .then(r => {
+        setDetail(r.data); setEditValues(r.data);
+        // Also load extraction report for this candidate's paper
+        if (r.data.source_paper_id) {
+          api.get(`/projects/${pid}/papers/${r.data.source_paper_id}/extraction-report`)
+            .then(rr => setExtractionSummary(rr.data))
+            .catch(() => setExtractionSummary(null));
+        }
+      })
       .catch(() => message.error('加载详情失败'));
   };
 
@@ -148,7 +158,7 @@ export default function ReviewPage() {
 
   useEffect(() => {
     if (selectedId) loadDetail(selectedId);
-    else { setDetail(null); setEditing(false); }
+    else { setDetail(null); setEditing(false); setExtractionSummary(null); }
   }, [selectedId]);
 
   const doReview = async (action: string) => {
@@ -301,6 +311,25 @@ export default function ReviewPage() {
                     ))}
                   </Panel>
                 ))}
+                {extractionSummary && extractionSummary.文献标题 && (
+                  <Panel header={<span className="detail-group-title">AI 抽取摘要</span>} key="extraction-summary">
+                    <div style={{ fontSize: 13, color: 'var(--color-text-secondary)', lineHeight: 2 }}>
+                      <div>样品识别：<strong>{extractionSummary.识别样品数}</strong> 个 |
+                        提取事实：<strong>{extractionSummary.提取事实总数}</strong> 条 |
+                        生成记录：<strong>{extractionSummary.生成记录数}</strong> 条</div>
+                      <div>成功归属：<strong>{extractionSummary.成功归属数}</strong> 条 |
+                        未归属：<strong style={{color: extractionSummary.未归属事实数 > 0 ? 'var(--color-danger)' : 'inherit'}}>{extractionSummary.未归属事实数}</strong> 条</div>
+                      <div>状态分布：待审核 {extractionSummary.待审核数} | 存疑 {extractionSummary.存疑数} | 缺失 {extractionSummary.缺失数} | 通过 {extractionSummary.通过数}</div>
+                      {extractionSummary.推荐人工复核项?.length > 0 && (
+                        <div style={{ marginTop: 4 }}>
+                          {extractionSummary.推荐人工复核项.map((item: string, i: number) => (
+                            <Tag key={i} color="orange" style={{ marginBottom: 4 }}>{item}</Tag>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </Panel>
+                )}
               </Collapse>
             </>
           ) : (

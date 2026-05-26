@@ -155,6 +155,7 @@ class CandidateRecordOut(BaseModel):
 class CandidateListItem(BaseModel):
     """Minimal candidate row for the review queue table."""
     id: int
+    source_paper_id: int | None = None
     sample_id: str | None
     performance_metric: str | None
     performance_value: str | None

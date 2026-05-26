@@ -15,8 +15,10 @@ from app.models.paper import Paper
 from app.models.candidate_record import CandidateRecord
 from app.models.evidence_item import EvidenceItem
 from app.models.page_inventory import PageInventory
+from app.models.sample_catalog import SampleCatalog
+from app.models.fact_candidate import FactCandidate
 from app.schemas.paper import PaperOut, PaperUpdate
-from app.services.extractor import V6ExtractorService
+from app.services.extractor_v7 import V7ExtractorService
 
 router = APIRouter(prefix="/projects/{project_id}/papers", tags=["文献"])
 
@@ -35,7 +37,7 @@ async def run_extraction_task(paper_id: int):
             async def progress_callback(step: str, percent: int):
                 _extraction_progress[paper_id] = {"step": step, "percent": percent}
 
-            await V6ExtractorService.run_full_pipeline_for_paper(
+            await V7ExtractorService.run_full_pipeline_for_paper(
                 db, paper_id, progress_callback=progress_callback
             )
             _extraction_progress[paper_id] = {"step": "completed", "percent": 100}
@@ -65,13 +67,33 @@ async def get_extraction_status(
         raise HTTPException(status_code=404, detail="文献不存在")
 
     progress = _extraction_progress.get(paper_id, {})
-    return {
+    result = {
         "paper_id": paper_id,
         "paper_status": paper.status,
         "extraction_step": progress.get("step", ""),
         "extraction_percent": progress.get("percent", 0),
         "error": progress.get("error", ""),
     }
+    # Include V7 extraction report summary if available
+    import json as _json
+    from pathlib import Path as _Path
+    report_path = _Path(settings.UPLOAD_DIR) / str(project_id) / f"report_{paper_id}.json"
+    if report_path.exists():
+        try:
+            report = _json.loads(report_path.read_text(encoding="utf-8"))
+            result["extraction_summary"] = {
+                "样品数": report.get("识别样品数", 0),
+                "提取事实数": report.get("提取事实总数", 0),
+                "生成记录数": report.get("生成记录数", 0),
+                "未归属数": report.get("未归属事实数", 0),
+                "待审核数": report.get("待审核数", 0),
+                "存疑数": report.get("存疑数", 0),
+                "缺失数": report.get("缺失数", 0),
+                "推荐复核": report.get("推荐人工复核项", []),
+            }
+        except Exception:
+            pass
+    return result
 
 
 @router.get("", response_model=list[PaperOut])
@@ -160,6 +182,31 @@ async def trigger_extraction(
     return {"message": "已将抽取任务添加至后台队列"}
 
 
+@router.get("/{paper_id}/extraction-report")
+async def get_extraction_report(
+    project_id: int,
+    paper_id: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """获取 V7 抽取质量报告。"""
+    await require_project_role(project_id, user, db, ["admin", "reviewer", "student"])
+    import json as _json
+    from pathlib import Path as _Path
+
+    result = await db.execute(
+        select(Paper).where(Paper.id == paper_id, Paper.project_id == project_id)
+    )
+    paper = result.scalar_one_or_none()
+    if paper is None:
+        raise HTTPException(status_code=404, detail="文献不存在")
+
+    report_path = _Path(settings.UPLOAD_DIR) / str(project_id) / f"report_{paper_id}.json"
+    if report_path.exists():
+        return _json.loads(report_path.read_text(encoding="utf-8"))
+    return {"message": "报告尚未生成", "paper_status": paper.status}
+
+
 @router.get("/{paper_id}", response_model=PaperOut)
 async def get_paper(
     project_id: int,
@@ -220,9 +267,40 @@ async def delete_paper(
     await db.execute(sa_delete(EvidenceItem).where(EvidenceItem.paper_id == paper_id))
     await db.execute(sa_delete(CandidateRecord).where(CandidateRecord.source_paper_id == paper_id))
     await db.execute(sa_delete(PageInventory).where(PageInventory.paper_id == paper_id))
-    # Delete PDF file
+    await db.execute(sa_delete(SampleCatalog).where(SampleCatalog.paper_id == paper_id))
+    await db.execute(sa_delete(FactCandidate).where(FactCandidate.paper_id == paper_id))
+    # Delete PDF file and report
     if paper.file_object_key:
         fp = Path(settings.UPLOAD_DIR) / paper.file_object_key
         if fp.exists():
             fp.unlink()
+    report_fp = Path(settings.UPLOAD_DIR) / str(project_id) / f"report_{paper_id}.json"
+    if report_fp.exists():
+        report_fp.unlink()
     await db.delete(paper)
+
+
+@router.get("/extraction-reports/summary")
+async def get_extraction_reports_summary(
+    project_id: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """获取项目所有文献的抽取报告摘要。"""
+    await require_project_role(project_id, user, db, ["admin", "reviewer", "student"])
+    import json as _json
+    from pathlib import Path as _Path
+
+    result = await db.execute(
+        select(Paper).where(Paper.project_id == project_id)
+    )
+    papers = result.scalars().all()
+    summaries = {}
+    for paper in papers:
+        report_path = _Path(settings.UPLOAD_DIR) / str(project_id) / f"report_{paper.id}.json"
+        if report_path.exists():
+            try:
+                summaries[str(paper.id)] = _json.loads(report_path.read_text(encoding="utf-8"))
+            except Exception:
+                summaries[str(paper.id)] = {"error": "报告读取失败"}
+    return summaries

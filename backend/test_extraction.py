@@ -3,7 +3,7 @@ import asyncio
 import app.models  # noqa: F401
 from app.core.database import async_session_factory
 from sqlalchemy import text
-from app.services.extractor import V6ExtractorService
+from app.services.extractor_v7 import V7ExtractorService
 
 
 async def main():
@@ -19,7 +19,7 @@ async def main():
             print(f"  Progress: {step} ({pct}%)")
 
         try:
-            result = await V6ExtractorService.run_full_pipeline_for_paper(
+            result = await V7ExtractorService.run_full_pipeline_for_paper(
                 db, 1, progress_callback=progress
             )
             print("Result:", result)

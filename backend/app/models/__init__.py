@@ -10,3 +10,5 @@ from app.models.candidate_record import CandidateRecord
 from app.models.evidence_item import EvidenceItem
 from app.models.review_log import ReviewLog
 from app.models.export_job import ExportJob
+from app.models.sample_catalog import SampleCatalog
+from app.models.fact_candidate import FactCandidate
