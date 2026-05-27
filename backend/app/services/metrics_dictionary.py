@@ -552,12 +552,22 @@ PROCESS_PARAMETERS: dict[str, dict] = {
 def find_metric_canonical(name: str) -> str | None:
     """Given a metric name (possibly a synonym), return the canonical name."""
     lower = name.strip().lower()
+    # Pass 1: exact match on canonical name or synonym
     for cat in PERFORMANCE_CATEGORIES.values():
         for canonical, info in cat["metrics"].items():
             if lower == canonical.lower():
                 return canonical
             for syn in info["synonyms"]:
-                if syn.lower() == lower or syn.lower() in lower or lower in syn.lower():
+                if syn.lower() == lower:
+                    return canonical
+    # Pass 2: substring match — require canonical/synonym to CONTAIN the input
+    # (avoids "density" matching "power density" → "output_power_density")
+    for cat in PERFORMANCE_CATEGORIES.values():
+        for canonical, info in cat["metrics"].items():
+            if lower in canonical.lower():
+                return canonical
+            for syn in info["synonyms"]:
+                if lower in syn.lower():
                     return canonical
     return None
 

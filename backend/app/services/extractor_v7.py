@@ -648,21 +648,37 @@ class V7ExtractorService:
     # ------------------------------------------------------------------
 
     @staticmethod
+    def _normalize_for_match(text: str) -> str:
+        """Normalize text for fuzzy matching: strip Unicode artifacts."""
+        t = text.lower().strip()
+        # Normalize common Unicode variants
+        t = t.replace("°", " ").replace("℃", " ")  # ° and ℃
+        t = t.replace("⁻", "").replace("⁹", "").replace("³", "")  # superscripts
+        t = t.replace("–", "-").replace("—", "-")  # dashes
+        t = re.sub(r"\s+", " ", t).strip()
+        return t
+
+    @staticmethod
     def _local_sample_assignment(facts: list[dict], samples: list[dict]) -> list[dict]:
         """Local text-matching fallback for sample assignment.
 
         Matches sample_id and aliases against fact evidence_text and subject_text.
+        Uses fuzzy normalization for Unicode variants (°C, superscripts, etc).
         """
         # Build lookup: normalized name → sample
         sample_lookup: dict[str, dict] = {}
+        sample_ids_raw: list[tuple[str, dict]] = []  # (normalized_sid, sample)
+
         for s in samples:
             sid = s.get("sample_id", "").strip()
             if sid:
-                sample_lookup[sid.lower()] = s
+                norm_sid = V7ExtractorService._normalize_for_match(sid)
+                sample_lookup[norm_sid] = s
+                sample_ids_raw.append((norm_sid, s))
                 for alias in (s.get("sample_aliases") or []):
                     alias = alias.strip()
                     if alias:
-                        sample_lookup[alias.lower()] = s
+                        sample_lookup[V7ExtractorService._normalize_for_match(alias)] = s
 
         for f in facts:
             if f.get("assignment_status") not in ("unassigned", None, ""):
@@ -671,11 +687,11 @@ class V7ExtractorService:
                 continue
 
             # Search evidence_text and subject_text for sample mentions
-            search_text = (
+            search_text = V7ExtractorService._normalize_for_match(
                 (f.get("evidence_text") or "") + " " +
                 (f.get("subject_text") or "") + " " +
                 (f.get("source_location") or "")
-            ).lower()
+            )
 
             # Also check candidate_sample_ids from the fact
             candidates = f.get("candidate_sample_ids") or []
@@ -684,16 +700,24 @@ class V7ExtractorService:
                     candidates = json.loads(candidates)
                 except (json.JSONDecodeError, TypeError):
                     candidates = [candidates]
+            candidates_norm = [V7ExtractorService._normalize_for_match(c) for c in candidates if c]
 
             best_match = None
             best_score = 0
 
-            for sid_lower, sample in sample_lookup.items():
+            for norm_sid, sample in sample_lookup.items():
                 score = 0
-                if sid_lower in search_text:
-                    score += 3  # Exact match in text
-                # Check if any part of the sample ID appears
-                parts = re.split(r"[-_/\s]+", sid_lower)
+                # Exact normalized match in search text
+                if norm_sid in search_text:
+                    score += 5
+                # Check if candidate_sample_ids match this sample
+                for cn in candidates_norm:
+                    if cn == norm_sid or norm_sid.startswith(cn) or cn.startswith(norm_sid):
+                        score += 4
+                    elif cn in norm_sid or norm_sid in cn:
+                        score += 3
+                # Check parts of sample ID in text (skip very short parts)
+                parts = re.split(r"[-_/\s]+", norm_sid)
                 for part in parts:
                     if len(part) >= 3 and part in search_text:
                         score += 1
@@ -702,9 +726,51 @@ class V7ExtractorService:
                     best_score = score
                     best_match = sample
 
-            if best_match and best_score >= 3:
+            if best_match and best_score >= 2:
                 f["assigned_sample_id"] = best_match.get("sample_id")
-                f["assignment_confidence"] = min(0.7 + (best_score - 3) * 0.05, 0.9)
+                f["assignment_confidence"] = min(0.6 + best_score * 0.05, 0.9)
+                f["assignment_status"] = "assigned"
+
+        # Second pass: assign remaining unassigned facts by candidate_sample_ids
+        # If a fact has candidate_sample_ids that partially match a sample, assign it
+        for f in facts:
+            if f.get("assignment_status") not in ("unassigned", None, ""):
+                continue
+            if f.get("assigned_sample_id"):
+                continue
+
+            candidates = f.get("candidate_sample_ids") or []
+            if isinstance(candidates, str):
+                try:
+                    candidates = json.loads(candidates)
+                except (json.JSONDecodeError, TypeError):
+                    candidates = [candidates]
+            if not candidates:
+                continue
+
+            # Try substring matching on raw sample IDs
+            best_match = None
+            best_score = 0
+            for cand in candidates:
+                cand_lower = cand.lower().strip()
+                for sid_raw, sample in sample_ids_raw:
+                    sid_lower = sid_raw.lower()
+                    # Check if candidate is a prefix of sample_id or vice versa
+                    if cand_lower in sid_lower or sid_lower in cand_lower:
+                        score = 3
+                    else:
+                        # Check word overlap
+                        cand_words = set(re.split(r"[-_/\s]+", cand_lower))
+                        sid_words = set(re.split(r"[-_/\s]+", sid_lower))
+                        overlap = cand_words & sid_words - {"", " "}
+                        score = len(overlap)
+                    if score > best_score:
+                        best_score = score
+                        best_match = sample
+
+            if best_match and best_score >= 2:
+                f["assigned_sample_id"] = best_match.get("sample_id")
+                f["assignment_confidence"] = 0.55
                 f["assignment_status"] = "assigned"
 
         return facts
@@ -739,9 +805,38 @@ class V7ExtractorService:
         missing_evidence_count = 0
 
         # Process performance facts → each becomes a record
-        perf_facts = [f for f in facts
-                      if f.get("fact_type") == "performance"
-                      and f.get("assignment_status") in ("assigned", "uncertain")]
+        # Include assigned/uncertain facts, plus unassigned facts with candidate_sample_ids
+        perf_facts = []
+        for f in facts:
+            if f.get("fact_type") != "performance":
+                continue
+            status = f.get("assignment_status")
+            if status in ("assigned", "uncertain"):
+                perf_facts.append(f)
+            elif status in ("unassigned", None, ""):
+                # Unassigned but has candidate_sample_ids → try to use first candidate
+                cands = f.get("candidate_sample_ids") or []
+                if isinstance(cands, str):
+                    try:
+                        cands = json.loads(cands)
+                    except (json.JSONDecodeError, TypeError):
+                        cands = []
+                if cands:
+                    # Try to match first candidate to a known sample
+                    best_sample_id = None
+                    for c in cands:
+                        c_lower = c.lower().strip()
+                        for sid in sample_info:
+                            if c_lower in sid.lower() or sid.lower() in c_lower:
+                                best_sample_id = sid
+                                break
+                        if best_sample_id:
+                            break
+                    if not best_sample_id and cands:
+                        best_sample_id = cands[0]  # Use raw candidate as fallback
+                    f["assigned_sample_id"] = best_sample_id
+                    f["assignment_status"] = "uncertain"
+                    perf_facts.append(f)
 
         for f in perf_facts:
             sample_id = f.get("assigned_sample_id") or ""
