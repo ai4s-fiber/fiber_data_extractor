@@ -416,23 +416,21 @@ class V7ExtractorService:
 
         # 2a: Performance extraction (main data source)
         perf_text = chunks_for_performance_extraction(chunks)
-        if perf_text.strip() and sample_ids:
-            perf_prompt = (
-                f"You are a fiber material data scientist. Extract ALL available performance "
-                f"metrics for these sample IDs: [{sample_hint}]. "
-                "Extract EVERY numerical property with units you can find, including but not "
-                "limited to: mechanical (tensile_strength, elastic_modulus, elongation_at_break, "
-                "compressive_strength, flexural_modulus), thermal (thermal_conductivity, "
-                "thermal_diffusivity, Tg, Td5, shrinkage), dielectric (dielectric_constant, "
-                "dielectric_loss, breakdown_strength, conductivity), physical (density, porosity, "
-                "specific_surface_area, water_contact_angle), functional (EMI_SE, transmittance). "
-                "For EACH sample+metric pair, report the exact numerical value and unit from the text. "
-                "If a sample has 10 metrics, output 10 entries. Do NOT skip any numerical data. "
-                "Output JSON: {'performances': [{'sample_id': str, 'performance_metric': str, "
-                "'performance_value': str, 'performance_unit': str, 'performance_category': "
-                "'mechanical|thermal|dielectric|physical|functional', 'performance_method': str, "
-                "'performance_condition': str, 'evidence_text': str, 'source_location': str}]}"
-            )
+        if perf_text.strip():
+            if sample_ids:
+                perf_prompt = (
+                    f"Extract ALL numerical performance data for samples: [{sample_hint}]. "
+                    "For each sample, find every metric with its value and unit. "
+                    "Output JSON: {\"performances\": [{\"sample_id\": str, \"performance_metric\": str, "
+                    "\"performance_value\": str, \"performance_unit\": str, \"evidence_text\": str}]}"
+                )
+            else:
+                perf_prompt = (
+                    "Extract ALL numerical performance data from this text. "
+                    "For each measurement, identify the sample name and metric. "
+                    "Output JSON: {\"performances\": [{\"sample_id\": str, \"performance_metric\": str, "
+                    "\"performance_value\": str, \"performance_unit\": str, \"evidence_text\": str}]}"
+                )
             parsed, _ = client.generate_json_tolerant(
                 perf_prompt,
                 f"Results text:\n{perf_text[:25000]}",
@@ -480,15 +478,12 @@ class V7ExtractorService:
 
         # 2b: Composition/process/structure extraction
         comp_text = chunks_for_composition_process(chunks)
-        if comp_text.strip() and sample_ids:
+        if comp_text.strip():
             comp_prompt = (
-                f"You extract composition, fabrication process, and structure characterization "
-                f"from fiber material papers. Known samples: [{sample_hint}]. "
-                "For EACH sample, extract: composition (matrix_name, additive_expression, "
-                "solvent_or_aid, composition_expression), process (process_route, spinning_method, "
-                "process_parameters, post_treatment), structure (structure_methods, structure_features). "
-                "Output JSON: {'items': [{'sample_id': str, 'composition': {...}, 'process': {...}, "
-                "'structure': {...}}]}"
+                f"Extract composition and process info for samples: [{sample_hint}]. "
+                "For each sample, extract matrix_name, process_route, spinning_method. "
+                "Output JSON: {\"items\": [{\"sample_id\": str, \"composition\": {\"matrix_name\": str, "
+                "\"composition_expression\": str}, \"process\": {\"process_route\": str}}]}"
             )
             parsed, _ = client.generate_json_tolerant(
                 comp_prompt,
@@ -1158,6 +1153,31 @@ class V7ExtractorService:
             client, chunks, raw_text[:10000]
         )
         _emit("extracting", 30)
+
+        # Fallback for weak mode: if Stage 1 found no samples, try simpler extraction
+        if model_mode == "weak" and not samples:
+            print("Stage 1 returned 0 samples, trying simple fallback for weak model...")
+            try:
+                simple_prompt = (
+                    "List all distinct sample names/labels mentioned in this text. "
+                    "These are usually material names with variable conditions like "
+                    "temperatures, percentages, or treatment types. "
+                    "Output JSON: {\"samples\": [{\"sample_id\": \"name\"}]}"
+                )
+                parsed, _ = client.generate_json_tolerant(
+                    simple_prompt, raw_text[:15000], max_tokens=1500,
+                )
+                raw_samples = parsed.get("samples") or parsed.get("_items") or []
+                samples = [{"sample_id": s.get("sample_id", s) if isinstance(s, dict) else str(s),
+                            "sample_aliases": [], "sample_group_id": "Group-A",
+                            "material_system": "", "fiber_type": "",
+                            "variable_name": "", "variable_value": "", "variable_unit": "",
+                            "composition_expression": "", "process_route": "",
+                            "source_location": "", "evidence_text": "", "confidence": 0.5}
+                           for s in raw_samples if (s.get("sample_id") if isinstance(s, dict) else s)]
+                print(f"Simple fallback found {len(samples)} samples")
+            except Exception as e:
+                print(f"Simple fallback also failed: {e}")
 
         # Deduplicate samples by sample_id
         seen_sids: set[str] = set()
