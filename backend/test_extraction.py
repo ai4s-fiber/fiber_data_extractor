@@ -1,5 +1,6 @@
 """Quick extraction test script."""
 import asyncio
+import sys
 import app.models  # noqa: F401
 from app.core.database import async_session_factory
 from sqlalchemy import text
@@ -7,10 +8,15 @@ from app.services.extractor_v7 import V7ExtractorService
 
 
 async def main():
+    mode = sys.argv[1] if len(sys.argv) > 1 else "auto"
+    print(f"Using model_mode={mode}")
+
     async with async_session_factory() as db:
         await db.execute(text("DELETE FROM candidate_records WHERE source_paper_id=1"))
         await db.execute(text("DELETE FROM evidence_items WHERE paper_id=1"))
         await db.execute(text("DELETE FROM page_inventory WHERE paper_id=1"))
+        await db.execute(text("DELETE FROM sample_catalogs WHERE paper_id=1"))
+        await db.execute(text("DELETE FROM fact_candidates WHERE paper_id=1"))
         await db.execute(text("UPDATE papers SET status='uploaded' WHERE id=1"))
         await db.commit()
         print("Cleanup done, starting extraction...")
@@ -20,7 +26,7 @@ async def main():
 
         try:
             result = await V7ExtractorService.run_full_pipeline_for_paper(
-                db, 1, progress_callback=progress
+                db, 1, progress_callback=progress, model_mode=mode,
             )
             print("Result:", result)
 

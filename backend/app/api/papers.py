@@ -26,8 +26,8 @@ router = APIRouter(prefix="/projects/{project_id}/papers", tags=["文献"])
 _extraction_progress: dict[int, dict] = {}
 
 
-async def run_extraction_task(paper_id: int):
-    """Background task to run high-fidelity V6 extraction pipeline."""
+async def run_extraction_task(paper_id: int, model_mode: str = "auto"):
+    """Background task to run V7 extraction pipeline."""
     from app.core.database import async_session_factory
 
     _extraction_progress[paper_id] = {"step": "starting", "percent": 0}
@@ -38,7 +38,7 @@ async def run_extraction_task(paper_id: int):
                 _extraction_progress[paper_id] = {"step": step, "percent": percent}
 
             await V7ExtractorService.run_full_pipeline_for_paper(
-                db, paper_id, progress_callback=progress_callback
+                db, paper_id, progress_callback=progress_callback, model_mode=model_mode,
             )
             _extraction_progress[paper_id] = {"step": "completed", "percent": 100}
         except Exception as e:
@@ -164,8 +164,9 @@ async def trigger_extraction(
     background_tasks: BackgroundTasks,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    model_mode: str = "auto",
 ):
-    """手动触发/重新执行精准抽取流水线。"""
+    """手动触发/重新执行精准抽取流水线。model_mode: auto|weak|strong"""
     await require_project_role(project_id, user, db, ["admin", "reviewer"])
     result = await db.execute(
         select(Paper).where(Paper.id == paper_id, Paper.project_id == project_id)
@@ -173,13 +174,13 @@ async def trigger_extraction(
     paper = result.scalar_one_or_none()
     if paper is None:
         raise HTTPException(status_code=404, detail="文献不存在")
-        
+
     paper.status = "extracting"
     db.add(paper)
     await db.flush()
-    
-    background_tasks.add_task(run_extraction_task, paper.id)
-    return {"message": "已将抽取任务添加至后台队列"}
+
+    background_tasks.add_task(run_extraction_task, paper.id, model_mode=model_mode)
+    return {"message": f"已将抽取任务添加至后台队列 (mode={model_mode})"}
 
 
 @router.get("/{paper_id}/extraction-report")

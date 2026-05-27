@@ -391,6 +391,188 @@ class V7ExtractorService:
         return all_facts
 
     # ------------------------------------------------------------------
+    # Stage 2 (weak model): Direct extraction with sample context
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    async def _stage2_fact_candidates_weak(
+        client, chunks: list[dict], samples: list[dict],
+    ) -> list[dict]:
+        """Extract facts using V6-style direct prompts — better for weak models.
+
+        Key differences from strong mode:
+        - Gives the LLM specific sample IDs to look for
+        - Single consolidated extraction call per source type
+        - Simpler, more concrete prompts
+        """
+        from app.services.chunking import (
+            chunks_for_performance_extraction,
+            chunks_for_composition_process,
+        )
+
+        sample_ids = [s.get("sample_id", "") for s in samples if s.get("sample_id")]
+        sample_hint = ", ".join(sample_ids) if sample_ids else "unknown"
+        all_facts: list[dict] = []
+
+        # 2a: Performance extraction (main data source)
+        perf_text = chunks_for_performance_extraction(chunks)
+        if perf_text.strip() and sample_ids:
+            perf_prompt = (
+                f"You are a fiber material data scientist. Extract ALL available performance "
+                f"metrics for these sample IDs: [{sample_hint}]. "
+                "Extract EVERY numerical property with units you can find, including but not "
+                "limited to: mechanical (tensile_strength, elastic_modulus, elongation_at_break, "
+                "compressive_strength, flexural_modulus), thermal (thermal_conductivity, "
+                "thermal_diffusivity, Tg, Td5, shrinkage), dielectric (dielectric_constant, "
+                "dielectric_loss, breakdown_strength, conductivity), physical (density, porosity, "
+                "specific_surface_area, water_contact_angle), functional (EMI_SE, transmittance). "
+                "For EACH sample+metric pair, report the exact numerical value and unit from the text. "
+                "If a sample has 10 metrics, output 10 entries. Do NOT skip any numerical data. "
+                "Output JSON: {'performances': [{'sample_id': str, 'performance_metric': str, "
+                "'performance_value': str, 'performance_unit': str, 'performance_category': "
+                "'mechanical|thermal|dielectric|physical|functional', 'performance_method': str, "
+                "'performance_condition': str, 'evidence_text': str, 'source_location': str}]}"
+            )
+            parsed, _ = client.generate_json_tolerant(
+                perf_prompt,
+                f"Results text:\n{perf_text[:25000]}",
+                max_tokens=4000,
+            )
+            for p in parsed.get("performances") or parsed.get("_items") or []:
+                s_id = p.get("sample_id", "")
+                metric = p.get("performance_metric", "")
+                val = p.get("performance_value", "")
+                if s_id and metric and val:
+                    # Infer fact_type and category
+                    category = p.get("performance_category", "")
+                    ml = metric.lower()
+                    if not category:
+                        if any(k in ml for k in ("tensile", "compressive", "strength", "modulus", "elongation")):
+                            category = "mechanical"
+                        elif any(k in ml for k in ("thermal", "conductivity", "temperature", "shrinkage")):
+                            category = "thermal"
+                        elif any(k in ml for k in ("dielectric", "permittivity", "loss")):
+                            category = "dielectric"
+                        elif any(k in ml for k in ("porosity", "density", "contact_angle")):
+                            category = "physical"
+                        else:
+                            category = "physical"
+
+                    all_facts.append({
+                        "fact_id": "",
+                        "fact_type": "performance",
+                        "subject_text": f"{s_id} {metric}",
+                        "candidate_sample_ids": [s_id],
+                        "metric_or_parameter": metric,
+                        "value": str(val),
+                        "unit": p.get("performance_unit", ""),
+                        "method": p.get("performance_method", ""),
+                        "condition": p.get("performance_condition", ""),
+                        "category": category,
+                        "evidence_text": p.get("evidence_text", ""),
+                        "source_location": p.get("source_location", "results_text"),
+                        "extraction_method": "AI_text",
+                        "confidence": 0.80,
+                        "assigned_sample_id": s_id,
+                        "assignment_confidence": 0.9,
+                        "assignment_status": "assigned",
+                    })
+
+        # 2b: Composition/process/structure extraction
+        comp_text = chunks_for_composition_process(chunks)
+        if comp_text.strip() and sample_ids:
+            comp_prompt = (
+                f"You extract composition, fabrication process, and structure characterization "
+                f"from fiber material papers. Known samples: [{sample_hint}]. "
+                "For EACH sample, extract: composition (matrix_name, additive_expression, "
+                "solvent_or_aid, composition_expression), process (process_route, spinning_method, "
+                "process_parameters, post_treatment), structure (structure_methods, structure_features). "
+                "Output JSON: {'items': [{'sample_id': str, 'composition': {...}, 'process': {...}, "
+                "'structure': {...}}]}"
+            )
+            parsed, _ = client.generate_json_tolerant(
+                comp_prompt,
+                f"Experimental text:\n{comp_text[:15000]}",
+                max_tokens=2000,
+            )
+            for item in parsed.get("items") or parsed.get("_items") or []:
+                s_id = item.get("sample_id", "")
+                if not s_id:
+                    continue
+                for card_type, key in [("composition", "composition"), ("process", "process"), ("structure", "structure")]:
+                    payload = item.get(key, {})
+                    if payload:
+                        all_facts.append({
+                            "fact_id": "",
+                            "fact_type": card_type,
+                            "subject_text": f"{s_id} {card_type}",
+                            "candidate_sample_ids": [s_id],
+                            "metric_or_parameter": key,
+                            "value": "",
+                            "unit": "",
+                            "method": "",
+                            "condition": "",
+                            "category": card_type,
+                            "evidence_text": json.dumps(payload, ensure_ascii=False)[:500],
+                            "source_location": "experimental",
+                            "extraction_method": "AI_text",
+                            "confidence": 0.75,
+                            "assigned_sample_id": s_id,
+                            "assignment_confidence": 0.85,
+                            "assignment_status": "assigned",
+                        })
+
+        # 2c: Figure caption extraction (if few performance facts found)
+        perf_count = sum(1 for f in all_facts if f.get("fact_type") == "performance")
+        if perf_count < 3:
+            fig_chunks = [c for c in chunks if c.get("source_type") == "figure_caption"]
+            if fig_chunks:
+                fig_text = "\n".join(c["raw_text"] for c in fig_chunks[:15])
+                if fig_text.strip():
+                    fig_prompt = (
+                        f"Extract ALL performance data from these figure captions for samples: [{sample_hint}]. "
+                        "For each value: sample_id, performance_metric, performance_value, performance_unit. "
+                        "Output JSON: {'performances': [{'sample_id': str, 'performance_metric': str, "
+                        "'performance_value': str, 'performance_unit': str, 'evidence_text': str}]}"
+                    )
+                    parsed, _ = client.generate_json_tolerant(
+                        fig_prompt,
+                        f"Figure captions:\n{fig_text[:12000]}",
+                        max_tokens=2500,
+                    )
+                    for p in parsed.get("performances") or parsed.get("_items") or []:
+                        s_id = p.get("sample_id", "")
+                        metric = p.get("performance_metric", "")
+                        val = p.get("performance_value", "")
+                        if s_id and metric and val:
+                            all_facts.append({
+                                "fact_id": "",
+                                "fact_type": "performance",
+                                "subject_text": f"{s_id} {metric}",
+                                "candidate_sample_ids": [s_id],
+                                "metric_or_parameter": metric,
+                                "value": str(val),
+                                "unit": p.get("performance_unit", ""),
+                                "method": "",
+                                "condition": "",
+                                "category": "physical",
+                                "evidence_text": p.get("evidence_text", ""),
+                                "source_location": "figure_caption",
+                                "extraction_method": "AI_figure",
+                                "confidence": 0.70,
+                                "assigned_sample_id": s_id,
+                                "assignment_confidence": 0.8,
+                                "assignment_status": "assigned",
+                            })
+
+        # Assign sequential fact_ids
+        for i, f in enumerate(all_facts):
+            if not f.get("fact_id"):
+                f["fact_id"] = f"F{i + 1:04d}"
+
+        return all_facts
+
+    # ------------------------------------------------------------------
     # Stage 3: Sample assignment
     # ------------------------------------------------------------------
 
@@ -752,8 +934,15 @@ class V7ExtractorService:
     async def run_full_pipeline_for_paper(
         db: AsyncSession, paper_id: int,
         progress_callback: Callable[[str, int], Any] | None = None,
+        model_mode: str = "auto",
     ) -> dict[str, Any]:
-        """Run the V7 multi-stage extraction pipeline."""
+        """Run the V7 multi-stage extraction pipeline.
+
+        model_mode: "weak" | "strong" | "auto"
+          - weak:  V6-style direct prompts, single-pass extraction (better for small/cheap models)
+          - strong: Multi-stage pipeline with intermediate tables (needs GPT-4o-class models)
+          - auto:  Detect from model name; defaults to weak unless model contains "gpt-4o", "claude", "o1", "o3"
+        """
         def _emit(step: str, pct: int):
             if progress_callback:
                 progress_callback(step, pct)
@@ -855,6 +1044,18 @@ class V7ExtractorService:
             await db.commit()
             return {"error": "LLM 客户端不可用"}
 
+        # -- Auto-detect model mode --
+        if model_mode == "auto":
+            model_name = (project.llm_model or "").lower()
+            strong_keywords = ["gpt-4o", "claude", "o1", "o3", "sonnet", "opus", "haiku", "deepseek-r1", "gemini-2"]
+            if any(kw in model_name for kw in strong_keywords):
+                model_mode = "strong"
+            else:
+                model_mode = "weak"
+            print(f"Auto-detected model_mode={model_mode} for model '{project.llm_model}'")
+        else:
+            print(f"Using explicit model_mode={model_mode}")
+
         _emit("extracting", 15)
 
         # -- Stage 1: Sample catalog --
@@ -900,14 +1101,20 @@ class V7ExtractorService:
         await db.commit()
 
         # -- Stage 2: Fact candidates --
-        facts = await V7ExtractorService._stage2_fact_candidates(client, chunks)
-        _emit("extracting", 50)
-
-        # -- Stage 3: Sample assignment --
-        if samples:
-            facts = await V7ExtractorService._stage3_sample_assignment(client, samples, facts)
-            # Local fallback for facts missed by LLM assignment
-            facts = V7ExtractorService._local_sample_assignment(facts, samples)
+        if model_mode == "weak":
+            # Weak model: direct extraction with sample context (V6-style)
+            facts = await V7ExtractorService._stage2_fact_candidates_weak(client, chunks, samples)
+            _emit("extracting", 50)
+            # Skip Stage 3 — weak extraction already includes sample assignment
+        else:
+            # Strong model: multi-stage extraction
+            facts = await V7ExtractorService._stage2_fact_candidates(client, chunks)
+            _emit("extracting", 50)
+            # -- Stage 3: Sample assignment --
+            if samples:
+                facts = await V7ExtractorService._stage3_sample_assignment(client, samples, facts)
+                # Local fallback for facts missed by LLM assignment
+                facts = V7ExtractorService._local_sample_assignment(facts, samples)
         _emit("extracting", 65)
 
         # -- Stage 5: Vision enhancement --
