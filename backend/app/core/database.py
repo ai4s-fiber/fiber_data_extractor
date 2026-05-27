@@ -1,5 +1,6 @@
 import os
 import socket
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from app.core.config import settings
 
@@ -9,11 +10,9 @@ def is_postgres_running(url: str) -> bool:
     """Helper to ping PostgreSQL port to avoid blocking or exceptions on connect."""
     if "postgresql" not in url:
         return False
-    # Parse host and port from URL (default is localhost:5432)
     host = "localhost"
     port = 5432
     try:
-        # Extract host:port from postgresql://user:pass@host:port/db
         parts = url.split("@")
         if len(parts) > 1:
             host_port_part = parts[1].split("/")[0]
@@ -24,13 +23,19 @@ def is_postgres_running(url: str) -> bool:
                 host = host_port_part
     except Exception:
         pass
-    
-    # Try establishing socket connection with tight timeout
+
     try:
         with socket.create_connection((host, port), timeout=0.8):
             return True
     except (socket.timeout, ConnectionRefusedError, OSError):
         return False
+
+def _enable_sqlite_wal(dbapi_connection, connection_record):
+    """Enable WAL mode and set busy timeout for SQLite connections."""
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA busy_timeout=30000")
+    cursor.close()
 
 # Smart routing
 if is_postgres_running(db_url):
@@ -48,9 +53,10 @@ else:
         sqlite_fallback_url,
         echo=settings.DEBUG,
         connect_args={
-            "timeout": 30,  # Wait up to 30s for lock release
+            "timeout": 30,
         },
     )
+    event.listen(engine.sync_engine, "connect", _enable_sqlite_wal)
 
 async_session_factory = async_sessionmaker(
     engine,
