@@ -78,7 +78,11 @@ async def health():
     redis_ok = await ping_redis() if settings.REDIS_ENABLED else None
     db_ok = await check_database()
     mineru_ok = check_mineru_cloud_configured()
-    healthy = db_ok and (redis_ok is not False if settings.REDIS_ENABLED else True)
+    redis_required_ok = redis_ok is not False if settings.REDIS_ENABLED else True
+    mineru_required_ok = mineru_ok if (
+        settings.MINERU_ENABLED and settings.DEFAULT_PARSER_STRATEGY == "mineru_cloud"
+    ) else True
+    healthy = db_ok and redis_required_ok and mineru_required_ok
     return {
         "status": "ok" if healthy else "degraded",
         "version": settings.APP_VERSION,

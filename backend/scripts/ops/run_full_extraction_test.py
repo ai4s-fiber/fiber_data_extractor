@@ -23,7 +23,7 @@ async def run_e2e_extraction():
 
     async with async_session_factory() as db:
         # 2. Setup a mock extraction job in DB
-        # This allows us to pass a specific parser strategy ('legacy') and mode ('weak')
+        # This allows us to pass a specific parser strategy and mode.
         job = ExtractionJob(
             project_id=1,
             paper_id=1,

@@ -3,7 +3,7 @@ import type { LlmConfig, Paper } from './types';
 import { modeLabels } from './types';
 
 export type ExtractionMode = 'auto' | 'weak' | 'strong';
-export type ParserStrategy = 'mineru_local' | 'mineru_cloud' | 'legacy';
+export type ParserStrategy = 'mineru_cloud' | 'mineru_local';
 
 interface ExtractionModeModalProps {
   open: boolean;
@@ -106,9 +106,8 @@ export default function ExtractionModeModal({
           buttonStyle="solid"
           style={{ width: '100%' }}
         >
-          <Radio.Button value="mineru_local" style={{ width: '33.33%', textAlign: 'center' }}>本地 MinerU</Radio.Button>
-          <Radio.Button value="mineru_cloud" style={{ width: '33.33%', textAlign: 'center' }}>线上精准 (VLM)</Radio.Button>
-          <Radio.Button value="legacy" style={{ width: '33.33%', textAlign: 'center' }}>经典纯文本</Radio.Button>
+          <Radio.Button value="mineru_cloud" style={{ width: '50%', textAlign: 'center' }}>MinerU Cloud</Radio.Button>
+          <Radio.Button value="mineru_local" style={{ width: '50%', textAlign: 'center' }}>本地 MinerU</Radio.Button>
         </Radio.Group>
 
         <div style={{
@@ -122,23 +121,16 @@ export default function ExtractionModeModal({
         >
           {selectedParserStrategy === 'mineru_local' && (
             <div>
-              <div style={{ fontWeight: 'bold', color: '#52c41a', marginBottom: 4 }}>【本地 MinerU 离线抽取】 (默认推荐)</div>
+              <div style={{ fontWeight: 'bold', color: '#52c41a', marginBottom: 4 }}>【本地 MinerU 离线抽取】</div>
               <div style={{ color: '#52c41a' }}><strong>✓ 优点：</strong>部署于本地/私有服务器，完全免费，无文件大小与页数硬性限制，适合大规模、大批量处理，且数据完全本地化，安全不泄露。</div>
               <div style={{ color: '#ff4d4f', marginTop: 4 }}><strong>✗ 缺点：</strong>依赖本地计算节点的 GPU/CPU 算力与显存，初次解析可能需要数分钟，需要本地一直跑着 MinerU 后台服务。</div>
             </div>
           )}
           {selectedParserStrategy === 'mineru_cloud' && (
             <div>
-              <div style={{ fontWeight: 'bold', color: '#1890ff', marginBottom: 4 }}>【线上高精度 VLM 抽取】</div>
+              <div style={{ fontWeight: 'bold', color: '#1890ff', marginBottom: 4 }}>【MinerU Cloud 高精度 VLM 抽取】 (默认推荐)</div>
               <div style={{ color: '#52c41a' }}><strong>✓ 优点：</strong>使用 MinerU.net 官方线上高精度 VLM 模型，对复杂表格、公式、多栏混合排版的解析精度极高，不占用任何本地计算资源。</div>
               <div style={{ color: '#ff4d4f', marginTop: 4 }}><strong>✗ 缺点：</strong>受云端 API 配额与网络延迟影响，大文件上传较慢，需配置 MINERU_CLOUD_TOKEN。</div>
-            </div>
-          )}
-          {selectedParserStrategy === 'legacy' && (
-            <div>
-              <div style={{ fontWeight: 'bold', color: '#faad14', marginBottom: 4 }}>【经典纯文本解析】 (默认可运行)</div>
-              <div style={{ color: '#52c41a' }}><strong>✓ 优点：</strong>无需外部服务，启动极快，适合纯文本 PDF。</div>
-              <div style={{ color: '#ff4d4f', marginTop: 4 }}><strong>✗ 缺点：</strong>不支持复杂版式、图像和表格，抽取质量显著下降。</div>
             </div>
           )}
         </div>

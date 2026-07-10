@@ -18,8 +18,8 @@ class ExtractionJob(Base):
     )  # auto, weak, strong
     resolved_mode: Mapped[str | None] = mapped_column(String(20), nullable=True)
     parser_strategy: Mapped[str] = mapped_column(
-        String(30), nullable=False, default="mineru_local"
-    )  # mineru_local, mineru_cloud, legacy
+        String(30), nullable=False, default="mineru_cloud"
+    )  # mineru_cloud, mineru_local, legacy
     status: Mapped[str] = mapped_column(
         String(30), nullable=False, default="queued"
     )  # queued, running, completed, failed, cancelled

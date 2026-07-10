@@ -3,10 +3,12 @@
 from pathlib import Path
 
 from pydantic import model_validator
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+
     # App
     APP_NAME: str = "Fiber Data Extractor V6"
     APP_VERSION: str = "6.0.0"
@@ -24,7 +26,7 @@ class Settings(BaseSettings):
 
     # Document parsing (MinerU)
     PARSE_ARTIFACT_DIR: str = "./parse_artifacts"
-    MINERU_ENABLED: bool = False
+    MINERU_ENABLED: bool = True
     MINERU_API_URL: str = "http://127.0.0.1:8001"
     MINERU_CLOUD_TOKEN: str = ""
     MINERU_BACKEND: str = "pipeline"
@@ -32,12 +34,13 @@ class Settings(BaseSettings):
     MINERU_LANG: str = "ch"
     MINERU_TASK_TIMEOUT_SECONDS: int = 1800
     MINERU_POLL_INTERVAL_SECONDS: float = 2.0
-    MINERU_FALLBACK_LEGACY_PARSER: bool = True
+    MINERU_CLOUD_FALLBACK_LOCAL: bool = False
+    MINERU_FALLBACK_LEGACY_PARSER: bool = False
 
     # Extraction runtime
     EXTRACTION_MAX_CONCURRENT_JOBS: int = 2
     EXTRACTION_JOB_POLL_INTERVAL_SECONDS: int = 2
-    DEFAULT_PARSER_STRATEGY: str = "legacy"
+    DEFAULT_PARSER_STRATEGY: str = "mineru_cloud"
     # Weak-mode throughput limits (batch literature extraction)
     WEAK_MAX_PRIORITY_CHUNKS: int = 8
     WEAK_MAX_FACT_CHUNKS: int = 35
@@ -79,10 +82,6 @@ class Settings(BaseSettings):
         if self.DEBUG:
             self.ALLOW_SQLITE_FALLBACK = True
         return self
-
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
 
 
 settings = Settings()

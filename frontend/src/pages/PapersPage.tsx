@@ -6,7 +6,6 @@ import {
   Space,
   Popconfirm,
   Modal,
-  Alert,
   App,
 } from 'antd';
 import {
@@ -48,7 +47,7 @@ export default function PapersPage() {
   const [extractDialogOpen, setExtractDialogOpen] = useState(false);
   const [selectedPaper, setSelectedPaper] = useState<Paper | null>(null);
   const [selectedMode, setSelectedMode] = useState<ExtractionMode>('strong');
-  const [selectedParserStrategy, setSelectedParserStrategy] = useState<ParserStrategy>('legacy');
+  const [selectedParserStrategy, setSelectedParserStrategy] = useState<ParserStrategy>('mineru_cloud');
   const [llmConfig, setLlmConfig] = useState<LlmConfig | null>(null);
 
   const [progressMap, setProgressMap] = useState<Record<number, ExtractionProgress>>({});
@@ -151,10 +150,8 @@ export default function PapersPage() {
       unsubscribe();
       load(true);
     } else if (sseState.status === 'error') {
-      const errCode = sseState.error?.code;
       const errMsg = sseState.error?.message || '未知错误';
       const failedPaperId = sseState.paperId!;
-      const failedMode = sseState.mode || 'auto';
 
       setProgressMap(prev => {
         const copy = { ...prev };
@@ -164,46 +161,7 @@ export default function PapersPage() {
       unsubscribe();
       load(true);
 
-      if (errCode === 'mineru_failed_need_legacy_fallback') {
-        Modal.confirm({
-          title: 'PDF 精准解析服务均不可用',
-          content: (
-            <div style={{ padding: '8px 0' }}>
-              <p style={{ color: 'var(--color-text-secondary)', marginBottom: 12 }}>
-                系统尝试使用云端 VLM 智能解析以及本地 MinerU 解析，均未能成功解析此文献。
-              </p>
-              <Alert
-                type="warning"
-                showIcon
-                message="警告：经典解析策略仅能提取 PDF 中的纯文本内容，完全不支持复杂版式还原、图像识别和表格提取，抽取质量相比 MinerU 会明显下降。"
-              />
-              <p style={{ marginTop: 12, fontWeight: 'bold' }}>
-                是否要降级退回到经典纯文本解析策略，继续完成本次数据抽取？
-              </p>
-            </div>
-          ),
-          okText: '确认降级并抽取',
-          cancelText: '取消抽取',
-          okType: 'danger',
-          onOk: async () => {
-            try {
-              const { jobId } = await startExtraction(
-                currentProject!.id,
-                failedPaperId,
-                failedMode,
-                'legacy'
-              );
-              message.success('已降级为经典纯文本策略并重新加入队列');
-              subscribe(currentProject!.id, failedPaperId, jobId);
-              setTimeout(() => load(true), 500);
-            } catch (err: any) {
-              message.error(err.response?.data?.detail || '重新触发失败');
-            }
-          }
-        });
-      } else {
-        message.error(`抽取失败: ${errMsg}`);
-      }
+      message.error(`抽取失败: ${errMsg}`);
     } else if (sseState.status === 'cancelled') {
       message.warning('抽取已被用户手动取消');
       setProgressMap(prev => {
@@ -297,7 +255,7 @@ export default function PapersPage() {
   const openExtractDialog = async (paper: Paper) => {
     setSelectedPaper(paper);
     setSelectedMode((paper.latest_requested_mode as 'auto' | 'weak' | 'strong') || 'auto');
-    setSelectedParserStrategy('legacy');
+    setSelectedParserStrategy('mineru_cloud');
     setExtractDialogOpen(true);
     setLlmConfig(null);
 

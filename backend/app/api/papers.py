@@ -27,6 +27,7 @@ from app.services import redis_cache
 from app.services.paper_cleanup import purge_paper
 
 router = APIRouter(prefix="/projects/{project_id}/papers", tags=["文献"])
+VALID_PARSER_STRATEGIES = {"mineru_cloud", "mineru_local", "legacy"}
 
 
 async def _candidate_count_for_job(
@@ -72,7 +73,7 @@ def _job_payload(job: ExtractionJob) -> ExtractionJobOut:
         paper_id=job.paper_id,
         requested_mode=job.requested_mode,
         resolved_mode=job.resolved_mode,
-        parser_strategy=getattr(job, "parser_strategy", "mineru_local"),
+        parser_strategy=getattr(job, "parser_strategy", settings.DEFAULT_PARSER_STRATEGY),
         status=job.status,
         step=job.step,
         percent=job.percent,
@@ -334,8 +335,14 @@ async def trigger_extraction(
 
     paper.status = "queued"
     parser_strategy = (body.parser_strategy if body and body.parser_strategy else None) or settings.DEFAULT_PARSER_STRATEGY
-    if parser_strategy not in {"mineru_local", "mineru_cloud", "legacy"}:
-        parser_strategy = settings.DEFAULT_PARSER_STRATEGY
+    if parser_strategy not in VALID_PARSER_STRATEGIES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "parser_strategy 必须是 mineru_cloud、mineru_local 或 legacy，"
+                f"不能使用: {parser_strategy}"
+            ),
+        )
 
     job = ExtractionJob(
         project_id=project_id,

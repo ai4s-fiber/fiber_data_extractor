@@ -31,7 +31,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--model", default="qwen3.7-plus")
     parser.add_argument("--provider", default="openai")
     parser.add_argument("--model-mode", default="weak", choices=["weak", "strong", "auto"])
-    parser.add_argument("--parser-strategy", default="legacy", choices=["legacy", "mineru_local", "mineru_cloud"])
+    parser.add_argument("--parser-strategy", default="mineru_cloud", choices=["mineru_cloud", "mineru_local", "legacy"])
     parser.add_argument("--limit", type=int, default=3)
     parser.add_argument("--pdf-name", default="", help="Optional exact PDF filename to benchmark.")
     parser.add_argument("--database-url", default="sqlite+aiosqlite:///./benchmark.db")

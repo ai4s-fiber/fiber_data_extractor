@@ -39,7 +39,7 @@ class ExtractionJobOut(BaseModel):
     paper_id: int
     requested_mode: str
     resolved_mode: str | None
-    parser_strategy: str = "mineru_local"
+    parser_strategy: str = "mineru_cloud"
     status: str
     step: str
     percent: int

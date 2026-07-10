@@ -11,7 +11,7 @@ from app.models.base import Base
 EXTRACTION_JOB_COLUMNS_SQLITE = {
     "requested_mode": "VARCHAR(20) NOT NULL DEFAULT 'auto'",
     "resolved_mode": "VARCHAR(20)",
-    "parser_strategy": "VARCHAR(30) NOT NULL DEFAULT 'mineru_local'",
+    "parser_strategy": "VARCHAR(30) NOT NULL DEFAULT 'mineru_cloud'",
     "step": "VARCHAR(50) NOT NULL DEFAULT 'starting'",
     "percent": "INTEGER NOT NULL DEFAULT 0",
     "error_code": "VARCHAR(50)",
@@ -23,7 +23,7 @@ EXTRACTION_JOB_COLUMNS_SQLITE = {
 EXTRACTION_JOB_COLUMNS_POSTGRES = {
     "requested_mode": "VARCHAR(20) NOT NULL DEFAULT 'auto'",
     "resolved_mode": "VARCHAR(20)",
-    "parser_strategy": "VARCHAR(30) NOT NULL DEFAULT 'mineru_local'",
+    "parser_strategy": "VARCHAR(30) NOT NULL DEFAULT 'mineru_cloud'",
     "step": "VARCHAR(50) NOT NULL DEFAULT 'starting'",
     "percent": "INTEGER NOT NULL DEFAULT 0",
     "error_code": "VARCHAR(50)",

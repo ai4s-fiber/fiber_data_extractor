@@ -1,28 +1,23 @@
-import os
 import socket
 from sqlalchemy import event
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from app.core.config import settings
 
 db_url = settings.DATABASE_URL
 
+
 def is_postgres_running(url: str) -> bool:
     """Helper to ping PostgreSQL port to avoid blocking or exceptions on connect."""
     if "postgresql" not in url:
         return False
-    host = "localhost"
-    port = 5432
     try:
-        parts = url.split("@")
-        if len(parts) > 1:
-            host_port_part = parts[1].split("/")[0]
-            if ":" in host_port_part:
-                host, port_str = host_port_part.split(":")
-                port = int(port_str)
-            else:
-                host = host_port_part
+        parsed = make_url(url)
     except Exception:
-        pass
+        return False
+
+    host = parsed.host or "localhost"
+    port = parsed.port or 5432
 
     try:
         with socket.create_connection((host, port), timeout=0.8):
@@ -30,7 +25,8 @@ def is_postgres_running(url: str) -> bool:
     except (socket.timeout, ConnectionRefusedError, OSError):
         return False
 
-def _enable_sqlite_wal(dbapi_connection, connection_record):
+
+def _enable_sqlite_wal(dbapi_connection, _connection_record):
     """Enable WAL mode and set busy timeout for SQLite connections."""
     cursor = dbapi_connection.cursor()
     cursor.execute("PRAGMA busy_timeout=120000")  # 120s - extraction holds DB for minutes
@@ -42,13 +38,14 @@ def _enable_sqlite_wal(dbapi_connection, connection_record):
     cursor.close()
 
 # Smart routing — production must not silently fall back to SQLite
+postgres_reachable = is_postgres_running(db_url)
 _use_sqlite = (
     settings.ALLOW_SQLITE_FALLBACK
     and "postgresql" in db_url
-    and not is_postgres_running(db_url)
+    and not postgres_reachable
 )
-if is_postgres_running(db_url) or ("postgresql" in db_url and not settings.ALLOW_SQLITE_FALLBACK):
-    if not is_postgres_running(db_url):
+if postgres_reachable or ("postgresql" in db_url and not settings.ALLOW_SQLITE_FALLBACK):
+    if not postgres_reachable:
         raise RuntimeError(
             "PostgreSQL is configured but unreachable. "
             "Refusing to start (set ALLOW_SQLITE_FALLBACK=true only for local dev)."
@@ -86,8 +83,6 @@ async_session_factory = async_sessionmaker(
     class_=AsyncSession,
     expire_on_commit=False,
 )
-
-
 
 
 async def get_db() -> AsyncSession:

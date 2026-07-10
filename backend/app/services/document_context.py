@@ -30,7 +30,13 @@ from app.models.document_parse import (
 from app.models.paper import Paper
 from app.services.chunking import classify_section
 from app.services.extractor_v7.exceptions import ExtractionCancelled
-from app.services.mineru_client import MinerUClient, MinerUError, MinerUParseResult, MinerUFallbackRequired
+from app.services.job_cancellation import run_with_cancel_poll
+from app.services.mineru_client import (
+    MinerUClient,
+    MinerUError,
+    MinerUParseResult,
+    MinerUUnavailable,
+)
 from app.services.pdf_utils import (
     extract_pdf_tables_markdown,
     extract_pdf_text,
@@ -39,6 +45,7 @@ from app.services.pdf_utils import (
 
 
 ProgressCallback = Callable[[str, int, str], Any]
+VALID_DOCUMENT_PARSER_STRATEGIES = {"mineru_cloud", "mineru_local", "legacy"}
 
 
 @dataclass(slots=True)
@@ -531,17 +538,16 @@ async def parse_pdf_to_document_context(
     job_id: int | None,
     progress_callback: ProgressCallback | None = None,
 ) -> DocumentContext:
-    parser_strategy = "mineru_local"
+    parser_strategy = settings.DEFAULT_PARSER_STRATEGY
     if job_id:
-        try:
-            job_res = await db.execute(
-                select(ExtractionJob).where(ExtractionJob.id == job_id)
-            )
-            job = job_res.scalar_one_or_none()
-            if job and getattr(job, "parser_strategy", None):
-                parser_strategy = job.parser_strategy
-        except Exception:
-            pass
+        job_res = await db.execute(
+            select(ExtractionJob).where(ExtractionJob.id == job_id)
+        )
+        job = job_res.scalar_one_or_none()
+        if job and getattr(job, "parser_strategy", None):
+            parser_strategy = job.parser_strategy
+    if parser_strategy not in VALID_DOCUMENT_PARSER_STRATEGIES:
+        raise ValueError(f"Unsupported document parser strategy: {parser_strategy}")
 
     parse_run = DocumentParseRun(
         paper_id=paper.id,
@@ -561,14 +567,13 @@ async def parse_pdf_to_document_context(
             try:
                 if progress_callback:
                     await _maybe_await(progress_callback("inventory", 3, "正在使用 VLM 智能排版解析 (MinerU Cloud)..."))
-                from app.services.job_cancellation import run_with_cancel_poll
 
                 result = await run_with_cancel_poll(
                     MinerUClient().parse_pdf(pdf_path, strategy="mineru_cloud"),
                     job_id,
                 )
             except MinerUError as cloud_exc:
-                if isinstance(cloud_exc, MinerUFallbackRequired):
+                if not settings.MINERU_CLOUD_FALLBACK_LOCAL:
                     raise
                 if progress_callback:
                     await _maybe_await(progress_callback("inventory", 5, f"VLM 智能解析失败 ({cloud_exc.error_code})，正在尝试退回到本地 MinerU 解析..."))
@@ -579,9 +584,9 @@ async def parse_pdf_to_document_context(
                         job_id,
                     )
                 except MinerUError as local_exc:
-                    # Both failed! Throw special confirmation error
-                    raise MinerUFallbackRequired(
-                        f"VLM智能排版解析失败 ({str(cloud_exc)}) 且本地MinerU服务也失效 ({str(local_exc)})。传统解析质量很差，是否选择退回传统解析？"
+                    raise MinerUUnavailable(
+                        "MinerU Cloud 解析失败，且本地 MinerU 解析也失败。"
+                        f"Cloud 错误: {cloud_exc}; 本地错误: {local_exc}"
                     ) from local_exc
 
             # If successful with either cloud or local
@@ -624,10 +629,8 @@ async def parse_pdf_to_document_context(
                     parse_run.id,
                     result,
                 )
-            except MinerUError as local_exc:
-                raise MinerUFallbackRequired(
-                    f"本地 MinerU 解析服务不可用 ({str(local_exc)})。传统解析质量很差，是否选择退回传统解析？"
-                ) from local_exc
+            except MinerUError:
+                raise
 
         else:
             # Legacy parser strategy
@@ -640,13 +643,6 @@ async def parse_pdf_to_document_context(
     except ExtractionCancelled as exc:
         parse_run.status = "cancelled"
         parse_run.error_code = "cancelled_by_user"
-        parse_run.error_message = str(exc)[:2000]
-        parse_run.finished_at = _now()
-        await db.commit()
-        raise
-    except MinerUFallbackRequired as exc:
-        parse_run.status = "failed"
-        parse_run.error_code = exc.error_code
         parse_run.error_message = str(exc)[:2000]
         parse_run.finished_at = _now()
         await db.commit()

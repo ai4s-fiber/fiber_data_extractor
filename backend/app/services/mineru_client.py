@@ -39,11 +39,6 @@ class MinerUInvalidResult(MinerUError):
     error_code = "mineru_invalid_result"
 
 
-class MinerUFallbackRequired(MinerUError):
-    error_code = "mineru_failed_need_legacy_fallback"
-
-
-
 @dataclass(slots=True)
 class MinerUParseResult:
     task_id: str
@@ -121,13 +116,16 @@ class MinerUClient:
 
     def __init__(self, api_url: str | None = None, token: str | None = None) -> None:
         self.api_url = (api_url or _base_url()).rstrip("/")
-        self.token = token or settings.MINERU_CLOUD_TOKEN
+        self.token = token if token is not None else settings.MINERU_CLOUD_TOKEN
 
-    async def parse_pdf(self, pdf_path: str | Path, strategy: str = "mineru_local") -> MinerUParseResult:
+    async def parse_pdf(
+        self, pdf_path: str | Path, strategy: str = "mineru_local"
+    ) -> MinerUParseResult:
         if strategy == "mineru_cloud":
             return await self.parse_pdf_cloud(pdf_path)
-        else:
+        if strategy == "mineru_local":
             return await self.parse_pdf_local(pdf_path)
+        raise ValueError(f"Unsupported MinerU parser strategy: {strategy}")
 
     async def parse_pdf_local(self, pdf_path: str | Path) -> MinerUParseResult:
         path = Path(pdf_path)
@@ -287,6 +285,10 @@ class MinerUClient:
         path = Path(pdf_path)
         if not path.exists():
             raise FileNotFoundError(f"PDF file not found: {path}")
+        if not (self.token or "").strip():
+            raise MinerUUnavailable(
+                "MINERU_CLOUD_TOKEN is required when parser_strategy=mineru_cloud"
+            )
 
         started = time.monotonic()
         timeout = httpx.Timeout(

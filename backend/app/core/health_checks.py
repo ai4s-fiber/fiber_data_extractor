@@ -18,7 +18,11 @@ async def check_database() -> bool:
 
 
 def check_mineru_cloud_configured() -> bool:
-    if not settings.MINERU_ENABLED:
+    mineru_cloud_required = (
+        settings.MINERU_ENABLED
+        and settings.DEFAULT_PARSER_STRATEGY == "mineru_cloud"
+    )
+    if not mineru_cloud_required:
         return True
     token = (settings.MINERU_CLOUD_TOKEN or "").strip()
     return bool(token)

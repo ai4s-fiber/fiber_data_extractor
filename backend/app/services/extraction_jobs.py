@@ -52,6 +52,10 @@ def resolve_model_mode(project: Project, requested_mode: str) -> str:
         "gpt-4o-mini",
         "qwen-turbo",
         "qwen-plus",
+        "qwen2-plus",
+        "qwen2.5-plus",
+        "qwen3-plus",
+        "qwen3.7-plus",
     ]
     strong_keywords = [
         "gpt-4o",
