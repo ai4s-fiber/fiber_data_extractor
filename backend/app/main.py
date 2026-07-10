@@ -1,18 +1,53 @@
 """FastAPI application entry point."""
 
+import asyncio
+import logging
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
+from app.core.health_checks import check_database, check_mineru_cloud_configured
+from app.core.redis_client import close_redis, ping_redis
+from app.core.schema_repair import ensure_runtime_schema
 # Ensure all model tables are registered in Base.metadata for FK resolution
 import app.models  # noqa: F401
-from app.api import auth, projects, papers, candidates, exports, users
+from app.api import projects, papers, candidates, exports
+from app.services.extraction_jobs import extraction_job_backend
+from app.services.progress_bus import progress_bus
+
+logger = logging.getLogger(__name__)
+
+
+async def _queue_poller() -> None:
+    while True:
+        try:
+            await extraction_job_backend.try_start_next()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Extraction queue polling failed")
+        await asyncio.sleep(max(1, settings.EXTRACTION_JOB_POLL_INTERVAL_SECONDS))
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await ensure_runtime_schema()
+    await extraction_job_backend.recover_interrupted_jobs()
+    await extraction_job_backend.try_start_next()
+    poller = asyncio.create_task(_queue_poller())
+    yield
+    poller.cancel()
+    await progress_bus.close()
+    await close_redis()
 
 app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
     docs_url="/docs",
     redoc_url="/redoc",
+    lifespan=lifespan,
 )
 
 # CORS
@@ -24,15 +59,35 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Routes
-app.include_router(auth.router, prefix="/api")
-app.include_router(projects.router, prefix="/api")
-app.include_router(papers.router, prefix="/api")
-app.include_router(candidates.router, prefix="/api")
-app.include_router(exports.router, prefix="/api")
-app.include_router(users.router, prefix="/api")
+# Routes — /api (legacy) and /api/v1 (versioned)
+_API_ROUTERS = [
+    (projects.router, "/api"),
+    (papers.router, "/api"),
+    (candidates.router, "/api"),
+    (exports.router, "/api"),
+]
+for router, prefix in _API_ROUTERS:
+    app.include_router(router, prefix=prefix)
+for router, _ in _API_ROUTERS:
+    app.include_router(router, prefix="/api/v1")
 
 
 @app.get("/api/health")
+@app.get("/api/v1/health")
 async def health():
-    return {"status": "ok", "version": settings.APP_VERSION}
+    redis_ok = await ping_redis() if settings.REDIS_ENABLED else None
+    db_ok = await check_database()
+    mineru_ok = check_mineru_cloud_configured()
+    healthy = db_ok and (redis_ok is not False if settings.REDIS_ENABLED else True)
+    return {
+        "status": "ok" if healthy else "degraded",
+        "version": settings.APP_VERSION,
+        "database": db_ok,
+        "redis": redis_ok,
+        "mineru_cloud": mineru_ok,
+        "progress_bus": "redis" if redis_ok else "memory",
+        "features": {
+            "list_cache": bool(redis_ok),
+            "extraction_queue": bool(redis_ok),
+        },
+    }

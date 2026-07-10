@@ -1,82 +1,65 @@
-"""FastAPI dependencies for auth and permissions."""
+"""FastAPI dependencies for open workspace resource access."""
 
-from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_db
-from app.core.security import decode_access_token
-from app.models.user import User
-from app.models.project_member import ProjectMember
-
-security_scheme = HTTPBearer()
+from app.models.candidate_record import CandidateRecord
+from app.models.export_job import ExportJob
+from app.models.paper import Paper
+from app.models.project import Project
 
 
-async def require_superadmin(
-    credentials: HTTPAuthorizationCredentials = Depends(security_scheme),
-    db: AsyncSession = Depends(get_db),
-) -> User:
-    """Check that the current user is a superadmin."""
-    payload = decode_access_token(credentials.credentials)
-    if payload is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无效的认证凭据")
-    user_id = payload.get("sub")
-    if user_id is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无效的认证凭据")
-    result = await db.execute(select(User).where(User.id == int(user_id)))
-    user = result.scalar_one_or_none()
-    if user is None or not user.is_active:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户不存在或已禁用")
-    if not user.is_superadmin:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="仅超级管理员可执行此操作")
-    return user
+def not_found(resource: str = "资源") -> HTTPException:
+    return HTTPException(status_code=404, detail=f"{resource}不存在")
 
 
-async def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security_scheme),
-    db: AsyncSession = Depends(get_db),
-) -> User:
-    """Extract and validate the current user from the JWT token."""
-    payload = decode_access_token(credentials.credentials)
-    if payload is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="无效的认证凭据",
-        )
-    user_id: str = payload.get("sub")
-    if user_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="无效的认证凭据",
-        )
-    result = await db.execute(select(User).where(User.id == int(user_id)))
-    user = result.scalar_one_or_none()
-    if user is None or not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="用户不存在或已禁用",
-        )
-    return user
+def ensure_same_project(expected_project_id: int, actual_project_id: int | None, resource: str) -> None:
+    if actual_project_id != expected_project_id:
+        raise not_found(resource)
 
 
-async def require_project_role(
-    project_id: int,
-    user: User,
+async def get_project_or_404(
     db: AsyncSession,
-    allowed_roles: list[str],
-) -> ProjectMember:
-    """Check that the user has one of the allowed roles in the given project."""
-    result = await db.execute(
-        select(ProjectMember).where(
-            ProjectMember.project_id == project_id,
-            ProjectMember.user_id == user.id,
-        )
-    )
-    member = result.scalar_one_or_none()
-    if member is None or member.role not in allowed_roles:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="没有此项目的访问权限",
-        )
-    return member
+    project_id: int,
+    *,
+    include_archived: bool = False,
+) -> Project:
+    result = await db.execute(select(Project).where(Project.id == project_id))
+    project = result.scalar_one_or_none()
+    if project is None:
+        raise not_found("项目")
+    if not include_archived and project.archived_at is not None:
+        raise not_found("项目")
+    return project
+
+
+async def get_paper_or_404(db: AsyncSession, project_id: int, paper_id: int) -> Paper:
+    result = await db.execute(select(Paper).where(Paper.id == paper_id))
+    paper = result.scalar_one_or_none()
+    if paper is None:
+        raise not_found("文献")
+    ensure_same_project(project_id, paper.project_id, "文献")
+    return paper
+
+
+async def get_candidate_or_404(
+    db: AsyncSession,
+    project_id: int,
+    candidate_id: int,
+) -> CandidateRecord:
+    result = await db.execute(select(CandidateRecord).where(CandidateRecord.id == candidate_id))
+    candidate = result.scalar_one_or_none()
+    if candidate is None:
+        raise not_found("候选记录")
+    ensure_same_project(project_id, candidate.project_id, "候选记录")
+    return candidate
+
+
+async def get_export_or_404(db: AsyncSession, project_id: int, export_id: int) -> ExportJob:
+    result = await db.execute(select(ExportJob).where(ExportJob.id == export_id))
+    export = result.scalar_one_or_none()
+    if export is None:
+        raise not_found("导出任务")
+    ensure_same_project(project_id, export.project_id, "导出任务")
+    return export

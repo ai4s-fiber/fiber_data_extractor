@@ -1,18 +1,37 @@
 import { useEffect, useState } from 'react';
-import { Card, Form, Input, Button, Select, Space, message, Alert, Spin } from 'antd';
+import { Alert, App, Button, Card, Collapse, Form, Input, Select, Space, Spin, Table, Tag } from 'antd';
 import { SettingOutlined, SecurityScanOutlined, SaveOutlined } from '@ant-design/icons';
 import { useProject } from '../stores/project';
 import api from '../api/client';
 
+interface DiagnosticAttempt {
+  base_url: string;
+  request_url: string;
+  http_status: number | null;
+  json_response: boolean;
+  response_preview?: string;
+  error?: string;
+}
+
+interface DiagnosticResult {
+  success: boolean;
+  working_base_url?: string | null;
+  message: string;
+  attempts?: DiagnosticAttempt[];
+}
+
 export default function SettingsPage() {
   const { currentProject } = useProject();
+  const { message } = App.useApp();
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
   const [testLoading, setTestLoading] = useState(false);
+  const [diagnostic, setDiagnostic] = useState<DiagnosticResult | null>(null);
 
   useEffect(() => {
     if (currentProject) {
       setLoading(true);
+      setDiagnostic(null);
       api.get(`/projects/${currentProject.id}/llm-config`)
         .then(res => {
           form.setFieldsValue({
@@ -56,7 +75,11 @@ export default function SettingsPage() {
       const values = await form.validateFields();
       setTestLoading(true);
       const res = await api.post(`/projects/${currentProject.id}/llm-config/test`, values);
+      setDiagnostic(res.data);
       if (res.data.success) {
+        if (res.data.working_base_url) {
+          form.setFieldValue('llm_base_url', res.data.working_base_url);
+        }
         message.success(res.data.message);
       } else {
         message.error(res.data.message || '连接失败，请检查 Base URL 或 API Key');
@@ -71,6 +94,31 @@ export default function SettingsPage() {
       setTestLoading(false);
     }
   };
+
+  const diagnosticColumns = [
+    { title: 'Base URL', dataIndex: 'base_url', key: 'base_url', ellipsis: true },
+    { title: '请求地址', dataIndex: 'request_url', key: 'request_url', ellipsis: true },
+    {
+      title: 'HTTP',
+      dataIndex: 'http_status',
+      key: 'http_status',
+      width: 90,
+      render: (status: number | null) => status ?? '-',
+    },
+    {
+      title: 'JSON',
+      dataIndex: 'json_response',
+      key: 'json_response',
+      width: 90,
+      render: (ok: boolean) => <Tag color={ok ? 'green' : 'red'}>{ok ? '是' : '否'}</Tag>,
+    },
+    {
+      title: '响应预览',
+      key: 'response_preview',
+      ellipsis: true,
+      render: (_: any, row: DiagnosticAttempt) => row.error || row.response_preview || '-',
+    },
+  ];
 
   if (!currentProject) {
     return (
@@ -88,18 +136,50 @@ export default function SettingsPage() {
           title={
             <Space>
               <SettingOutlined style={{ color: 'var(--color-accent)' }} />
-              <span>大模型提取服务配置 (项目专属)</span>
+              <span>项目配置：大模型抽取服务</span>
             </Space>
           }
           bordered={false}
         >
           <Alert
-            message="科学防幻觉抽取引擎提示"
+            message="文献抽取引擎提示"
             description="纤维材料数据抽取 V6 支持为不同项目定制独立的 LLM API 通信网关。你可以将其接入国内低成本极速的 DeepSeek、GLM，亦或是 OpenAI。配置完毕后，后台的【必抽页面分词清单】与【样品目录先行】抽取流水线将真正调通你选择的模型接口！"
             type="info"
             showIcon
             style={{ marginBottom: 24 }}
           />
+
+          {diagnostic && (
+            <Alert
+              type={diagnostic.success ? 'success' : 'error'}
+              showIcon
+              message={diagnostic.message}
+              description={diagnostic.working_base_url ? `已记录可用 Base URL：${diagnostic.working_base_url}` : undefined}
+              style={{ marginBottom: 16 }}
+            />
+          )}
+
+          {diagnostic?.attempts?.length ? (
+            <Collapse
+              size="small"
+              style={{ marginBottom: 24 }}
+              items={[
+                {
+                  key: 'diagnostics',
+                  label: '连接诊断详情',
+                  children: (
+                    <Table
+                      size="small"
+                      rowKey={(row) => row.request_url}
+                      pagination={false}
+                      columns={diagnosticColumns}
+                      dataSource={diagnostic.attempts}
+                    />
+                  ),
+                },
+              ]}
+            />
+          ) : null}
 
           <Form
             form={form}

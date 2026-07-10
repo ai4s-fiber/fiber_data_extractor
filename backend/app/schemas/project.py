@@ -1,4 +1,4 @@
-"""Pydantic schemas for projects and project members."""
+"""Pydantic schemas for projects."""
 
 from datetime import datetime
 from pydantic import BaseModel
@@ -14,7 +14,6 @@ class ProjectOut(BaseModel):
     id: int
     name: str
     description: str | None
-    created_by: int
     created_at: datetime
     updated_at: datetime
     archived_at: datetime | None
@@ -29,28 +28,6 @@ class ProjectOut(BaseModel):
 class ProjectUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
-
-
-# --- Project Member ---
-class MemberAdd(BaseModel):
-    user_id: int
-    role: str = "student"  # admin, reviewer, student
-
-
-class MemberOut(BaseModel):
-    id: int
-    project_id: int
-    user_id: int
-    role: str
-    user_name: str | None = None
-    user_email: str | None = None
-    created_at: datetime
-
-    model_config = {"from_attributes": True}
-
-
-class MemberRoleUpdate(BaseModel):
-    role: str
 
 
 # --- Project LLM Configuration ---
@@ -68,4 +45,3 @@ class ProjectLLMConfigOut(BaseModel):
     llm_model: str | None
 
     model_config = {"from_attributes": True}
-

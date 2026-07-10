@@ -93,6 +93,7 @@ class CandidateRecordUpdate(BaseModel):
     review_status: str | None = None
     reviewer_comment: str | None = None
     source_location: str | None = None
+    expected_updated_at: datetime | None = None
 
 
 class CandidateRecordOut(BaseModel):
@@ -143,8 +144,6 @@ class CandidateRecordOut(BaseModel):
     reviewer_comment: str | None
     candidate_status: str
     source_location: str | None
-    assigned_to: int | None
-    reviewed_by: int | None
     reviewed_at: datetime | None
     created_at: datetime
     updated_at: datetime
@@ -157,14 +156,19 @@ class CandidateListItem(BaseModel):
     id: int
     source_paper_id: int | None = None
     sample_id: str | None
+    performance_category: str | None = None
     performance_metric: str | None
     performance_value: str | None
     performance_unit: str | None
     review_status: str | None
     ai_confidence: float | None
+    evidence_text: str | None = None
+    reviewer_comment: str | None = None
+    candidate_status: str | None = None
     source_location: str | None
     paper_title: str | None
     created_at: datetime
+    updated_at: datetime | None = None
 
     model_config = {"from_attributes": True}
 
@@ -173,3 +177,4 @@ class ReviewAction(BaseModel):
     """Action to take on a candidate record."""
     action: str  # approved, modified, uncertain, missing, deleted
     comment: str | None = None
+    expected_updated_at: datetime | None = None

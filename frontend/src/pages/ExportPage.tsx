@@ -1,8 +1,20 @@
 import { useState, useEffect } from 'react';
-import { Button, Table, Tag, Select, Space, message, Empty, Popconfirm } from 'antd';
+import { App, Button, Table, Tag, Select, Space, Empty, Popconfirm, Typography, Alert } from 'antd';
 import { DownloadOutlined, ExportOutlined, DeleteOutlined } from '@ant-design/icons';
 import { useProject } from '../stores/project';
 import api from '../api/client';
+import { downloadBlobResponse } from '../utils/download';
+
+const { Text } = Typography;
+
+const EXPORT_STATUS_OPTIONS = [
+  { value: 'approved', label: '通过' },
+  { value: 'pending', label: '待审核' },
+  { value: 'uncertain', label: '存疑' },
+  { value: 'modified', label: '已修改' },
+] as const;
+
+type ExportStatus = (typeof EXPORT_STATUS_OPTIONS)[number]['value'];
 
 interface ExportJobRow {
   id: number;
@@ -15,12 +27,31 @@ interface ExportJobRow {
 
 export default function ExportPage() {
   const { currentProject } = useProject();
+  const { message } = App.useApp();
   const [exports, setExports] = useState<ExportJobRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [statusFilter, setStatusFilter] = useState<string[]>(['approved']);
+  const [statusCounts, setStatusCounts] = useState<Record<ExportStatus, number>>({
+    approved: 0,
+    pending: 0,
+    uncertain: 0,
+    modified: 0,
+  });
 
   const pid = currentProject?.id;
+
+  const loadStatusCounts = () => {
+    if (!pid) return;
+    Promise.all(
+      EXPORT_STATUS_OPTIONS.map(({ value }) =>
+        api.get(`/projects/${pid}/candidates/count`, { params: { review_status: value } })
+          .then(r => [value, r.data.count as number] as const),
+      ),
+    )
+      .then(results => setStatusCounts(Object.fromEntries(results) as Record<ExportStatus, number>))
+      .catch(() => {});
+  };
 
   const loadExports = () => {
     if (!pid) return;
@@ -31,15 +62,34 @@ export default function ExportPage() {
       .finally(() => setLoading(false));
   };
 
-  useEffect(loadExports, [pid]);
+  useEffect(() => {
+    loadExports();
+    loadStatusCounts();
+  }, [pid]);
+
+  const exportableCount = statusFilter.reduce(
+    (sum, status) => sum + (statusCounts[status as ExportStatus] ?? 0),
+    0,
+  );
+
+  const statusOptions = EXPORT_STATUS_OPTIONS.map(({ value, label }) => ({
+    value,
+    label: `${label} (${statusCounts[value] ?? 0})`,
+  }));
 
   const doExport = async () => {
     if (!pid) return;
     setExporting(true);
     try {
-      await api.post(`/projects/${pid}/exports`, { review_status_filter: statusFilter });
-      message.success('导出成功');
+      const res = await api.post(`/projects/${pid}/exports`, { review_status_filter: statusFilter });
+      const cleared = res.data?.cleared_record_count ?? 0;
+      message.success(
+        cleared > 0
+          ? `导出成功，已从审核队列清除 ${cleared} 条记录`
+          : '导出成功',
+      );
       loadExports();
+      loadStatusCounts();
     } catch (err: any) {
       message.error(err.response?.data?.detail || '导出失败');
     } finally {
@@ -52,14 +102,11 @@ export default function ExportPage() {
       const response = await api.get(`/projects/${pid}/exports/${id}/download`, {
         responseType: 'blob',
       });
-      const url = window.URL.createObjectURL(new Blob([response.data]));
-      const link = document.createElement('a');
-      link.href = url;
-      link.setAttribute('download', '数据主表.xlsx');
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      window.URL.revokeObjectURL(url);
+      downloadBlobResponse(
+        response.data,
+        '数据主表.xlsx',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      );
     } catch {
       message.error('下载失败');
     }
@@ -105,29 +152,46 @@ export default function ExportPage() {
   return (
     <div>
       <div className="page-header">
-        <h1>导出数据主表</h1>
-        <Space>
-          <Select
-            mode="multiple" style={{ width: 280 }}
-            placeholder="选择导出的审核状态"
-            value={statusFilter}
-            onChange={setStatusFilter}
-            options={[
-              { value: 'approved', label: '通过' },
-              { value: 'pending', label: '待审核' },
-              { value: 'uncertain', label: '存疑' },
-              { value: 'modified', label: '已修改' },
-            ]}
-          />
-          <Button type="primary" icon={<ExportOutlined />} onClick={doExport} loading={exporting}>
-            生成 Excel
-          </Button>
+        <h1>导出结构化工作簿</h1>
+        <Space direction="vertical" size={4} align="end">
+          <Space>
+            <Select
+              mode="multiple" style={{ width: 320 }}
+              placeholder="选择导出的审核状态"
+              value={statusFilter}
+              onChange={setStatusFilter}
+              options={statusOptions}
+            />
+            <Button
+              type="primary"
+              icon={<ExportOutlined />}
+              onClick={doExport}
+              loading={exporting}
+              disabled={exportableCount === 0}
+            >
+              生成 Excel
+            </Button>
+          </Space>
+          <Text type={exportableCount > 0 ? 'secondary' : 'danger'} style={{ fontSize: 12 }}>
+            {exportableCount > 0
+              ? `当前所选状态共 ${exportableCount} 条可导出`
+              : '当前所选状态没有可导出记录，请先在数据审核中处理或调整筛选'}
+          </Text>
         </Space>
       </div>
 
+      <Alert
+        type="warning"
+        showIcon
+        style={{ marginBottom: 16 }}
+        message="导出会永久清除审核队列中的对应数据"
+        description="生成 Excel 后，已写入工作簿的候选记录会从「数据审核」列表中删除，且不可恢复。请确认筛选条件无误后再导出。"
+      />
+
       <div style={{ marginBottom: 24, padding: 20, background: 'var(--color-bg-tertiary)', borderRadius: 12, border: '1px solid var(--color-border)' }}>
         <p style={{ color: 'var(--color-text-secondary)', fontSize: 13, margin: 0 }}>
-          导出文件名：<strong>数据主表.xlsx</strong>，Sheet 名：<strong>数据主表</strong>，字段顺序固定 40 列。
+          导出文件名：<strong>数据主表.xlsx</strong>；工作簿包含 <strong>Main_Data</strong>、<strong>Papers</strong>、<strong>Evidence</strong>、<strong>Parse_Blocks</strong>、<strong>Quality_Report</strong>。
+          <strong>Main_Data</strong> 是主数据表，固定 32 列；文献信息、原文证据和解析块分别放在独立 Sheet 中。
           默认只导出审核状态为"通过"的候选记录。
         </p>
       </div>

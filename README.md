@@ -1,6 +1,6 @@
 # 纤维材料文献数据提取软件 V6
 
-线上多人协作 Web 系统，用于从纤维材料文献 PDF 中提取结构化数据。
+开放式本地/私有 Web 工作区，用于从纤维材料文献 PDF 中提取结构化数据。
 
 ## 架构
 
@@ -12,7 +12,7 @@ fiber_data_extractor_v6/
 │   │   ├── models/   # SQLAlchemy 模型
 │   │   ├── schemas/  # Pydantic schemas
 │   │   ├── services/ # 业务逻辑
-│   │   ├── core/     # 配置、安全、依赖
+│   │   ├── core/     # 配置、数据库、资源依赖
 │   │   └── main.py
 │   ├── alembic/      # 数据库迁移
 │   ├── requirements.txt
@@ -50,9 +50,9 @@ python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
 
-# 设置环境变量（或创建 .env 文件）
-# DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/fiber_v6
-# SECRET_KEY=your-secret-key
+# 设置环境变量（或从仓库根目录复制 .env.example）
+# DATABASE_URL=sqlite+aiosqlite:///./fiber_data.db
+# MINERU_CLOUD_TOKEN=
 # UPLOAD_DIR=./uploads
 
 # 初始化数据库
@@ -75,16 +75,14 @@ npm run dev
 ### Docker Compose
 
 ```bash
+cp .env.example .env
+# 修改 .env 中的 POSTGRES_PASSWORD 后再启动
 docker-compose up --build
 ```
 
-## 用户角色
+## 使用模式
 
-| 角色 | 说明 |
-|---|---|
-| admin | 管理员：管理项目、成员、API 配置、导出 |
-| reviewer | 审核员/老师：审核候选行、修改、导出 |
-| student | 学生：上传 PDF、启动抽取、修改候选、提交审核 |
+本项目现在作为开放工作区运行：没有登录页、用户账号、角色、成员管理或管理员专属页面。能够访问服务的人都可以管理项目、上传文献、启动抽取、复核候选记录、导出工作簿，以及配置项目级 LLM 参数。建议只在本地网络或受控的私有环境中部署。
 
 ## 40 列 Excel 导出
 

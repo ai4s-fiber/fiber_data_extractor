@@ -11,7 +11,6 @@ class ExportRequest(BaseModel):
 class ExportJobOut(BaseModel):
     id: int
     project_id: int
-    created_by: int
     status: str
     filter_json: str | None
     file_object_key: str | None
@@ -20,3 +19,8 @@ class ExportJobOut(BaseModel):
     error_message: str | None
 
     model_config = {"from_attributes": True}
+
+
+class ExportCreateResult(ExportJobOut):
+    exported_record_count: int = 0
+    cleared_record_count: int = 0

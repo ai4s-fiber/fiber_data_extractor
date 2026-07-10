@@ -12,6 +12,7 @@ Provides:
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import re
@@ -277,6 +278,34 @@ class LLMClient:
                 pass
         parsed = _tolerant_parse_json(raw)
         return parsed, raw
+
+    async def agenerate_json_tolerant(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int = 4096,
+    ) -> tuple[dict[str, Any], str]:
+        return await asyncio.to_thread(
+            self.generate_json_tolerant,
+            system_prompt,
+            user_prompt,
+            max_tokens,
+        )
+
+    async def agenerate_vision_json_tolerant(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        images: list[bytes],
+        max_tokens: int = 4096,
+    ) -> tuple[dict[str, Any], str]:
+        return await asyncio.to_thread(
+            self.generate_vision_json_tolerant,
+            system_prompt,
+            user_prompt,
+            images,
+            max_tokens,
+        )
 
     def generate_vision_json_tolerant(
         self,

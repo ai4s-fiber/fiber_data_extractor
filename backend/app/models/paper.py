@@ -12,7 +12,6 @@ class Paper(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     project_id: Mapped[int] = mapped_column(Integer, ForeignKey("projects.id"), nullable=False)
-    uploaded_by: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
     original_filename: Mapped[str] = mapped_column(String(500), nullable=False)
     file_object_key: Mapped[str] = mapped_column(String(500), nullable=False)
     paper_title: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -21,7 +20,7 @@ class Paper(Base):
     journal: Mapped[str | None] = mapped_column(String(300), nullable=True)
     status: Mapped[str] = mapped_column(
         String(30), nullable=False, default="uploaded"
-    )  # uploaded, extracting, review, completed, failed
+    )  # uploaded, queued, extracting, review, completed, failed
     page_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)

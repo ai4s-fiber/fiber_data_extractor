@@ -1,15 +1,17 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
-  Table, Tag, Button, Space, Empty, Select, Descriptions, Input,
-  Collapse, message, Popconfirm, Divider, Modal,
+  App, Table, Tag, Button, Space, Empty, Select, Input,
+  Collapse, Popconfirm, Divider, Modal, Segmented, Tooltip, Alert,
 } from 'antd';
 import {
   CheckCircleOutlined, CloseCircleOutlined, QuestionCircleOutlined,
   ExclamationCircleOutlined, EditOutlined, PlusOutlined, DeleteOutlined,
-  QuestionOutlined,
+  QuestionOutlined, DownloadOutlined,
 } from '@ant-design/icons';
 import { useProject } from '../stores/project';
 import api from '../api/client';
+import { downloadBlobResponse } from '../utils/download';
+import ExportFieldHelpModal from '../components/ExportFieldHelpModal';
 
 const { Option } = Select;
 const { Panel } = Collapse;
@@ -17,15 +19,20 @@ const { Panel } = Collapse;
 interface CandidateRow {
   id: number;
   sample_id: string | null;
+  performance_category: string | null;
   performance_metric: string | null;
   performance_value: string | null;
   performance_unit: string | null;
   review_status: string | null;
   ai_confidence: number | null;
+  evidence_text: string | null;
+  reviewer_comment: string | null;
+  candidate_status: string | null;
   source_location: string | null;
   paper_title: string | null;
   source_paper_id: number | null;
   created_at: string;
+  updated_at?: string | null;
 }
 
 interface CandidateDetail {
@@ -41,50 +48,63 @@ const statusLabels: Record<string, string> = {
   pending: '待审核', approved: '通过', modified: '已修改',
   uncertain: '存疑', missing: '缺失', deleted: '已删除',
 };
+const statusAlias: Record<string, string> = {
+  待审核: 'pending', 通过: 'approved', 已修改: 'modified',
+  存疑: 'uncertain', 缺失: 'missing', 已删除: 'deleted',
+};
 
-// 40-column reference table
-const COLUMN_REFERENCE = [
-  { no: 1, en: 'record_id', zh: '数据记录编号', meaning: '每一行数据的唯一编号' },
-  { no: 2, en: 'paper_id', zh: '文献编号', meaning: '每篇文献的内部编号' },
-  { no: 3, en: 'paper_title', zh: '文献题名', meaning: '论文标题' },
-  { no: 4, en: 'doi_or_url', zh: 'DOI 或链接', meaning: 'DOI、网页链接或数据库链接' },
-  { no: 5, en: 'year', zh: '发表年份', meaning: '文献发表年份' },
-  { no: 6, en: 'journal', zh: '期刊名称', meaning: '文献发表的期刊或会议名称' },
-  { no: 7, en: 'sample_group_id', zh: '样品组编号', meaning: '同一组变量实验的编号，如同一篇文献中的不同配比样品' },
-  { no: 8, en: 'sample_id', zh: '样品编号', meaning: '文献中给出的样品名，如 PET-3、S1、PVDF-BT-1.5' },
-  { no: 9, en: 'material_system', zh: '材料体系', meaning: '材料组成体系，如 PET/TiO₂、PVDF/BaTiO₃、PAN/CNT' },
-  { no: 10, en: 'fiber_type', zh: '纤维类型', meaning: '熔融纺丝长丝、湿法纺丝纤维、电纺纳米纤维、碳纤维等' },
-  { no: 11, en: 'variable_name', zh: '变量名称', meaning: '该组样品主要变化的因素，如 TiO₂含量、牵伸倍数、碳化温度' },
-  { no: 12, en: 'variable_value', zh: '变量数值', meaning: '当前样品对应的变量值，如 3、4、1200' },
-  { no: 13, en: 'variable_unit', zh: '变量单位', meaning: '变量单位，如 wt%、℃、×、min、m/min' },
-  { no: 14, en: 'composition_expression', zh: '成分表达式', meaning: '完整成分配方，如 PET=97 wt%; TiO₂=3 wt%' },
-  { no: 15, en: 'matrix_name', zh: '基体/前驱体名称', meaning: '主体材料名称，如 PET、PVDF、PAN、PA6' },
-  { no: 16, en: 'matrix_content', zh: '基体/前驱体含量', meaning: '主体材料含量，如 97' },
-  { no: 17, en: 'matrix_unit', zh: '基体/前驱体单位', meaning: '主体材料含量单位，如 wt%、vol%、mol%' },
-  { no: 18, en: 'additive_expression', zh: '填料/改性组分表达式', meaning: '填料、增强相、功能组分信息，如 TiO₂=3 wt%, 50 nm' },
-  { no: 19, en: 'solvent_or_aid', zh: '溶剂/助剂', meaning: '溶剂、分散剂、相容剂、加工助剂等，如 DMF、DMSO、PVP' },
-  { no: 20, en: 'composition_evidence', zh: '成分证据', meaning: '成分信息在文献中的来源位置，如 Table 1、实验部分、p.3' },
-  { no: 21, en: 'process_route', zh: '工艺路线', meaning: '总体制备路线，如 熔融纺丝、湿法纺丝-牵伸-热处理' },
-  { no: 22, en: 'spinning_method', zh: '纺丝方法', meaning: '具体纺丝方法，如 melt spinning、wet spinning、electrospinning' },
-  { no: 23, en: 'process_parameters', zh: '工艺参数', meaning: '关键工艺参数，如 spinning_temperature=285 ℃; draw_ratio=3.5×' },
-  { no: 24, en: 'post_treatment', zh: '后处理条件', meaning: '退火、热牵伸、碳化、稳定化、洗涤、干燥等后处理' },
-  { no: 25, en: 'process_evidence', zh: '工艺证据', meaning: '工艺信息在文献中的来源位置' },
-  { no: 26, en: 'structure_methods', zh: '结构表征方法', meaning: 'SEM、XRD、DSC、FTIR、Raman、WAXS、SAXS 等' },
-  { no: 27, en: 'structure_features', zh: '结构特征', meaning: '结构指标集合，如 crystallinity=36.5%; fiber_diameter=18.5 μm' },
-  { no: 28, en: 'structure_evidence', zh: '结构证据', meaning: '结构信息来源位置，如 Fig. 3、Table 2' },
-  { no: 29, en: 'performance_category', zh: '性能类别', meaning: '力学性能、热性能、电学性能、压电性能、传感性能等' },
-  { no: 30, en: 'performance_metric', zh: '性能指标', meaning: '单一性能指标名称，如 tensile_strength、elongation_at_break' },
-  { no: 31, en: 'performance_value', zh: '性能数值', meaning: '性能指标对应的数值，如 520、28.5、0.88' },
-  { no: 32, en: 'performance_unit', zh: '性能单位', meaning: '性能单位，如 MPa、%、GPa、S/m、pC/N、V' },
-  { no: 33, en: 'performance_method', zh: '性能测试方法', meaning: '测试方法或标准，如 tensile test、GB/T 14344、four-probe method' },
-  { no: 34, en: 'performance_condition', zh: '性能测试条件', meaning: '测试条件，如 gauge_length=20 mm; tensile_speed=10 mm/min' },
-  { no: 35, en: 'performance_evidence', zh: '性能证据', meaning: '性能数据来源位置，如 Table 3、Fig. 5b' },
-  { no: 36, en: 'extraction_method', zh: '提取方式', meaning: '数据来源方式，如手动录入、AI正文提取、AI表格提取、AI图中读取' },
-  { no: 37, en: 'evidence_text', zh: '原文证据片段', meaning: '支撑该数据的原文短句或表述' },
-  { no: 38, en: 'ai_confidence', zh: 'AI置信度', meaning: 'AI 对该条数据提取结果的可信度，通常为 0–1' },
-  { no: 39, en: 'review_status', zh: '审核状态', meaning: '待审核、已修改、通过、存疑、缺失' },
-  { no: 40, en: 'reviewer_comment', zh: '审核意见', meaning: '学生或审核人对该条数据的备注' },
+function normalizeReviewStatus(status?: string | null) {
+  if (!status) return '';
+  return statusAlias[status] || status;
+}
+
+const coreMetricHints = [
+  'density', 'porosity', 'shrinkage', 'fiber_diameter', 'fiber_length',
+  'thermal_conductivity', 'surface_temperature', 'water_contact_angle',
+  'dielectric_constant', 'dielectric_loss', 'electrical_conductivity',
+  'tensile_strength', 'compressive_strength', 'compressive_stress',
+  'permittivity', 'loss tangent', 'conductivity', 'contact angle',
+  'thermal conductivity', 'surface temperature',
 ];
+
+const secondaryMetricHints = [
+  'xps', 'ftir', 'binding energy', 'reaction pathway', 'imidization',
+  'fractional free volume', 'ffv', 'simulation', 'peak',
+];
+
+function metricPriority(row: Pick<CandidateRow, 'performance_metric' | 'reviewer_comment'>): 'Core' | 'Secondary' | 'Narrative' {
+  const comment = row.reviewer_comment || '';
+  const explicit = comment.match(/metric_priority=([^;]+)/);
+  if (explicit?.[1]) return explicit[1].trim() as 'Core' | 'Secondary' | 'Narrative';
+  const metric = (row.performance_metric || '').toLowerCase();
+  if (secondaryMetricHints.some(k => metric.includes(k))) return 'Secondary';
+  if (coreMetricHints.some(k => metric.includes(k))) return 'Core';
+  return 'Secondary';
+}
+
+function hasRoughSource(source?: string | null) {
+  const s = (source || '').trim().toLowerCase();
+  if (!s) return true;
+  if (['results_text', 'experimental', 'figure_caption', 'table_text', 'results', 'figure', 'table', 'unknown'].includes(s)) return true;
+  return !/(p\.|page|fig\.|figure|table|section|sec\.|scheme)/i.test(s);
+}
+
+function apiErrorMessage(err: any, fallback: string) {
+  const detail = err?.response?.data?.detail;
+  if (typeof detail === 'string') return detail;
+  if (detail?.message) return detail.message;
+  return fallback;
+}
+
+function issueTags(row: CandidateRow) {
+  const tags: string[] = [];
+  if (!row.sample_id) tags.push('样品缺失');
+  if (!row.evidence_text) tags.push('证据缺失');
+  if (hasRoughSource(row.source_location)) tags.push('来源过粗');
+  if ((row.reviewer_comment || '').includes('value_operator=<')) tags.push('不等号');
+  if ((row.reviewer_comment || '').includes('range_')) tags.push('范围值');
+  return tags;
+}
 
 // Detail panel groups
 const detailGroups = [
@@ -116,6 +136,7 @@ const detailGroups = [
 
 export default function ReviewPage() {
   const { currentProject } = useProject();
+  const { message } = App.useApp();
   const [rows, setRows] = useState<CandidateRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedId, setSelectedId] = useState<number | null>(null);
@@ -123,112 +144,286 @@ export default function ReviewPage() {
   const [editing, setEditing] = useState(false);
   const [editValues, setEditValues] = useState<Record<string, any>>({});
   const [statusFilter, setStatusFilter] = useState<string | undefined>(undefined);
+  const [priorityFilter, setPriorityFilter] = useState<string>('Core');
+  const [issueFilter, setIssueFilter] = useState<string | undefined>(undefined);
   const [helpOpen, setHelpOpen] = useState(false);
   const [extractionSummary, setExtractionSummary] = useState<Record<string, any> | null>(null);
+  const [paperFilter, setPaperFilter] = useState<number | undefined>(undefined);
+  const [papers, setPapers] = useState<Array<{ id: number; label: string }>>([]);
+  const [selectedRowKeys, setSelectedRowKeys] = useState<number[]>([]);
+  const [batchLoading, setBatchLoading] = useState(false);
+  const detailRequestRef = useRef(0);
 
   const pid = currentProject?.id;
+
+  const loadPapers = () => {
+    if (!pid) return;
+    api.get(`/projects/${pid}/papers`, { params: { page_size: 200 } })
+      .then(r => {
+        const items = (r.data || []).map((p: any) => ({
+          id: p.id,
+          label: p.paper_title || p.original_filename || `文献 #${p.id}`,
+        }));
+        setPapers(items);
+      })
+      .catch(() => {});
+  };
 
   const loadList = () => {
     if (!pid) return;
     setLoading(true);
-    const params: any = {};
+    const params: any = { page_size: 200 };
     if (statusFilter) params.review_status = statusFilter;
+    if (paperFilter) params.paper_id = paperFilter;
     api.get(`/projects/${pid}/candidates`, { params })
-      .then(r => setRows(r.data))
+      .then(r => {
+        setRows(r.data);
+        setSelectedRowKeys(prev => prev.filter(id => r.data.some((row: CandidateRow) => row.id === id)));
+      })
       .catch(() => message.error('加载失败'))
       .finally(() => setLoading(false));
   };
 
-  const loadDetail = (id: number) => {
-    if (!pid) return;
-    api.get(`/projects/${pid}/candidates/${id}`)
-      .then(r => {
-        setDetail(r.data); setEditValues(r.data);
-        // Also load extraction report for this candidate's paper
-        if (r.data.source_paper_id) {
-          api.get(`/projects/${pid}/papers/${r.data.source_paper_id}/extraction-report`)
-            .then(rr => setExtractionSummary(rr.data))
-            .catch(() => setExtractionSummary(null));
-        }
-      })
-      .catch(() => message.error('加载详情失败'));
+  const clearDetail = () => {
+    detailRequestRef.current += 1;
+    setSelectedId(null);
+    setDetail(null);
+    setEditing(false);
+    setExtractionSummary(null);
   };
 
-  useEffect(loadList, [pid, statusFilter]);
+  const loadDetail = (id: number) => {
+    if (!pid) return;
+    const reqId = ++detailRequestRef.current;
+    api.get(`/projects/${pid}/candidates/${id}`)
+      .then(r => {
+        if (detailRequestRef.current !== reqId) return;
+        setDetail(r.data);
+        setEditValues(r.data);
+        if (r.data.source_paper_id) {
+          api.get(`/projects/${pid}/papers/${r.data.source_paper_id}/extraction-report`)
+            .then(rr => {
+              if (detailRequestRef.current === reqId) setExtractionSummary(rr.data);
+            })
+            .catch(() => {
+              if (detailRequestRef.current === reqId) setExtractionSummary(null);
+            });
+        } else {
+          setExtractionSummary(null);
+        }
+      })
+      .catch((err) => {
+        if (detailRequestRef.current !== reqId) return;
+        if (err?.response?.status === 404) {
+          setSelectedId(null);
+          setDetail(null);
+          setEditing(false);
+          return;
+        }
+        message.error(apiErrorMessage(err, '加载详情失败'));
+      });
+  };
+
+  useEffect(loadList, [pid, statusFilter, paperFilter]);
+  useEffect(loadPapers, [pid]);
 
   useEffect(() => {
     if (selectedId) loadDetail(selectedId);
     else { setDetail(null); setEditing(false); setExtractionSummary(null); }
   }, [selectedId]);
 
+  const handleConflict = (err: any) => {
+    if (err?.response?.status !== 409) return false;
+    const detail = err.response?.data?.detail;
+    const text = typeof detail === 'string'
+      ? detail
+      : detail?.message || '该记录已被他人修改或审核，请刷新后重试';
+    Modal.warning({
+      title: '记录已被他人修改',
+      content: text,
+      onOk: () => {
+        loadList();
+        if (selectedId) loadDetail(selectedId);
+      },
+    });
+    return true;
+  };
+
   const doReview = async (action: string) => {
-    if (!pid || !selectedId) return;
+    if (!pid || !selectedId || !detail) return;
     try {
-      await api.post(`/projects/${pid}/candidates/${selectedId}/review`, { action });
+      const res = await api.post(`/projects/${pid}/candidates/${selectedId}/review`, {
+        action,
+        expected_updated_at: detail.updated_at,
+      });
       message.success(`操作成功: ${statusLabels[action] || action}`);
+      setDetail(res.data);
+      setEditValues(res.data);
       loadList();
-      loadDetail(selectedId);
-    } catch { message.error('操作失败'); }
+    } catch (err: any) {
+      if (!handleConflict(err)) message.error(apiErrorMessage(err, '操作失败'));
+    }
   };
 
   const doDelete = async (id: number) => {
     if (!pid) return;
+    if (selectedId === id) clearDetail();
+    setSelectedRowKeys(prev => prev.filter(key => key !== id));
     try {
       await api.delete(`/projects/${pid}/candidates/${id}`);
       message.success('已永久删除');
-      if (selectedId === id) setSelectedId(null);
       loadList();
-    } catch { message.error('删除失败'); }
+    } catch (err: any) {
+      message.error(apiErrorMessage(err, '删除失败'));
+    }
+  };
+
+  const doBatchDelete = async (ids: number[]) => {
+    if (!pid || ids.length === 0) return;
+    setBatchLoading(true);
+    try {
+      const res = await api.post(`/projects/${pid}/candidates/batch-delete`, { ids });
+      message.success(`已删除 ${res.data.deleted_count} 条记录`);
+      if (selectedId && ids.includes(selectedId)) clearDetail();
+      setSelectedRowKeys([]);
+      loadList();
+    } catch (err: any) {
+      message.error(apiErrorMessage(err, '批量删除失败'));
+    } finally {
+      setBatchLoading(false);
+    }
+  };
+
+  const doDeleteByPaper = async () => {
+    if (!pid || !paperFilter) return;
+    setBatchLoading(true);
+    try {
+      const res = await api.post(
+        `/projects/${pid}/candidates/batch-delete-by-paper`,
+        null,
+        { params: { paper_id: paperFilter } },
+      );
+      message.success(`已删除该文献下 ${res.data.deleted_count} 条记录`);
+      clearDetail();
+      setSelectedRowKeys([]);
+      loadList();
+    } catch (err: any) {
+      message.error(apiErrorMessage(err, '删除失败'));
+    } finally {
+      setBatchLoading(false);
+    }
+  };
+
+  const downloadPaperPdf = async (paperId: number, filename?: string) => {
+    if (!pid) return;
+    try {
+      const res = await api.get(`/projects/${pid}/papers/${paperId}/download`, {
+        responseType: 'blob',
+      });
+      downloadBlobResponse(
+        res.data,
+        filename || `paper_${paperId}.pdf`,
+        'application/pdf',
+      );
+    } catch (err: any) {
+      message.error(err.response?.data?.detail || 'PDF 下载失败');
+    }
   };
 
   const saveEdit = async () => {
-    if (!pid || !selectedId) return;
+    if (!pid || !selectedId || !detail) return;
     try {
-      await api.patch(`/projects/${pid}/candidates/${selectedId}`, editValues);
+      await api.patch(`/projects/${pid}/candidates/${selectedId}`, {
+        ...editValues,
+        expected_updated_at: detail.updated_at,
+      });
       message.success('保存成功');
       setEditing(false);
       loadList();
       loadDetail(selectedId);
-    } catch { message.error('保存失败'); }
+    } catch (err: any) {
+      if (!handleConflict(err)) message.error('保存失败');
+    }
   };
 
   if (!currentProject) {
     return <Empty description="请先选择项目" style={{ marginTop: 100 }} />;
   }
 
+  const filteredRows = rows.filter(row => {
+    if (priorityFilter !== 'All' && metricPriority(row) !== priorityFilter) return false;
+    if (issueFilter && !issueTags(row).includes(issueFilter)) return false;
+    return true;
+  });
+
+  const summary = {
+    core: rows.filter(r => metricPriority(r) === 'Core').length,
+    secondary: rows.filter(r => metricPriority(r) === 'Secondary').length,
+    pending: rows.filter(r => normalizeReviewStatus(r.review_status) === 'pending').length,
+    uncertain: rows.filter(r => normalizeReviewStatus(r.review_status) === 'uncertain').length,
+    missingEvidence: rows.filter(r => !r.evidence_text).length,
+    roughSource: rows.filter(r => hasRoughSource(r.source_location)).length,
+  };
+
   const columns = [
-    { title: 'ID', dataIndex: 'id', width: 50 },
-    { title: '样品编号', dataIndex: 'sample_id', width: 150, ellipsis: true,
+    { title: '样品', dataIndex: 'sample_id', width: 150, ellipsis: true,
       render: (v: string) => v || <span style={{color:'var(--color-text-secondary)'}}>—</span> },
-    { title: '性能指标', dataIndex: 'performance_metric', width: 130, ellipsis: true },
-    { title: '性能数值', dataIndex: 'performance_value', width: 100 },
-    { title: '性能单位', dataIndex: 'performance_unit', width: 90 },
-    { title: '审核状态', dataIndex: 'review_status', width: 85,
-      render: (s: string) => <Tag color={statusColors[s] || 'default'}>{statusLabels[s] || s}</Tag> },
-    { title: 'AI置信度', dataIndex: 'ai_confidence', width: 80,
+    { title: '指标', dataIndex: 'performance_metric', width: 180, ellipsis: true,
+      render: (v: string, r: CandidateRow) => (
+        <Space size={4} wrap>
+          <span>{v || '—'}</span>
+          <Tag color={metricPriority(r) === 'Core' ? 'blue' : 'purple'}>{metricPriority(r)}</Tag>
+        </Space>
+      ) },
+    { title: '数值', dataIndex: 'performance_value', width: 92,
+      render: (v: string, r: CandidateRow) => <span>{v || '—'} {r.performance_unit || ''}</span> },
+    { title: '证据', dataIndex: 'evidence_text', width: 240, ellipsis: true,
+      render: (v: string | null) => v ? <Tooltip title={v}><span>{v}</span></Tooltip> : <Tag color="red">缺失</Tag> },
+    { title: '来源', dataIndex: 'source_location', width: 150, ellipsis: true,
+      render: (v: string | null, r: CandidateRow) => (
+        <Space size={4} wrap>
+          <span>{v || '—'}</span>
+          {hasRoughSource(v) && <Tag color="orange">过粗</Tag>}
+          {issueTags(r).filter(t => t !== '来源过粗').map(t => <Tag key={t} color="gold">{t}</Tag>)}
+        </Space>
+      ) },
+    { title: '状态', dataIndex: 'review_status', width: 85,
+      render: (s: string) => {
+        const normalized = normalizeReviewStatus(s);
+        return <Tag color={statusColors[normalized] || 'default'}>{statusLabels[normalized] || s}</Tag>;
+      } },
+    { title: '置信度', dataIndex: 'ai_confidence', width: 80,
       render: (v: number) => v != null ? `${(v * 100).toFixed(0)}%` : '—' },
-    { title: '来源位置', dataIndex: 'source_location', width: 90, ellipsis: true },
     { title: '操作', width: 80, fixed: 'right' as const,
       render: (_: any, r: CandidateRow) => (
         <Popconfirm title="永久删除此条记录？" onConfirm={() => doDelete(r.id)}>
-          <Button size="small" danger icon={<DeleteOutlined />} />
+          <Button size="small" danger icon={<DeleteOutlined />} onClick={e => e.stopPropagation()} />
         </Popconfirm>
       ),
     },
   ];
 
-  const helpColumns = [
-    { title: '序号', dataIndex: 'no', width: 50 },
-    { title: '英文字段名', dataIndex: 'en', width: 190, render: (v: string) => <code style={{fontSize:12}}>{v}</code> },
-    { title: '中文字段名', dataIndex: 'zh', width: 120 },
-    { title: '含义', dataIndex: 'meaning' },
-  ];
-
   return (
     <div>
       <div className="page-header">
-        <h1>审核队列</h1>
+        <h1>核心数据审核</h1>
         <Space>
+          <Segmented
+            value={priorityFilter}
+            onChange={v => setPriorityFilter(String(v))}
+            options={[
+              { label: 'Core', value: 'Core' },
+              { label: 'Secondary', value: 'Secondary' },
+              { label: '全部', value: 'All' },
+            ]}
+          />
+          <Select
+            placeholder="按文献筛选" allowClear style={{ width: 220 }}
+            value={paperFilter} onChange={setPaperFilter}
+            showSearch
+            optionFilterProp="label"
+            options={papers.map(p => ({ value: p.id, label: p.label }))}
+          />
           <Select
             placeholder="状态筛选" allowClear style={{ width: 140 }}
             value={statusFilter} onChange={setStatusFilter}
@@ -238,6 +433,17 @@ export default function ReviewPage() {
             <Option value="modified">已修改</Option>
             <Option value="uncertain">存疑</Option>
             <Option value="missing">缺失</Option>
+            <Option value="deleted">已删除</Option>
+          </Select>
+          <Select
+            placeholder="问题筛选" allowClear style={{ width: 140 }}
+            value={issueFilter} onChange={setIssueFilter}
+          >
+            <Option value="样品缺失">样品缺失</Option>
+            <Option value="证据缺失">证据缺失</Option>
+            <Option value="来源过粗">来源过粗</Option>
+            <Option value="范围值">范围值</Option>
+            <Option value="不等号">不等号</Option>
           </Select>
           <Button icon={<QuestionOutlined />} onClick={() => setHelpOpen(true)}>
             字段说明
@@ -245,24 +451,106 @@ export default function ReviewPage() {
         </Space>
       </div>
 
+      <div className="review-quality-strip">
+        <div className="quality-item"><span>Core</span><strong>{summary.core}</strong></div>
+        <div className="quality-item"><span>Secondary</span><strong>{summary.secondary}</strong></div>
+        <div className="quality-item"><span>待审核</span><strong>{summary.pending}</strong></div>
+        <div className="quality-item warning"><span>存疑</span><strong>{summary.uncertain}</strong></div>
+        <div className="quality-item danger"><span>证据缺失</span><strong>{summary.missingEvidence}</strong></div>
+        <div className="quality-item warning"><span>来源过粗</span><strong>{summary.roughSource}</strong></div>
+      </div>
+
       <div className="review-layout">
         <div className="review-table-section">
+          {paperFilter && (
+            <div style={{ marginBottom: 12 }}>
+              <Button
+                icon={<DownloadOutlined />}
+                onClick={() => {
+                  const paper = papers.find(p => p.id === paperFilter);
+                  downloadPaperPdf(paperFilter, paper?.label);
+                }}
+              >
+                下载原文 PDF
+              </Button>
+            </div>
+          )}
+          <div style={{ marginBottom: 12 }}>
+            <Alert
+              type="info"
+              showIcon
+              message="批量操作"
+              description="勾选表格左侧复选框后点击「批量删除」；也可先按文献筛选，再删除该文献下的全部记录。"
+              style={{ marginBottom: 8 }}
+            />
+            <Space wrap>
+              <Popconfirm
+                title={`永久删除选中的 ${selectedRowKeys.length} 条记录？`}
+                onConfirm={() => doBatchDelete(selectedRowKeys)}
+                disabled={selectedRowKeys.length === 0}
+              >
+                <Button
+                  danger
+                  loading={batchLoading}
+                  icon={<DeleteOutlined />}
+                  disabled={selectedRowKeys.length === 0}
+                >
+                  批量删除{selectedRowKeys.length > 0 ? ` (${selectedRowKeys.length})` : ''}
+                </Button>
+              </Popconfirm>
+              {paperFilter && (
+                <Popconfirm
+                  title="永久删除当前文献下的全部候选记录？不可恢复！"
+                  onConfirm={doDeleteByPaper}
+                >
+                  <Button danger loading={batchLoading} icon={<DeleteOutlined />}>
+                    删除本篇文献全部记录
+                  </Button>
+                </Popconfirm>
+              )}
+              {selectedRowKeys.length > 0 && (
+                <Button onClick={() => setSelectedRowKeys([])}>清空选择</Button>
+              )}
+            </Space>
+          </div>
+          <div className="review-table-scroll">
           <Table
-            dataSource={rows} columns={columns} rowKey="id" loading={loading}
-            size="small" pagination={{ pageSize: 30 }} scroll={{ x: 950 }}
+            dataSource={filteredRows} columns={columns} rowKey="id" loading={loading}
+            size="small" pagination={{ pageSize: 30 }}
+            scroll={{ x: 'max-content', y: 'calc(100vh - 380px)' }}
+            rowSelection={{
+              selectedRowKeys,
+              onChange: keys => setSelectedRowKeys(keys as number[]),
+              preserveSelectedRowKeys: true,
+            }}
             onRow={(r) => ({
               onClick: () => setSelectedId(r.id),
               style: { cursor: 'pointer', background: r.id === selectedId ? 'rgba(79,107,246,0.1)' : undefined },
             })}
           />
+          </div>
         </div>
 
         <div className="review-detail-section">
           {detail ? (
             <>
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
-                <h3 style={{ margin: 0 }}>候选详情 #{detail.id}</h3>
+                <div>
+                  <h3 style={{ margin: 0 }}>候选详情 #{detail.id}</h3>
+                </div>
                 <Space>
+                  {detail.source_paper_id && (
+                    <Button
+                      size="small"
+                      icon={<DownloadOutlined />}
+                      onClick={() => downloadPaperPdf(
+                        detail.source_paper_id,
+                        detail.paper_title || detail.original_filename,
+                      )}
+                    >
+                      下载原文
+                    </Button>
+                  )}
                   {!editing ? (
                     <Button size="small" icon={<EditOutlined />} onClick={() => setEditing(true)}>编辑</Button>
                   ) : (
@@ -283,7 +571,7 @@ export default function ReviewPage() {
                   onClick={() => doReview('uncertain')}>存疑</Button>
                 <Button size="small" icon={<ExclamationCircleOutlined />}
                   onClick={() => doReview('missing')}>缺失</Button>
-                <Popconfirm title="标记为已删除？" onConfirm={() => doReview('deleted')}>
+                <Popconfirm title="标记为已删除？记录仍保留，导出时不会包含。" onConfirm={() => doReview('deleted')}>
                   <Button size="small" danger icon={<DeleteOutlined />}>标记删除</Button>
                 </Popconfirm>
                 <Popconfirm title="永久删除此记录？不可恢复！" onConfirm={() => doDelete(detail.id)}>
@@ -338,18 +626,7 @@ export default function ReviewPage() {
         </div>
       </div>
 
-      <Modal
-        title="数据主表 40 列字段说明"
-        open={helpOpen}
-        onCancel={() => setHelpOpen(false)}
-        footer={null}
-        width={900}
-      >
-        <Table
-          dataSource={COLUMN_REFERENCE} columns={helpColumns} rowKey="no"
-          size="small" pagination={false} scroll={{ y: 500 }}
-        />
-      </Modal>
+      <ExportFieldHelpModal open={helpOpen} onClose={() => setHelpOpen(false)} />
     </div>
   );
 }

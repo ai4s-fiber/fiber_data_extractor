@@ -15,7 +15,6 @@ class ReviewLog(Base):
     candidate_record_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("candidate_records.id"), nullable=False
     )
-    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
     action: Mapped[str] = mapped_column(
         String(30), nullable=False
     )  # approved, modified, uncertain, missing, deleted

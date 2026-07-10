@@ -5,9 +5,14 @@ __pycache__/
 dist/
 .venv/
 venv/
+backend/.pytest_cache/
+backend/htmlcov/
+.coverage
 
 # Node
 node_modules/
+frontend/node_modules/
+frontend/dist/
 
 # IDE
 .idea/
@@ -19,12 +24,19 @@ node_modules/
 .DS_Store
 Thumbs.db
 
-# Project-specific
+# Runtime data
 backend/exports/
 backend/uploads/
+backend/parse_artifacts/
+backend/reports/
 backend/*.db
+backend/*.sqlite
+backend/*.sqlite3
 *.log
+*.xlsx
+deploy*.sh
 
 # Environment
 .env
-.env.local
+.env.*
+!.env.example

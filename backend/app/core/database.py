@@ -33,20 +33,34 @@ def is_postgres_running(url: str) -> bool:
 def _enable_sqlite_wal(dbapi_connection, connection_record):
     """Enable WAL mode and set busy timeout for SQLite connections."""
     cursor = dbapi_connection.cursor()
-    cursor.execute("PRAGMA journal_mode=WAL")
-    cursor.execute("PRAGMA busy_timeout=30000")
+    cursor.execute("PRAGMA busy_timeout=120000")  # 120s - extraction holds DB for minutes
+    # Do not switch journal_mode on every async connection; that can block while
+    # another connection has the SQLite WAL files open. Existing local DBs are
+    # already WAL, and startup schema repair can run without changing it here.
+    cursor.execute("PRAGMA synchronous=NORMAL")  # Better perf with WAL
+    cursor.execute("PRAGMA cache_size=-64000")  # 64MB cache
     cursor.close()
 
-# Smart routing
-if is_postgres_running(db_url):
+# Smart routing — production must not silently fall back to SQLite
+_use_sqlite = (
+    settings.ALLOW_SQLITE_FALLBACK
+    and "postgresql" in db_url
+    and not is_postgres_running(db_url)
+)
+if is_postgres_running(db_url) or ("postgresql" in db_url and not settings.ALLOW_SQLITE_FALLBACK):
+    if not is_postgres_running(db_url):
+        raise RuntimeError(
+            "PostgreSQL is configured but unreachable. "
+            "Refusing to start (set ALLOW_SQLITE_FALLBACK=true only for local dev)."
+        )
     print("PostgreSQL detected on port. Initializing high-performance PostgreSQL engine.")
     engine = create_async_engine(
         db_url,
         echo=settings.DEBUG,
-        pool_size=10,
-        max_overflow=20,
+        pool_size=5,
+        max_overflow=10,
     )
-else:
+elif _use_sqlite:
     print("PostgreSQL not accessible. Automatically falling back to local SQLite engine (local_dev_fallback.db).")
     sqlite_fallback_url = "sqlite+aiosqlite:///./local_dev_fallback.db"
     engine = create_async_engine(
@@ -57,6 +71,15 @@ else:
         },
     )
     event.listen(engine.sync_engine, "connect", _enable_sqlite_wal)
+elif "sqlite" in db_url:
+    engine = create_async_engine(
+        db_url,
+        echo=settings.DEBUG,
+        connect_args={"timeout": 30},
+    )
+    event.listen(engine.sync_engine, "connect", _enable_sqlite_wal)
+else:
+    raise RuntimeError(f"Unsupported or unreachable database configuration: {db_url}")
 
 async_session_factory = async_sessionmaker(
     engine,

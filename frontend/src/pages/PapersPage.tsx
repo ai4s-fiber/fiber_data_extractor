@@ -1,95 +1,269 @@
 import { useState, useEffect, useRef } from 'react';
-import { Table, Button, message, Tag, Empty, Space, Popconfirm, Progress } from 'antd';
-import { UploadOutlined, InboxOutlined, ReloadOutlined, DeleteOutlined, PlayCircleOutlined } from '@ant-design/icons';
+import {
+  Table,
+  Button,
+  Empty,
+  Space,
+  Popconfirm,
+  Modal,
+  Alert,
+  App,
+} from 'antd';
+import {
+  UploadOutlined,
+  InboxOutlined,
+  ReloadOutlined,
+  DeleteOutlined,
+  PlayCircleOutlined,
+  CloseCircleOutlined,
+  DownloadOutlined,
+} from '@ant-design/icons';
 import { useProject } from '../stores/project';
+import { useExtraction } from '../contexts/ExtractionContext';
 import api from '../api/client';
-
-interface Paper {
-  id: number;
-  original_filename: string;
-  paper_title: string | null;
-  doi_or_url: string | null;
-  year: number | null;
-  journal: string | null;
-  status: string;
-  page_count: number | null;
-  created_at: string;
-}
-
-interface ExtractionProgress {
-  step: string;
-  percent: number;
-  error?: string;
-}
-
-const stepLabels: Record<string, string> = {
-  starting: '启动中',
-  inventory: '页面分析',
-  extracting: 'AI 抽取',
-  saving: '保存结果',
-  completed: '已完成',
-  failed: '失败',
-};
-
-const statusMap: Record<string, { color: string; text: string }> = {
-  uploaded: { color: 'blue', text: '已上传' },
-  extracting: { color: 'processing', text: '抽取中' },
-  review: { color: 'orange', text: '待审核' },
-  completed: { color: 'green', text: '已完成' },
-  failed: { color: 'red', text: '失败' },
-};
+import { downloadBlobResponse } from '../utils/download';
+import PaperStatusCell from '../components/papers/PaperStatusCell';
+import ExtractionModeModal, {
+  type ExtractionMode,
+  type ParserStrategy,
+} from '../components/papers/ExtractionModeModal';
+import {
+  type Paper,
+  type LlmConfig,
+  type ExtractionProgress,
+  isActivePaper,
+  progressFromPaper,
+  modeLabels,
+} from '../components/papers/types';
 
 export default function PapersPage() {
+  const { message } = App.useApp();
   const { currentProject } = useProject();
+  const { state: sseState, startExtraction, cancelExtraction, subscribe, reconnectActive, unsubscribe } = useExtraction();
+
   const [papers, setPapers] = useState<Paper[]>([]);
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [extracting, setExtracting] = useState(false);
+  const [extractDialogOpen, setExtractDialogOpen] = useState(false);
+  const [selectedPaper, setSelectedPaper] = useState<Paper | null>(null);
+  const [selectedMode, setSelectedMode] = useState<ExtractionMode>('strong');
+  const [selectedParserStrategy, setSelectedParserStrategy] = useState<ParserStrategy>('mineru_cloud');
+  const [llmConfig, setLlmConfig] = useState<LlmConfig | null>(null);
+
   const [progressMap, setProgressMap] = useState<Record<number, ExtractionProgress>>({});
+
   const projectRef = useRef(currentProject);
   projectRef.current = currentProject;
+  const loadAbortRef = useRef<AbortController | null>(null);
+  const reconnectRef = useRef<number | null>(null);
+
+  const applyPaperProgress = (paperRows: Paper[]) => {
+    const next: Record<number, ExtractionProgress> = {};
+    paperRows.forEach((paper) => {
+      const prog = progressFromPaper(paper);
+      if (prog) next[paper.id] = prog;
+    });
+    setProgressMap(next);
+    return paperRows;
+  };
 
   const load = (silent = false) => {
     const pid = projectRef.current?.id;
     if (!pid) return;
+    loadAbortRef.current?.abort();
+    const controller = new AbortController();
+    loadAbortRef.current = controller;
+
     if (!silent) setLoading(true);
-    api.get(`/projects/${pid}/papers`)
-      .then(r => setPapers(r.data))
-      .catch(() => message.error('加载文献列表失败'))
-      .finally(() => { if (!silent) setLoading(false); });
+    api.get(`/projects/${pid}/papers`, { signal: controller.signal })
+      .then(r => {
+        const rows = applyPaperProgress(r.data);
+        setPapers(rows);
+      })
+      .catch((err) => {
+        if (err.name !== 'CanceledError') {
+          message.error('加载文献列表失败');
+        }
+      })
+      .finally(() => {
+        if (!silent) setLoading(false);
+      });
   };
 
   useEffect(() => {
     load();
-    const interval = setInterval(() => load(true), 3000);
-    return () => clearInterval(interval);
+    const interval = setInterval(() => load(true), 4000);
+    return () => {
+      clearInterval(interval);
+      loadAbortRef.current?.abort();
+    };
   }, [currentProject?.id]);
 
+  // After refresh/navigation, restore SSE for the first active extraction job.
+  useEffect(() => {
+    const pid = currentProject?.id;
+    if (!pid || papers.length === 0) return;
+
+    const activePaper = papers.find((paper) => isActivePaper(paper) && paper.latest_job_id);
+    if (!activePaper || !activePaper.latest_job_id) return;
+
+    const initial = progressFromPaper(activePaper) || undefined;
+    const alreadyTracking = sseState.paperId === activePaper.id
+      && (sseState.status === 'streaming' || sseState.status === 'connecting');
+
+    if (!alreadyTracking) {
+      reconnectActive(pid, activePaper.id, activePaper.latest_job_id, initial || undefined);
+    }
+
+    if (sseState.status === 'reconnecting' && sseState.paperId === activePaper.id) {
+      if (reconnectRef.current) window.clearTimeout(reconnectRef.current);
+      reconnectRef.current = window.setTimeout(() => {
+        reconnectActive(pid, activePaper.id, activePaper.latest_job_id!, initial || undefined);
+      }, 3000);
+    }
+
+    return () => {
+      if (reconnectRef.current) window.clearTimeout(reconnectRef.current);
+    };
+  }, [papers, currentProject?.id, sseState.status, sseState.paperId, reconnectActive]);
+
+  // Synchronize SSE state changes to show real-time progress & trigger list refreshes
+  useEffect(() => {
+    if (!sseState.paperId) return;
+
+    if (sseState.status === 'streaming' || sseState.status === 'connecting' || sseState.status === 'reconnecting') {
+      setProgressMap(prev => ({
+        ...prev,
+        [sseState.paperId!]: {
+          step: sseState.step || 'starting',
+          percent: sseState.percent || 0,
+          message: sseState.message,
+        },
+      }));
+    } else if (sseState.status === 'done') {
+      message.success(`文献抽取成功！共产生 ${sseState.result?.candidateCount || 0} 条结构化候选记录。`);
+      setProgressMap(prev => {
+        const copy = { ...prev };
+        delete copy[sseState.paperId!];
+        return copy;
+      });
+      unsubscribe();
+      load(true);
+    } else if (sseState.status === 'error') {
+      const errCode = sseState.error?.code;
+      const errMsg = sseState.error?.message || '未知错误';
+      const failedPaperId = sseState.paperId!;
+      const failedMode = sseState.mode || 'auto';
+
+      setProgressMap(prev => {
+        const copy = { ...prev };
+        delete copy[failedPaperId];
+        return copy;
+      });
+      unsubscribe();
+      load(true);
+
+      if (errCode === 'mineru_failed_need_legacy_fallback') {
+        Modal.confirm({
+          title: 'PDF 精准解析服务均不可用',
+          content: (
+            <div style={{ padding: '8px 0' }}>
+              <p style={{ color: 'var(--color-text-secondary)', marginBottom: 12 }}>
+                系统尝试使用云端 VLM 智能解析以及本地 MinerU 解析，均未能成功解析此文献。
+              </p>
+              <Alert
+                type="warning"
+                showIcon
+                message="警告：经典解析策略仅能提取 PDF 中的纯文本内容，完全不支持复杂版式还原、图像识别和表格提取，抽取质量相比 MinerU 会明显下降。"
+              />
+              <p style={{ marginTop: 12, fontWeight: 'bold' }}>
+                是否要降级退回到经典纯文本解析策略，继续完成本次数据抽取？
+              </p>
+            </div>
+          ),
+          okText: '确认降级并抽取',
+          cancelText: '取消抽取',
+          okType: 'danger',
+          onOk: async () => {
+            try {
+              const { jobId } = await startExtraction(
+                currentProject!.id,
+                failedPaperId,
+                failedMode,
+                'legacy'
+              );
+              message.success('已降级为经典纯文本策略并重新加入队列');
+              subscribe(currentProject!.id, failedPaperId, jobId);
+              setTimeout(() => load(true), 500);
+            } catch (err: any) {
+              message.error(err.response?.data?.detail || '重新触发失败');
+            }
+          }
+        });
+      } else {
+        message.error(`抽取失败: ${errMsg}`);
+      }
+    } else if (sseState.status === 'cancelled') {
+      message.warning('抽取已被用户手动取消');
+      setProgressMap(prev => {
+        const copy = { ...prev };
+        delete copy[sseState.paperId!];
+        return copy;
+      });
+      unsubscribe();
+      load(true);
+    }
+  }, [sseState.status, sseState.step, sseState.percent, sseState.error, sseState.result]);
+
+  // Background/Fallback HTTP Polling for jobs where SSE is disconnected or run in background
   useEffect(() => {
     const pid = projectRef.current?.id;
     if (!pid) return;
+
     const pollProgress = async () => {
-      const extracting = papers.filter(p => p.status === 'extracting');
-      if (!extracting.length) return;
+      const activePapers = papers.filter(isActivePaper);
+      if (!activePapers.length) return;
+
       const updates: Record<number, ExtractionProgress> = {};
-      await Promise.all(extracting.map(async (p) => {
-        try {
-          const res = await api.get(`/projects/${pid}/papers/${p.id}/extraction-status`);
-          const { extraction_step, extraction_percent, error } = res.data;
-          updates[p.id] = { step: extraction_step || '', percent: extraction_percent || 0, error: error || '' };
-        } catch { /* ignore */ }
-      }));
+      await Promise.all(
+        activePapers.map(async p => {
+          try {
+            const res = await api.get(`/projects/${pid}/papers/${p.id}/extraction-status`);
+            const {
+              extraction_step,
+              extraction_percent,
+              progress_message,
+              error,
+            } = res.data;
+            updates[p.id] = {
+              step: extraction_step || 'starting',
+              percent: extraction_percent || 0,
+              message: progress_message || undefined,
+              error: error || '',
+            };
+          } catch {
+            // ignore failures
+          }
+        })
+      );
+
       setProgressMap(prev => {
         const filtered: Record<number, ExtractionProgress> = {};
         for (const [id, prog] of Object.entries(prev)) {
-          if (papers.some(p => p.id === Number(id))) filtered[Number(id)] = prog;
+          // keep local progress if paper is still in list
+          if (papers.some(p => p.id === Number(id))) {
+            filtered[Number(id)] = prog;
+          }
         }
         return { ...filtered, ...updates };
       });
     };
+
     pollProgress();
-    const progInterval = setInterval(pollProgress, 2000);
+    const progInterval = setInterval(pollProgress, 3000);
     return () => clearInterval(progInterval);
-  }, [papers.length, currentProject?.id]);
+  }, [papers, sseState.paperId]);
 
   const doUpload = async (file: File) => {
     const pid = projectRef.current?.id;
@@ -98,7 +272,7 @@ export default function PapersPage() {
     const formData = new FormData();
     formData.append('file', file);
     try {
-      await api.post(`/projects/${pid}/papers`, formData, { timeout: 120000 });
+      await api.post(`/projects/${pid}/papers`, formData, { timeout: 180000 });
       message.success(`${file.name} 上传成功`);
       load();
     } catch (err: any) {
@@ -107,10 +281,6 @@ export default function PapersPage() {
       setUploading(false);
     }
   };
-
-  if (!currentProject) {
-    return <Empty description="请先选择一个项目" style={{ marginTop: 100 }} />;
-  }
 
   const triggerFileSelect = () => {
     const input = document.createElement('input');
@@ -124,64 +294,215 @@ export default function PapersPage() {
     input.click();
   };
 
-  const triggerExtract = async (paperId: number) => {
+  const openExtractDialog = async (paper: Paper) => {
+    setSelectedPaper(paper);
+    setSelectedMode((paper.latest_requested_mode as 'auto' | 'weak' | 'strong') || 'auto');
+    setSelectedParserStrategy('mineru_cloud');
+    setExtractDialogOpen(true);
+    setLlmConfig(null);
+
+    if (!currentProject) return;
     try {
-      await api.post(`/projects/${currentProject.id}/papers/${paperId}/extract`);
-      message.success('已触发高精准抽取流水线');
-      load();
+      const res = await api.get(`/projects/${currentProject.id}/llm-config`);
+      setLlmConfig(res.data);
     } catch {
-      message.error('触发失败');
+      setLlmConfig(null);
+    }
+  };
+
+  const runExtract = async (confirmWipe = false) => {
+    if (!selectedPaper || !currentProject) return;
+    const { jobId } = await startExtraction(
+      currentProject.id,
+      selectedPaper.id,
+      selectedMode,
+      selectedParserStrategy,
+      confirmWipe,
+    );
+    const modeText = modeLabels[selectedMode] || selectedMode;
+    message.success(`已加入抽取队列：${modeText}`);
+    setExtractDialogOpen(false);
+    setSelectedPaper(null);
+    subscribe(currentProject.id, selectedPaper.id, jobId);
+    setTimeout(() => load(true), 500);
+  };
+
+  const triggerExtract = async () => {
+    if (!selectedPaper || !currentProject) return;
+    setExtracting(true);
+    try {
+      await runExtract(false);
+    } catch (err: any) {
+      const detail = err.response?.data?.detail;
+      if (err.response?.status === 409 && typeof detail === 'string') {
+        Modal.confirm({
+          title: '重新抽取将清空已有候选记录',
+          content: detail,
+          okText: '确认清空并重新抽取',
+          okType: 'danger',
+          cancelText: '取消',
+          onOk: async () => {
+            setExtracting(true);
+            try {
+              await runExtract(true);
+            } catch (e: any) {
+              message.error(e.response?.data?.detail || '触发失败');
+            } finally {
+              setExtracting(false);
+            }
+          },
+        });
+        return;
+      }
+      message.error(detail || '触发失败');
+    } finally {
+      setExtracting(false);
+    }
+  };
+
+  const doCancelExtract = async (paperId: number) => {
+    if (!currentProject) return;
+    try {
+      await cancelExtraction(currentProject.id, paperId);
+      message.success('取消请求已发送，抽取将在数秒内停止');
+      load(true);
+    } catch (err: any) {
+      message.error(err.response?.data?.detail || '取消失败');
     }
   };
 
   const deletePaper = async (paperId: number) => {
+    if (!currentProject) return;
     try {
       await api.delete(`/projects/${currentProject.id}/papers/${paperId}`);
       message.success('文献已删除');
       load();
-    } catch {
-      message.error('删除失败');
+    } catch (err: any) {
+      message.error(err.response?.data?.detail || '删除失败');
+    }
+  };
+
+  const downloadPaper = async (paper: Paper, e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    if (!currentProject) return;
+    try {
+      const res = await api.get(
+        `/projects/${currentProject.id}/papers/${paper.id}/download`,
+        { responseType: 'blob' },
+      );
+      downloadBlobResponse(
+        res.data,
+        paper.original_filename || `paper_${paper.id}.pdf`,
+        'application/pdf',
+      );
+    } catch (err: any) {
+      message.error(err.response?.data?.detail || 'PDF 下载失败');
     }
   };
 
   const columns = [
-    { title: '文件名', dataIndex: 'original_filename', key: 'filename', ellipsis: true, width: 200 },
-    { title: '标题', dataIndex: 'paper_title', key: 'title', ellipsis: true },
-    { title: '期刊', dataIndex: 'journal', key: 'journal', width: 140, render: (v: string) => v || '-' },
-    { title: '年份', dataIndex: 'year', key: 'year', width: 70, render: (v: number) => v || '-' },
-    { title: '页数', dataIndex: 'page_count', key: 'page_count', width: 60, render: (v: number) => v || '-' },
     {
-      title: '状态', dataIndex: 'status', key: 'status', width: 160,
-      render: (s: string, r: Paper) => {
-        const prog = progressMap[r.id];
-        if (s === 'extracting' && prog) {
-          const label = stepLabels[prog.step] || prog.step || '处理中';
-          return (
-            <div style={{ minWidth: 130 }}>
-              <Progress percent={prog.percent} size="small" status={prog.error ? 'exception' : 'active'} />
-              <span style={{ fontSize: 11, color: 'var(--color-text-secondary)' }}>{label}</span>
-            </div>
-          );
-        }
-        const m = statusMap[s] || { color: 'default', text: s };
-        return <Tag color={m.color}>{m.text}</Tag>;
-      },
+      title: '文件名',
+      dataIndex: 'original_filename',
+      key: 'filename',
+      ellipsis: true,
+      width: 220,
     },
     {
-      title: '操作', key: 'actions', width: 150,
-      render: (_: any, r: Paper) => (
-        <Space size="small">
-          <Button size="small" type="link" icon={<PlayCircleOutlined />}
-            onClick={() => triggerExtract(r.id)} disabled={r.status === 'extracting'}>
-            抽取
-          </Button>
-          <Popconfirm title="删除此文献将同步清空其关联的所有候选提取结果，确认删除？" onConfirm={() => deletePaper(r.id)}>
-            <Button size="small" type="link" danger icon={<DeleteOutlined />} />
-          </Popconfirm>
-        </Space>
+      title: '标题',
+      dataIndex: 'paper_title',
+      key: 'title',
+      ellipsis: true,
+      render: (v: string) => v || <span style={{ color: '#aaa', fontStyle: 'italic' }}>暂无标题</span>,
+    },
+    {
+      title: '期刊',
+      dataIndex: 'journal',
+      key: 'journal',
+      width: 140,
+      render: (v: string) => v || '-',
+    },
+    {
+      title: '年份',
+      dataIndex: 'year',
+      key: 'year',
+      width: 70,
+      render: (v: number) => v || '-',
+    },
+    {
+      title: '页数',
+      dataIndex: 'page_count',
+      key: 'page_count',
+      width: 60,
+      render: (v: number) => v || '-',
+    },
+    {
+      title: '状态 / 进度',
+      dataIndex: 'status',
+      key: 'status',
+      width: 180,
+      render: (s: string, r: Paper) => (
+        <PaperStatusCell paper={r} progress={progressMap[r.id]} />
       ),
     },
+    {
+      title: '操作',
+      key: 'actions',
+      width: 160,
+      render: (_: any, r: Paper) => {
+        const isExtracting = r.status === 'extracting' || r.status === 'queued';
+
+        return (
+          <Space size="small">
+            {isExtracting ? (
+              <Popconfirm
+                title="确定要取消这次抽取任务吗？已解析的数据将不会保存。"
+                onConfirm={() => doCancelExtract(r.id)}
+                okText="取消抽取"
+                cancelText="继续等待"
+              >
+                <Button
+                  size="small"
+                  type="link"
+                  danger
+                  icon={<CloseCircleOutlined />}
+                >
+                  取消
+                </Button>
+              </Popconfirm>
+            ) : (
+              <Button
+                size="small"
+                type="link"
+                icon={<PlayCircleOutlined />}
+                onClick={() => openExtractDialog(r)}
+              >
+                抽取
+              </Button>
+            )}
+            <Button
+              size="small"
+              type="link"
+              icon={<DownloadOutlined />}
+              onClick={(e) => downloadPaper(r, e)}
+            >
+              下载
+            </Button>
+            <Popconfirm
+              title="删除此文献将同步清空其关联的所有候选提取结果、样品目录和事实记录，确认删除？"
+              onConfirm={() => deletePaper(r.id)}
+            >
+              <Button size="small" type="link" danger icon={<DeleteOutlined />} />
+            </Popconfirm>
+          </Space>
+        );
+      },
+    },
   ];
+
+  if (!currentProject) {
+    return <Empty description="请先选择一个项目" style={{ marginTop: 100 }} />;
+  }
 
   return (
     <div>
@@ -189,7 +510,7 @@ export default function PapersPage() {
         <h1>文献库</h1>
         <Space>
           <Button icon={<ReloadOutlined />} onClick={() => load()}>刷新</Button>
-              <Button type="primary" icon={<UploadOutlined />} loading={uploading} onClick={triggerFileSelect}>
+          <Button type="primary" icon={<UploadOutlined />} loading={uploading} onClick={triggerFileSelect}>
             上传 PDF
           </Button>
         </Space>
@@ -203,9 +524,31 @@ export default function PapersPage() {
         {uploading && <p style={{ color: 'var(--color-accent)', marginTop: 8 }}>上传中...</p>}
       </div>
 
-      <Table dataSource={papers} columns={columns} rowKey="id" loading={loading}
-        pagination={{ pageSize: 20 }} size="small" />
+      <Table
+        dataSource={papers}
+        columns={columns}
+        rowKey="id"
+        loading={loading}
+        pagination={{ pageSize: 20 }}
+        size="small"
+      />
+
+      <ExtractionModeModal
+        open={extractDialogOpen}
+        paper={selectedPaper}
+        llmConfig={llmConfig}
+        selectedMode={selectedMode}
+        selectedParserStrategy={selectedParserStrategy}
+        extracting={extracting}
+        onModeChange={setSelectedMode}
+        onParserChange={setSelectedParserStrategy}
+        onOk={triggerExtract}
+        onCancel={() => setExtractDialogOpen(false)}
+        afterClose={() => {
+          setSelectedPaper(null);
+          setLlmConfig(null);
+        }}
+      />
     </div>
   );
 }
-

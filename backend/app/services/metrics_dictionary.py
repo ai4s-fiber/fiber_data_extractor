@@ -12,6 +12,8 @@ Unknown metrics are preserved as-is — the dictionary is a guide, not a filter.
 
 from __future__ import annotations
 
+import re
+
 # ---------------------------------------------------------------------------
 # Performance categories and their metrics
 # ---------------------------------------------------------------------------
@@ -43,6 +45,11 @@ PERFORMANCE_CATEGORIES: dict[str, dict] = {
                 "synonyms": ["压缩应力", "compression stress"],
                 "common_units": ["MPa", "kPa"],
             },
+            "cyclic_compression_stability": {
+                "synonyms": ["循环压缩稳定性", "cyclic compression stability",
+                             "compression cyclic stability", "fatigue resistance under compression"],
+                "common_units": ["-", "MPa", "kPa"],
+            },
             "flexural_strength": {
                 "synonyms": ["弯曲强度", "flexural strength", "抗弯强度", "bending strength"],
                 "common_units": ["MPa"],
@@ -72,6 +79,11 @@ PERFORMANCE_CATEGORIES: dict[str, dict] = {
                 "synonyms": ["热导率", "thermal conductivity", "导热系数"],
                 "common_units": ["W/mK", "mW/mK"],
             },
+            "surface_temperature": {
+                "synonyms": ["表面温度", "surface temperature", "upper surface temperature",
+                             "hot-stage surface temperature", "infrared surface temperature"],
+                "common_units": ["°C", "C", "K"],
+            },
             "thermal_diffusivity": {
                 "synonyms": ["热扩散系数", "thermal diffusivity", "热扩散率"],
                 "common_units": ["mm²/s", "m²/s"],
@@ -83,6 +95,15 @@ PERFORMANCE_CATEGORIES: dict[str, dict] = {
             "melting_temperature": {
                 "synonyms": ["熔点", "Tm", "melting point", "melting temperature"],
                 "common_units": ["°C"],
+            },
+            "crystallinity_Xc": {
+                "synonyms": ["结晶度Xc", "crystallinity Xc", "Xc", "degree of crystallinity", "crystallinity"],
+                "common_units": ["%"],
+            },
+            "beta_phase_crystallinity_Xbeta": {
+                "synonyms": ["β相结晶度", "beta phase crystallinity", "Xbeta", "F(β)",
+                             "beta crystallinity", "beta_phase_content_Fbeta"],
+                "common_units": ["%"],
             },
             "decomposition_temperature": {
                 "synonyms": ["分解温度", "Td", "decomposition temperature",
@@ -126,8 +147,13 @@ PERFORMANCE_CATEGORIES: dict[str, dict] = {
                 "common_units": ["-", "dimensionless"],
             },
             "dielectric_loss": {
-                "synonyms": ["介电损耗", "dielectric loss", "loss tangent",
-                             "tan δ", "tan delta", "Df", "dissipation factor"],
+                "synonyms": ["介电损耗", "dielectric loss", "imaginary permittivity",
+                             "ε″", "epsilon double prime"],
+                "common_units": ["-", "dimensionless"],
+            },
+            "loss_tangent": {
+                "synonyms": ["损耗角正切", "loss tangent", "tan δ", "tan delta",
+                             "Df", "dissipation factor", "tan d"],
                 "common_units": ["-", "dimensionless"],
             },
             "breakdown_strength": {
@@ -234,6 +260,35 @@ PERFORMANCE_CATEGORIES: dict[str, dict] = {
                              "fatigue resistance", "cycling stability"],
                 "common_units": ["cycles", "%"],
             },
+            "sensitivity_low_pressure": {
+                "synonyms": ["低压灵敏度", "low pressure sensitivity", "sensitivity at low pressure",
+                             "low-pressure sensitivity"],
+                "common_units": ["kPa⁻¹", "Pa⁻¹", "N⁻¹"],
+            },
+            "sensitivity_high_pressure": {
+                "synonyms": ["高压灵敏度", "high pressure sensitivity", "sensitivity at high pressure",
+                             "high-pressure sensitivity"],
+                "common_units": ["kPa⁻¹", "Pa⁻¹", "N⁻¹"],
+            },
+            "loading_unloading_cycles": {
+                "synonyms": ["加载卸载循环", "loading unloading cycles", "loading-unloading cycles",
+                             "compression cycles", "pressure cycles"],
+                "common_units": ["cycles"],
+            },
+            "linearity_R2": {
+                "synonyms": ["线性度", "linearity", "R2", "R²", "coefficient of determination",
+                             "linearity R2"],
+                "common_units": ["-"],
+            },
+            "maximum_tested_force": {
+                "synonyms": ["最大测试力", "maximum tested force", "max force", "maximum force"],
+                "common_units": ["N", "kN"],
+            },
+            "detection_limit_force": {
+                "synonyms": ["力检测限", "detection limit force", "minimum detectable force",
+                             "force detection limit"],
+                "common_units": ["N", "mN", "μN"],
+            },
         },
     },
     "hydrophobicity": {
@@ -288,6 +343,10 @@ PERFORMANCE_CATEGORIES: dict[str, dict] = {
             },
             "fiber_diameter": {
                 "synonyms": ["纤维直径", "fiber diameter", "nanofiber diameter", "直径"],
+                "common_units": ["nm", "μm", "mm"],
+            },
+            "fiber_length": {
+                "synonyms": ["纤维长度", "fiber length", "nanofiber length", "长度"],
                 "common_units": ["nm", "μm", "mm"],
             },
         },
@@ -546,20 +605,139 @@ PROCESS_PARAMETERS: dict[str, dict] = {
 }
 
 # ---------------------------------------------------------------------------
+# Metric priority for export and review
+# ---------------------------------------------------------------------------
+
+CORE_METRICS: set[str] = {
+    "density",
+    "porosity",
+    "shrinkage",
+    "thermal_shrinkage",
+    "fiber_diameter",
+    "fiber_length",
+    "thermal_conductivity",
+    "surface_temperature",
+    "tensile_strength",
+    "elongation_at_break",
+    "Youngs_modulus",
+    "compressive_strength",
+    "compressive_stress",
+    "flexural_strength",
+    "flexural_modulus",
+    "water_contact_angle",
+    "oil_contact_angle",
+    "dielectric_constant",
+    "dielectric_loss",
+    "loss_tangent",
+    "electrical_conductivity",
+    "breakdown_strength",
+    "piezoelectric_coefficient_d33",
+    "piezoelectric_coefficient_d31",
+    "open_circuit_voltage",
+    "short_circuit_current",
+    "output_power_density",
+    "gauge_factor",
+    "sensing_sensitivity",
+    "response_time",
+    "recovery_time",
+    "cyclic_stability",
+    "cyclic_compression_stability",
+    "electromagnetic_wave_transmittance",
+    "filtration_efficiency",
+    "pressure_drop",
+    "air_permeability",
+    "specific_capacitance",
+    "energy_density",
+    "power_density",
+    "capacity_retention",
+}
+
+SECONDARY_METRICS: set[str] = {
+    "specific_surface_area",
+    "pore_volume",
+    "pore_size",
+    "crystallinity",
+    "free_volume_fraction",
+    "imidization_degree",
+    "thermal_stability",
+    "glass_transition_temperature",
+    "melting_temperature",
+    "decomposition_temperature",
+    "coefficient_of_thermal_expansion",
+    "limiting_oxygen_index",
+}
+
+SECONDARY_KEYWORDS: tuple[str, ...] = (
+    "xps", "ftir", "raman", "xrd", "binding energy", "peak", "peak position",
+    "imidization degree", "imidization time", "reaction pathway",
+    "reaction fraction", "reaction ratio", "reaction conversion",
+    "fractional free volume", "free volume", "ffv", "simulation",
+    "calculation", "activation energy", "molecular dynamics", "pathway",
+    "measurement temperature", "measuring temperature", "test temperature",
+    "testing temperature", "measurement frequency", "test frequency",
+    "measurement pressure", "test pressure", "measurement humidity",
+    "test humidity", "frequency range", "pressure range",
+)
+
+NARRATIVE_KEYWORDS: tuple[str, ...] = (
+    "excellent", "superior", "good", "poor", "highly", "remarkable",
+    "outstanding", "enhanced", "improved", "qualitative",
+)
+
+CONDITION_PARAMETER_NAMES: tuple[str, ...] = (
+    "measurement temperature",
+    "measuring temperature",
+    "test temperature",
+    "testing temperature",
+    "experimental temperature",
+    "measurement frequency",
+    "measuring frequency",
+    "test frequency",
+    "testing frequency",
+    "measurement pressure",
+    "test pressure",
+    "pressure range",
+    "measurement humidity",
+    "test humidity",
+    "measurement time",
+    "test time",
+    "measurement frequency range",
+    "test frequency range",
+    "frequency range",
+    "simulation temperature",
+    "simulation pressure",
+    "simulation time",
+)
+
+CONDITION_PARAMETER_QUALIFIERS: tuple[str, ...] = (
+    "measurement", "measuring", "test", "testing", "experimental",
+    "ambient", "environmental", "operating", "simulation", "simulated",
+)
+
+CONDITION_PARAMETER_TARGETS: tuple[str, ...] = (
+    "temperature", "frequency", "pressure", "humidity", "time", "duration",
+)
+
+# ---------------------------------------------------------------------------
 # Lookup helpers
 # ---------------------------------------------------------------------------
 
 def find_metric_canonical(name: str) -> str | None:
     """Given a metric name (possibly a synonym), return the canonical name."""
     lower = name.strip().lower()
+    if is_condition_parameter_name(lower):
+        return None
+    phrase_candidates: list[tuple[str, str]] = []
     # Pass 1: exact match on canonical name or synonym
     for cat in PERFORMANCE_CATEGORIES.values():
         for canonical, info in cat["metrics"].items():
             if lower == canonical.lower():
                 return canonical
+            phrase_candidates.append((canonical.lower().replace("_", " "), canonical))
             for syn in info["synonyms"]:
                 if syn.lower() == lower:
                     return canonical
+                phrase_candidates.append((syn.lower(), canonical))
     # Pass 2: substring match — require canonical/synonym to CONTAIN the input
     # (avoids "density" matching "power density" → "output_power_density")
     for cat in PERFORMANCE_CATEGORIES.values():
@@ -569,7 +747,23 @@ def find_metric_canonical(name: str) -> str | None:
             for syn in info["synonyms"]:
                 if lower in syn.lower():
                     return canonical
+    # Pass 3: input contains a longer canonical/synonym phrase with extra condition text.
+    # Sort longest first so "thermal conductivity" wins before generic "conductivity".
+    ambiguous_short_terms = {"density", "conductivity", "temperature", "strength", "modulus", "sensitivity"}
+    for phrase, canonical in sorted(phrase_candidates, key=lambda item: len(item[0]), reverse=True):
+        phrase = phrase.strip()
+        if not phrase or phrase in ambiguous_short_terms:
+            continue
+        if len(phrase) < 5:
+            continue
+        if re_search_word_phrase(phrase, lower):
+            return canonical
     return None
+
+def re_search_word_phrase(phrase: str, text: str) -> bool:
+    """Match a phrase inside text with loose separators but word boundaries."""
+    escaped = re.escape(phrase).replace(r"\ ", r"[\s_\-/]+")
+    return bool(re.search(rf"(?<![a-z0-9]){escaped}(?![a-z0-9])", text))
 
 def find_category_for_metric(metric: str) -> str:
     """Return the performance_category for a given metric name."""
@@ -580,6 +774,54 @@ def find_category_for_metric(metric: str) -> str:
             if m_name.lower() == lower:
                 return cat_name
     return "physical"
+
+def classify_metric_priority(metric: str) -> str:
+    """Classify a metric for review/export priority.
+
+    Returns one of: Core, Secondary, Narrative.
+    The rules are generic across papers: dictionary-known performance metrics are
+    core unless they are characterization/process descriptors; spectroscopy,
+    reaction pathway, and simulation values are secondary.
+    """
+    raw = (metric or "").strip()
+    lower = raw.lower()
+    if is_condition_parameter_name(raw):
+        return "Secondary"
+    canonical = find_metric_canonical(raw) or find_structure_feature_canonical(raw) or raw
+
+    if any(keyword in lower for keyword in NARRATIVE_KEYWORDS):
+        return "Narrative"
+    if canonical in CORE_METRICS:
+        return "Core"
+    if canonical in SECONDARY_METRICS:
+        return "Secondary"
+    if any(keyword in lower for keyword in SECONDARY_KEYWORDS):
+        return "Secondary"
+
+    for cat_info in PERFORMANCE_CATEGORIES.values():
+        if canonical in cat_info["metrics"]:
+            return "Core"
+
+    if canonical in STRUCTURE_FEATURES:
+        return "Secondary"
+    return "Secondary"
+
+def is_condition_parameter_name(metric: str) -> bool:
+    """Return True when a metric-like name is actually a measurement condition.
+
+    Examples: "thermal conductivity measurement temperature" and
+    "dielectric constant test frequency" should not be canonicalized into the
+    measured property itself.
+    """
+    lower = (metric or "").strip().lower().replace("_", " ")
+    if not lower:
+        return False
+    if any(name in lower for name in CONDITION_PARAMETER_NAMES):
+        return True
+    return (
+        any(qualifier in lower for qualifier in CONDITION_PARAMETER_QUALIFIERS)
+        and any(target in lower for target in CONDITION_PARAMETER_TARGETS)
+    )
 
 def get_common_units(metric: str) -> list[str]:
     """Return common units for a metric name."""

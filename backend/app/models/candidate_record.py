@@ -107,12 +107,6 @@ class CandidateRecord(Base):
         String(30), nullable=False, default="draft"
     )  # draft, submitted, approved, rejected
     source_location: Mapped[str | None] = mapped_column(String(200), nullable=True)
-    assigned_to: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey("users.id"), nullable=True
-    )
-    reviewed_by: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey("users.id"), nullable=True
-    )
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)

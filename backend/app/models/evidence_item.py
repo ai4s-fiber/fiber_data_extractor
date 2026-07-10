@@ -19,6 +19,12 @@ class EvidenceItem(Base):
     candidate_record_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("candidate_records.id"), nullable=True
     )
+    parse_run_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("document_parse_runs.id"), nullable=True
+    )
+    block_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    bbox_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    mineru_block_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
     source_type: Mapped[str] = mapped_column(
         String(50), nullable=False
     )  # metadata, experimental_text, table, figure_caption, vision_page, supplementary_hint

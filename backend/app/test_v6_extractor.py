@@ -4,7 +4,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.models.base import Base
 from app.models.paper import Paper
-from app.services.extractor import V6ExtractorService
+from app.services.legacy.v6_extractor import V6ExtractorService
 
 async def test_extractor_logic():
     print("=== 开始运行 V6 Extractor 系统自动化质检与 Mapping 测试 ===")

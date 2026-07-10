@@ -12,6 +12,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from app.services.metrics_dictionary import find_metric_canonical
+
 # ---------------------------------------------------------------------------
 # Metric name ↔ standard snake_case mapping
 # ---------------------------------------------------------------------------
@@ -25,7 +27,10 @@ METRIC_MAP: dict[str, str] = {
     # Compressive
     "compressive strength": "compressive_strength",
     "compression strength": "compressive_strength",
+    "compressive stress": "compressive_stress",
+    "compression stress": "compressive_stress",
     "压缩强度": "compressive_strength",
+    "压缩应力": "compressive_stress",
     # Elongation
     "elongation at break": "elongation_at_break",
     "elongation": "elongation_at_break",
@@ -73,8 +78,10 @@ METRIC_MAP: dict[str, str] = {
     "permittivity": "dielectric_constant",
     "介电常数": "dielectric_constant",
     "dielectric loss": "dielectric_loss",
-    "loss tangent": "dielectric_loss",
-    "tan delta": "dielectric_loss",
+    "loss tangent": "loss_tangent",
+    "tan delta": "loss_tangent",
+    "tan δ": "loss_tangent",
+    "dissipation factor": "loss_tangent",
     "介电损耗": "dielectric_loss",
     "surface temperature": "surface_temperature",
     "filtration efficiency": "filtration_efficiency",
@@ -151,8 +158,10 @@ def normalize_unit(unit: str) -> str:
 UNIT_RULES: dict[str, set[str]] = {
     "tensile_strength": {"mpa", "gpa", "kpa", "pa", "cn/dtex"},
     "compressive_strength": {"mpa", "gpa", "kpa", "pa"},
+    "compressive_stress": {"mpa", "gpa", "kpa", "pa"},
     "breaking_strength": {"mpa", "gpa", "kpa", "pa", "cn/dtex"},
     "Youngs_modulus": {"mpa", "gpa", "kpa", "pa"},
+    "compressive_modulus": {"mpa", "gpa", "kpa", "pa"},
     "elongation_at_break": {"%"},
     "electrical_conductivity": {"s/m", "s/cm", "ms/m"},
     "thermal_conductivity": {"w/mk", "mw/mk"},
@@ -164,7 +173,21 @@ UNIT_RULES: dict[str, set[str]] = {
     "filtration_efficiency": {"%"},
     "dielectric_constant": {"-", "dimensionless"},
     "dielectric_loss": {"-", "dimensionless"},
+    "loss_tangent": {"-", "dimensionless"},
+    "surface_roughness": {"nm", "μm", "um", "µm", "å", "a", "angstrom", "angström"},
+    "fiber_diameter": {"nm", "μm", "um", "µm"},
+    "fiber_length": {"nm", "μm", "um", "µm", "mm"},
+    "surface_temperature": {"°c", "k"},
+    "glass_transition_temperature": {"°c", "k"},
+    "imidization_degree": {"%"},
 }
+
+_DENSITY_UNITS = {"mg/cm3", "g/cm3", "kg/m3", "mg cm^-3", "g cm^-3", "kg m^-3"}
+_LENGTH_UNITS = {"nm", "μm", "um", "µm", "å", "a", "angstrom", "angström", "mm", "μm"}
+_TEMPERATURE_UNITS = {"°c", "k", "℃"}
+_THERMAL_COND_UNITS = {"w/mk", "mw/mk", "w m^-1 k^-1", "mw m^-1 k^-1"}
+_WAVENUMBER_UNITS = {"cm-1", "cm⁻¹", "1/cm", "cm^-1"}
+_BINDING_ENERGY_UNITS = {"ev"}
 
 # Structural metrics that should NOT appear as performance
 STRUCTURAL_METRIC_PATTERNS = (
@@ -192,19 +215,151 @@ def metric_unit_compatible(metric: str, unit: str) -> bool:
     if not normalized_metric or not normalized_unit:
         return False
 
-    # Check structural metrics first — they shouldn't be treated as performance
-    if any(p in normalized_metric.lower() for p in STRUCTURAL_METRIC_PATTERNS):
+    lower_metric = normalized_metric.lower()
+
+    # Spectroscopy peak metrics: wavenumber or eV only
+    if _looks_like_spectroscopy_peak_metric(lower_metric):
+        if normalized_unit in _WAVENUMBER_UNITS:
+            return True
+        if normalized_unit in _BINDING_ENERGY_UNITS and "xps" in lower_metric:
+            return True
         return False
 
     for metric_key, allowed_units in UNIT_RULES.items():
-        if metric_key.lower() == normalized_metric.lower():
+        if metric_key.lower() == lower_metric:
             return normalized_unit in allowed_units
 
-    # Temperature readings are not performance metrics
-    if normalized_unit in ("°c",):
+    if lower_metric == "density":
+        return normalized_unit in _DENSITY_UNITS
+    if lower_metric == "surface_roughness":
+        return normalized_unit in _LENGTH_UNITS
+    if lower_metric == "thermal_conductivity":
+        return normalized_unit in _THERMAL_COND_UNITS
+
+    # Temperature readings: allow only for temperature-based metrics
+    if normalized_unit in _TEMPERATURE_UNITS:
+        return any(
+            token in lower_metric
+            for token in ("temperature", "tg", "tm", "td", "melting", "glass_transition", "decomposition")
+        )
+
+    # Unknown metric with known unit family — reject obvious cross-family pairs
+    if normalized_unit in _DENSITY_UNITS:
+        return "density" in lower_metric or "porosity" in lower_metric
+    if normalized_unit in _LENGTH_UNITS:
+        return any(
+            token in lower_metric
+            for token in ("roughness", "diameter", "thickness", "size", "width", "length", "fiber")
+        )
+    if normalized_unit in _WAVENUMBER_UNITS:
+        return False
+    if normalized_unit in _BINDING_ENERGY_UNITS:
+        return "xps" in lower_metric or "binding" in lower_metric
+
+    return True  # Unknown pairs: allow with lenient check
+
+
+def _looks_like_spectroscopy_peak_metric(metric_lower: str) -> bool:
+    if any(
+        token in metric_lower
+        for token in (
+            "ftir_band", "raman_peak", "xps_peak", "xrd_peak", "nmr_shift",
+            "wavenumber", "binding_energy", "peak_position", "raman_shift",
+            "chemical_shift", "2theta", "diffraction_angle",
+        )
+    ):
+        return True
+    return bool(re.search(r"(?:_peak_|_band_|peak_\d|band_\d)", metric_lower))
+
+
+def is_characterization_peak_metric(
+    metric: str, *, method: str = "", evidence: str = "",
+) -> bool:
+    """FTIR/Raman/XPS/XRD/NMR peak positions are characterization, not core performance."""
+    combined = f"{metric} {method} {evidence}".lower()
+    if _looks_like_spectroscopy_peak_metric(
+        (find_metric_canonical(metric) or metric).lower().replace(" ", "_")
+    ):
+        return True
+    technique_hints = ("ftir", "raman", "xps", "xrd", "nmr", "wavenumber", "cm-1", "cm⁻¹", "2θ", "2theta", "binding energy")
+    if any(h in combined for h in technique_hints):
+        metric_lower = (metric or "").lower()
+        if any(t in metric_lower for t in ("peak", "band", "wavenumber", "shift", "2theta")):
+            return True
+    return False
+
+
+_IMIDIZATION_RE = re.compile(r"(?is)imidization|imidisation|imide|酰亚胺")
+_IMIDIZATION_FORMULA_WAVENUMBERS = {1377.0, 1489.0, 1515.0, 1780.0}
+
+
+def is_formula_method_parameter_fact(fact: dict) -> bool:
+    """Reference peaks used in formulas (e.g. imidization ID), not performance values."""
+    evidence = str(fact.get("evidence_text") or "").lower()
+    unit = normalize_unit(str(fact.get("unit") or ""))
+    value_text = str(fact.get("value") or "").replace(",", "")
+    if unit not in _WAVENUMBER_UNITS:
+        return False
+    try:
+        value = float(re.search(r"[+-]?\d+(?:\.\d+)?", value_text).group())  # type: ignore[union-attr]
+    except (AttributeError, ValueError):
         return False
 
-    return True  # Unknown metrics: allow through with lenient check
+    formula_hints = (
+        "imidization", "imidisation", "calculate", "calculated", "calculation",
+        "reference peak", "reference band", "ratio", "equation", "formula",
+        "used to determine", "used for determining", "degree of imidization",
+    )
+    if not any(h in evidence for h in formula_hints):
+        return False
+
+    if abs(value - 1377.0) < 2 or abs(value - 1489.0) < 2:
+        return True
+    if "reference" in evidence and unit in _WAVENUMBER_UNITS:
+        return True
+    return False
+
+
+def infer_metric_from_unit_mismatch(
+    metric: str, unit: str, *, method: str = "", evidence: str = "",
+) -> str | None:
+    """Re-infer metric name when unit contradicts the current label."""
+    normalized_unit = normalize_unit(unit)
+    lower_metric = (find_metric_canonical(metric) or metric).lower()
+    combined = f"{method} {evidence}".lower()
+
+    if normalized_unit in _DENSITY_UNITS:
+        if lower_metric in ("surface_roughness", "fiber_diameter", "orientation_factor"):
+            return "density"
+        if "density" in combined or "apparent density" in combined:
+            return "density"
+    if normalized_unit in _LENGTH_UNITS and lower_metric == "density":
+        if "roughness" in combined or re.search(r"\bra\b|\brq\b", combined):
+            return "surface_roughness"
+        if "diameter" in combined and "fiber" in combined:
+            return "fiber_diameter"
+        if "length" in combined and "fiber" in combined:
+            return "fiber_length"
+        return None
+    if normalized_unit in _THERMAL_COND_UNITS and "thermal" not in lower_metric:
+        return "thermal_conductivity"
+    if normalized_unit in _WAVENUMBER_UNITS:
+        technique = "ftir"
+        if "raman" in combined:
+            technique = "raman"
+        elif "xrd" in combined or "2theta" in combined or "2θ" in combined:
+            technique = "xrd"
+        if technique == "ftir":
+            return "FTIR_band_1"
+        if technique == "raman":
+            return "Raman_peak_1"
+        if technique == "xrd":
+            return "XRD_peak_1"
+    if normalized_unit in _BINDING_ENERGY_UNITS:
+        return "XPS_peak_1"
+    if normalized_unit in {"%", "percent"} and _IMIDIZATION_RE.search(combined):
+        return "imidization_degree"
+    return None
 
 
 def looks_like_structure_metric(metric: str, method: str = "", category: str = "") -> bool:

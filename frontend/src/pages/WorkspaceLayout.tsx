@@ -1,38 +1,24 @@
 import { useEffect, useState } from 'react';
-import { Outlet, useNavigate, useLocation } from 'react-router-dom';
-import { Layout, Menu, Select, Button, Avatar, Dropdown, Space, message } from 'antd';
+import { Outlet, useLocation, useNavigate } from 'react-router-dom';
+import { Layout, Menu, Select } from 'antd';
 import {
-  ProjectOutlined, FileTextOutlined, AuditOutlined,
-  ExportOutlined, TeamOutlined, LogoutOutlined, UserOutlined,
+  AuditOutlined,
+  ExportOutlined,
+  FileTextOutlined,
+  ProjectOutlined,
   SettingOutlined,
 } from '@ant-design/icons';
-import { useAuth } from '../stores/auth';
-import { useProject } from '../stores/project';
 import api from '../api/client';
+import { useProject } from '../stores/project';
 
 const { Sider, Header, Content } = Layout;
 
 interface ProjectOption {
   id: number;
   name: string;
-  description?: string;
-  paper_count?: number;
-  pending_count?: number;
-  approved_count?: number;
 }
 
-const baseMenuItems = [
-  { key: '/projects', icon: <ProjectOutlined />, label: '项目列表' },
-  { key: '/papers', icon: <FileTextOutlined />, label: '文献库' },
-  { key: '/review', icon: <AuditOutlined />, label: '审核队列' },
-  { key: '/export', icon: <ExportOutlined />, label: '导出' },
-  { key: '/members', icon: <TeamOutlined />, label: '成员' },
-  { key: '/settings', icon: <SettingOutlined />, label: '大模型配置' },
-];
-
-
 export default function WorkspaceLayout() {
-  const { user, logout } = useAuth();
   const { currentProject, setCurrentProject } = useProject();
   const navigate = useNavigate();
   const location = useLocation();
@@ -41,69 +27,52 @@ export default function WorkspaceLayout() {
   useEffect(() => {
     api.get('/projects').then(res => {
       setProjects(res.data);
-      if (res.data.length > 0 && !currentProject) {
-        setCurrentProject(res.data[0]);
+      if (res.data.length > 0) {
+        const persisted = currentProject;
+        const match = persisted ? res.data.find((p: ProjectOption) => p.id === persisted.id) : null;
+        setCurrentProject(match || res.data[0]);
       }
     }).catch(() => {});
   }, []);
 
-  const handleProjectChange = (id: number) => {
-    const p = projects.find(p => p.id === id);
-    if (p) setCurrentProject(p);
-  };
-
-  const userMenuItems = [
-    { key: 'info', label: `${user?.name} (${user?.email})`, disabled: true },
-    { type: 'divider' as const },
-    { key: 'logout', icon: <LogoutOutlined />, label: '退出登录', danger: true },
+  const menuItems = [
+    { key: '/projects', icon: <ProjectOutlined />, label: '项目库' },
+    { key: '/papers', icon: <FileTextOutlined />, label: '文献录入' },
+    { key: '/review', icon: <AuditOutlined />, label: '数据复核' },
+    { key: '/export', icon: <ExportOutlined />, label: '导出' },
+    { key: '/settings', icon: <SettingOutlined />, label: '项目配置' },
   ];
 
   return (
     <Layout className="app-layout">
       <Sider width={220} className="app-sider">
-        <div className="sider-logo">
-          <h2>Fiber V6</h2>
-        </div>
+        <div className="sider-logo"><h2>Fiber V6</h2></div>
         <div style={{ padding: '16px 12px' }}>
           <Select
             style={{ width: '100%' }}
-            placeholder="选择项目"
+            placeholder="选择项目库"
             value={currentProject?.id}
-            onChange={handleProjectChange}
-            options={projects.map(p => ({ value: p.id, label: p.name }))}
+            onChange={(id) => {
+              const project = projects.find(item => item.id === id);
+              if (project) setCurrentProject(project);
+            }}
+            options={projects.map(project => ({ value: project.id, label: project.name }))}
             size="small"
           />
         </div>
         <Menu
           mode="inline"
           selectedKeys={[location.pathname]}
-          items={user?.is_superadmin
-            ? [...baseMenuItems, { key: '/users', icon: <UserOutlined />, label: '用户管理' }]
-            : baseMenuItems}
+          items={menuItems}
           onClick={({ key }) => navigate(key)}
           style={{ borderRight: 'none' }}
         />
       </Sider>
       <Layout>
         <Header className="app-header">
-          <span className="project-selector">
-            {currentProject ? currentProject.name : '请选择项目'}
-          </span>
-          <Dropdown menu={{
-            items: userMenuItems,
-            onClick: ({ key }) => {
-              if (key === 'logout') { logout(); navigate('/login'); }
-            },
-          }}>
-            <Space style={{ cursor: 'pointer' }}>
-              <Avatar icon={<UserOutlined />} style={{ background: 'var(--color-accent)' }} />
-              <span style={{ color: 'var(--color-text-secondary)' }}>{user?.name}</span>
-            </Space>
-          </Dropdown>
+          <span className="project-selector">{currentProject?.name || '请选择项目库'}</span>
         </Header>
-        <Content className="app-content">
-          <Outlet />
-        </Content>
+        <Content className="app-content"><Outlet /></Content>
       </Layout>
     </Layout>
   );

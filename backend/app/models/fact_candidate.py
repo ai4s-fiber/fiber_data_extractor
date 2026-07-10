@@ -28,6 +28,12 @@ class FactCandidate(Base):
     category: Mapped[str | None] = mapped_column(String(200), nullable=True)
     evidence_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     source_location: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    source_block_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    source_page: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source_bbox_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    evidence_item_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("evidence_items.id"), nullable=True
+    )
     extraction_method: Mapped[str] = mapped_column(
         String(30), nullable=False, default="AI_text"
     )  # AI_text | AI_table | AI_figure | AI_inferred

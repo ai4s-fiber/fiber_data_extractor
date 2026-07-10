@@ -12,7 +12,6 @@ class ExportJob(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     project_id: Mapped[int] = mapped_column(Integer, ForeignKey("projects.id"), nullable=False)
-    created_by: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
     status: Mapped[str] = mapped_column(
         String(30), nullable=False, default="pending"
     )  # pending, running, completed, failed
