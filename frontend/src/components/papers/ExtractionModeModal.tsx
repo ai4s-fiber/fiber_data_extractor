@@ -136,7 +136,7 @@ export default function ExtractionModeModal({
           )}
           {selectedParserStrategy === 'legacy' && (
             <div>
-              <div style={{ fontWeight: 'bold', color: '#faad14', marginBottom: 4 }}>【经典纯文本解析】 (降级备选)</div>
+              <div style={{ fontWeight: 'bold', color: '#faad14', marginBottom: 4 }}>【经典纯文本解析】 (默认可运行)</div>
               <div style={{ color: '#52c41a' }}><strong>✓ 优点：</strong>无需外部服务，启动极快，适合纯文本 PDF。</div>
               <div style={{ color: '#ff4d4f', marginTop: 4 }}><strong>✗ 缺点：</strong>不支持复杂版式、图像和表格，抽取质量显著下降。</div>
             </div>

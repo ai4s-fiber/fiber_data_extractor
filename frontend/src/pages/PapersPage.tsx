@@ -48,7 +48,7 @@ export default function PapersPage() {
   const [extractDialogOpen, setExtractDialogOpen] = useState(false);
   const [selectedPaper, setSelectedPaper] = useState<Paper | null>(null);
   const [selectedMode, setSelectedMode] = useState<ExtractionMode>('strong');
-  const [selectedParserStrategy, setSelectedParserStrategy] = useState<ParserStrategy>('mineru_cloud');
+  const [selectedParserStrategy, setSelectedParserStrategy] = useState<ParserStrategy>('legacy');
   const [llmConfig, setLlmConfig] = useState<LlmConfig | null>(null);
 
   const [progressMap, setProgressMap] = useState<Record<number, ExtractionProgress>>({});
@@ -297,7 +297,7 @@ export default function PapersPage() {
   const openExtractDialog = async (paper: Paper) => {
     setSelectedPaper(paper);
     setSelectedMode((paper.latest_requested_mode as 'auto' | 'weak' | 'strong') || 'auto');
-    setSelectedParserStrategy('mineru_cloud');
+    setSelectedParserStrategy('legacy');
     setExtractDialogOpen(true);
     setLlmConfig(null);
 

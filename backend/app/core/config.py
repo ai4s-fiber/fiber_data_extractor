@@ -24,7 +24,7 @@ class Settings(BaseSettings):
 
     # Document parsing (MinerU)
     PARSE_ARTIFACT_DIR: str = "./parse_artifacts"
-    MINERU_ENABLED: bool = True
+    MINERU_ENABLED: bool = False
     MINERU_API_URL: str = "http://127.0.0.1:8001"
     MINERU_CLOUD_TOKEN: str = ""
     MINERU_BACKEND: str = "pipeline"
@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     # Extraction runtime
     EXTRACTION_MAX_CONCURRENT_JOBS: int = 2
     EXTRACTION_JOB_POLL_INTERVAL_SECONDS: int = 2
-    DEFAULT_PARSER_STRATEGY: str = "mineru_cloud"
+    DEFAULT_PARSER_STRATEGY: str = "legacy"
     # Weak-mode throughput limits (batch literature extraction)
     WEAK_MAX_PRIORITY_CHUNKS: int = 8
     WEAK_MAX_FACT_CHUNKS: int = 35

@@ -1,11 +1,13 @@
-# 纤维材料文献数据提取软件 V6
+# Fiber Data Extractor
 
 开放式本地/私有 Web 工作区，用于从纤维材料文献 PDF 中提取结构化数据。
+
+> 当前仓库为私有部署项目。应用已取消登录和用户系统，能够访问服务的人都可以操作项目数据；请只部署在本机、内网或受控私有环境。
 
 ## 架构
 
 ```
-fiber_data_extractor_v6/
+fiber_data_extractor/
 ├── backend/          # FastAPI 后端
 │   ├── app/
 │   │   ├── api/      # 路由
@@ -33,51 +35,94 @@ fiber_data_extractor_v6/
 
 | 层 | 技术 |
 |---|---|
-| 前端 | React 18 + TypeScript + Vite + Ant Design 5 |
+| 前端 | React + TypeScript + Vite + Ant Design |
 | 后端 | FastAPI + SQLAlchemy 2.0 + Pydantic v2 |
 | 数据库 | PostgreSQL 16 |
-| 后台任务 | Redis + RQ (预留) |
+| 后台任务 | 进程内队列 + 可选 Redis 进度/缓存 |
 | 部署 | Docker Compose |
-| 文件存储 | 本地磁盘 (可切换 MinIO/S3) |
+| 文件存储 | 本地磁盘 |
+
+## 前置条件
+
+- Python 3.11
+- Node.js 20
+- npm 10+
+- Docker Desktop（可选，仅 Docker Compose 部署需要）
+- LLM API Key（仅启动 AI 抽取时需要，在项目设置页填写）
+- MinerU 服务或 `MINERU_CLOUD_TOKEN`（可选；不配置时使用经典纯文本解析）
+
+## 获取代码
+
+```bash
+git clone https://github.com/fafasco16/fiber_data_extractor.git
+cd fiber_data_extractor
+```
 
 ## 快速启动（开发环境）
 
 ### 后端
 
-```bash
+Windows PowerShell:
+
+```powershell
 cd backend
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
 
-# 设置环境变量（或从仓库根目录复制 .env.example）
-# DATABASE_URL=sqlite+aiosqlite:///./fiber_data.db
-# MINERU_CLOUD_TOKEN=
-# UPLOAD_DIR=./uploads
+# 可选：从仓库根目录复制环境模板
+Copy-Item ..\.env.example .env
 
-# 初始化数据库
 python -m app.init_db
-
-# 启动
 uvicorn app.main:app --reload --port 8000
 ```
 
 ### 前端
 
-```bash
+另开一个终端：
+
+```powershell
 cd frontend
-npm install
+npm ci
 npm run dev
 ```
 
 前端默认运行在 http://localhost:5173，后端 API 在 http://localhost:8000。
 
+开发模式默认使用 SQLite，本地数据库和上传/导出产物会生成在 `backend/` 下，并已被 `.gitignore` 忽略。
+
 ### Docker Compose
 
-```bash
-cp .env.example .env
-# 修改 .env 中的 POSTGRES_PASSWORD 后再启动
-docker-compose up --build
+```powershell
+Copy-Item .env.example .env
+# 修改 .env 中的 POSTGRES_PASSWORD，再启动
+docker compose up --build
+```
+
+Docker Compose 默认启用 PostgreSQL、Redis、后端和前端，前端入口为 http://localhost:3000。
+
+## 功能配置
+
+- 基础工作区功能（项目、文献上传、候选记录复核、Excel 导出）不需要登录。
+- AI 抽取必须在项目设置页配置 `llm_provider`、`llm_base_url`、`llm_model` 和 `llm_api_key`。
+- 默认 PDF 解析策略是 `legacy`，不依赖外部 MinerU 服务，适合 clone 后快速验证。
+- 若需要高质量版式解析，可在 `.env` 中设置 `MINERU_ENABLED=true`、配置 `MINERU_API_URL` 或 `MINERU_CLOUD_TOKEN`，并在启动抽取时选择本地 MinerU 或线上 VLM。
+
+## 验证
+
+后端：
+
+```powershell
+cd backend
+pytest tests\test_config.py tests\test_health.py tests\test_open_workspace_contract.py -q
+```
+
+前端：
+
+```powershell
+cd frontend
+npm ci
+npm run build
 ```
 
 ## 使用模式
