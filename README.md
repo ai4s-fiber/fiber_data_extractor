@@ -125,6 +125,39 @@ npm ci
 npm run build
 ```
 
+## 抽取性能 Benchmark
+
+仓库包含可选 benchmark 脚本，用于在本地用公开 PDF 对抽取速度、质量覆盖和 LLM token 使用做回归验证。PDF、报告、SQLite benchmark 数据库均被 `.gitignore` 忽略，不应提交到 Git。
+
+PowerShell 示例：
+
+```powershell
+cd backend
+$env:DASHSCOPE_API_KEY="你的 DashScope Key"
+$env:DATABASE_URL="sqlite+aiosqlite:///./benchmark.db"
+$env:ALLOW_SQLITE_FALLBACK="true"
+$env:REDIS_ENABLED="false"
+$env:DEFAULT_PARSER_STRATEGY="legacy"
+$env:LLM_DISABLE_THINKING="true"
+$env:LLM_METRICS_LOCAL_ENABLED="true"
+$env:LLM_METRICS_DIR="./reports/llm_metrics"
+
+python scripts\benchmark\run_extraction_benchmark.py `
+  --pdf-dir benchmark_pdfs `
+  --model qwen3.7-plus `
+  --base-url https://dashscope.aliyuncs.com/compatible-mode/v1 `
+  --model-mode weak `
+  --parser-strategy legacy `
+  --limit 3
+```
+
+降本增效相关默认值：
+
+- `LLM_DISABLE_THINKING=true`：对 Qwen/DashScope 自动传 `enable_thinking=false`。
+- `LLM_MAX_OUTPUT_TOKENS_PER_CALL=6000`：全局限制单次 LLM 输出预算。
+- `WEAK_STAGE2_BATCH_SIZE=3`：弱模式将短文本块合批，表格仍单独抽取。
+- `WEAK_STAGE2_BATCH_MAX_TOKENS=1800`：弱模式 Stage 2 单次输出预算上限。
+
 ## 使用模式
 
 本项目现在作为开放工作区运行：没有登录页、用户账号、角色、成员管理或管理员专属页面。能够访问服务的人都可以管理项目、上传文献、启动抽取、复核候选记录、导出工作簿，以及配置项目级 LLM 参数。建议只在本地网络或受控的私有环境中部署。

@@ -38,6 +38,7 @@ from app.models.extraction_job import ExtractionJob
 
 from app.core.config import settings
 from app.services.llm_client import create_llm_client, _tolerant_parse_json
+from app.services.llm_budget import clamp_max_tokens
 from app.services.document_context import parse_pdf_to_document_context
 from app.services.pdf_utils import render_pdf_pages
 from app.services.chunking import (
@@ -266,11 +267,112 @@ class V7ExtractorService:
         return batches
 
     @staticmethod
+    def _stage2_signal_score(chunk: dict) -> int:
+        """Rank chunks by local evidence density before spending LLM calls."""
+        source_type = chunk.get("source_type")
+        section = (chunk.get("section_name") or "").lower()
+        text = (chunk.get("raw_text") or "")[:5000]
+        lower = text.lower()
+        score = 0
+        if source_type == "table_text":
+            score += 12
+        elif source_type == "figure_caption":
+            score += 8
+        if section == "results":
+            score += 6
+        elif section == "experimental":
+            score += 5
+        elif section == "conclusion":
+            score += 2
+        score += min(5, len(re.findall(r"\d", text)) // 10)
+        if re.search(r"(?i)\b(MPa|GPa|kPa|pC/N|S/cm|W/m|mAh|wt%|vol%|nm|μm|um|°C|cycles?)\b", text):
+            score += 4
+        if re.search(r"(?i)\b(tensile|strength|modulus|strain|conductivity|dielectric|thermal|porosity|diameter|roughness)\b", lower):
+            score += 3
+        if re.search(r"(?i)\b(electrospin|spinning|anneal|curing|pyrolysis|calcination|solvent|concentration|flow rate|voltage)\b", lower):
+            score += 3
+        if re.search(r"(?i)\b(sem|tem|xrd|ftir|raman|xps|crystallinity|morpholog|fiber diameter|pore)\b", lower):
+            score += 3
+        if re.search(r"(?i)\b(PVDF|PAN|PCL|PLA|PVA|PEO|PI|PAA|CNT|CNC|GO|MXene|nanofiber|aerogel|film|composite)\b", text):
+            score += 2
+        return score
+
+    @staticmethod
     def _chunks_for_prompt_multi(chunks: list[dict], limit_per_chunk: int = 3000) -> str:
         return "\n\n---\n\n".join(
             V7ExtractorService._chunk_for_prompt(chunk, limit_per_chunk)
             for chunk in chunks
         )
+
+    @staticmethod
+    def _sentence_around(text: str, pattern: str, max_chars: int = 420) -> str:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if not match:
+            return text[:max_chars].strip()
+        start = max(0, text.rfind(".", 0, match.start()) + 1)
+        end_pos = text.find(".", match.end())
+        end = len(text) if end_pos == -1 else end_pos + 1
+        return re.sub(r"\s+", " ", text[start:end].strip())[:max_chars]
+
+    @staticmethod
+    def _deterministic_process_facts(chunks: list[dict]) -> list[dict]:
+        facts: list[dict] = []
+        seen: set[str] = set()
+
+        def add_fact(chunk: dict, metric: str, value: str, unit: str, pattern: str) -> None:
+            if len(facts) >= 4 or metric in seen:
+                return
+            text = chunk.get("raw_text") or ""
+            evidence = V7ExtractorService._sentence_around(text, pattern)
+            if not evidence:
+                return
+            seen.add(metric)
+            facts.append({
+                "fact_id": "",
+                "fact_type": "process",
+                "subject_text": metric,
+                "candidate_sample_ids": [],
+                "metric_or_parameter": metric,
+                "value": value,
+                "unit": unit,
+                "method": "",
+                "condition": "",
+                "category": "process",
+                "evidence_text": evidence,
+                "source_location": V7ExtractorService._chunk_source_location(chunk),
+                "extraction_method": V7ExtractorService._extraction_method_for_chunk(chunk),
+                "confidence": 0.62,
+                "_chunk_section": chunk.get("section_name", ""),
+                "_chunk_source_type": chunk.get("source_type", ""),
+                "_source_block_id": chunk.get("source_block_id"),
+                "_source_page": chunk.get("page_number"),
+                "_source_bbox": chunk.get("source_bbox"),
+            })
+
+        for chunk in chunks:
+            text = chunk.get("raw_text") or ""
+            lower = text.lower()
+            if V7ExtractorService._is_background_chunk(chunk) and "template" not in lower:
+                continue
+            if re.search(r"template[-\s]?wetting", lower):
+                add_fact(chunk, "fabrication_method", "template-wetting", "", r"template[-\s]?wetting")
+            if re.search(r"self[-\s]?poling", lower):
+                add_fact(chunk, "poling_method", "self-poling", "", r"self[-\s]?poling")
+            if "electrospinning" in lower:
+                add_fact(chunk, "spinning_method", "electrospinning", "", r"electrospinning")
+            if re.search(r"\b(?:anneal|annealed|annealing)\b", lower):
+                temp = re.search(r"(\d+(?:\.\d+)?)\s*(?:°\s*C|°C|C)\b", text)
+                add_fact(
+                    chunk,
+                    "annealing_temperature" if temp else "annealing",
+                    temp.group(1) if temp else "annealing",
+                    "°C" if temp else "",
+                    r"\b(?:anneal|annealed|annealing)\b",
+                )
+            voltage = re.search(r"(\d+(?:\.\d+)?\s*-\s*\d+(?:\.\d+)?)\s*kV", text, re.IGNORECASE)
+            if voltage and any(term in lower for term in ("fabrication", "electrospinning", "process")):
+                add_fact(chunk, "fabrication_voltage", voltage.group(1), "kV", r"\d+(?:\.\d+)?\s*-\s*\d+(?:\.\d+)?\s*kV")
+        return facts
 
     @staticmethod
     async def _llm_json_tolerant(
@@ -287,6 +389,11 @@ class V7ExtractorService:
         job_id = _current_job_id.get()
         model_name = getattr(client, "model", "unknown")
         prompt_chars = len(system_prompt) + len(user_prompt)
+        budget = clamp_max_tokens(
+            requested_max_tokens=max_tokens,
+            prompt_chars=prompt_chars,
+            global_cap=settings.LLM_MAX_OUTPUT_TOKENS_PER_CALL,
+        )
         try:
             async with track_llm_call(
                 job_id=job_id,
@@ -294,11 +401,24 @@ class V7ExtractorService:
                 model=model_name,
                 call_type="json_tolerant",
                 prompt_chars=prompt_chars,
-            ):
-                return await asyncio.wait_for(
-                    client.agenerate_json_tolerant(system_prompt, user_prompt, max_tokens=max_tokens),
+                requested_max_tokens=budget.requested_max_tokens,
+                effective_max_tokens=budget.max_tokens,
+                capped=budget.was_capped,
+            ) as metric:
+                parsed, raw = await asyncio.wait_for(
+                    client.agenerate_json_tolerant(
+                        system_prompt,
+                        user_prompt,
+                        max_tokens=budget.max_tokens,
+                    ),
                     timeout=timeout_seconds,
                 )
+                metric.response_chars = len(raw or "")
+                usage = getattr(client, "last_usage", {}) or {}
+                metric.prompt_tokens = int(usage.get("prompt_tokens") or 0)
+                metric.completion_tokens = int(usage.get("completion_tokens") or 0)
+                metric.total_tokens = int(usage.get("total_tokens") or 0)
+                return parsed, raw
         except asyncio.TimeoutError:
             return {}, ""
 
@@ -397,6 +517,62 @@ class V7ExtractorService:
             if current is None or mention.get("confidence", 0) > current.get("confidence", 0):
                 deduped[key] = mention
         return list(deduped.values())
+
+    @staticmethod
+    def _looks_like_sample_candidate(sample_id: str) -> bool:
+        sid = normalize_sample_id(sample_id)
+        norm = normalize_for_match(sid)
+        if not norm or len(norm) < 2 or len(sid) > 80:
+            return False
+        generic = {
+            "sample", "samples", "fiber", "fibers", "nanofiber", "nanofibers",
+            "film", "films", "aerogel", "aerogels", "composite", "composites",
+            "material", "materials", "optimized sample", "modified sample",
+        }
+        if norm in generic:
+            return False
+        if not re.search(r"[A-Za-z]", sid):
+            return False
+        if re.match(
+            r"^\d+(?:\.\d+)?\s*(?:%|wt%|vol%|mpa|gpa|kpa|hz|khz|mhz|ghz|"
+            r"min|s|h|cycles?|cycle|v|kv|ma|a|c|k|nm|um|μm|mm|cm)\b",
+            norm,
+        ):
+            return False
+        if re.match(r"^\d+(?:\.\d+)?\s*%?\s*(?:strain|rh|humidity|frequency|temperature)\b", norm):
+            return False
+        if norm in {"control", "reference", "blank"}:
+            return False
+        return True
+
+    @staticmethod
+    def _sample_mentions_from_fact_candidates(facts: list[dict]) -> list[dict]:
+        mentions: list[dict] = []
+        seen: set[tuple[str, str]] = set()
+        for fact in facts:
+            source = fact.get("source_location") or ""
+            evidence = (fact.get("evidence_text") or fact.get("subject_text") or "")[:500]
+            candidates = V7ExtractorService._as_list(fact.get("candidate_sample_ids"))
+            if fact.get("assigned_sample_id"):
+                candidates = [fact.get("assigned_sample_id"), *candidates]
+            for candidate in candidates:
+                sid = normalize_sample_id(str(candidate))
+                if not V7ExtractorService._looks_like_sample_candidate(sid):
+                    continue
+                key = (normalize_for_match(sid), source)
+                if key in seen:
+                    continue
+                seen.add(key)
+                mentions.append({
+                    "mention_text": sid,
+                    "normalized_sample_id": sid,
+                    "aliases": [],
+                    "context_text": evidence,
+                    "source_location": source,
+                    "source_type": "fact_candidate",
+                    "confidence": 0.45,
+                })
+        return mentions
 
     @staticmethod
     async def _stage1_variable_candidates(
@@ -618,7 +794,11 @@ class V7ExtractorService:
                     prompt,
                     prompt_text,
                     max_tokens=(
-                        1400 if model_mode == "weak"
+                        (
+                            max(1400, settings.WEAK_STAGE2_BATCH_MAX_TOKENS)
+                            if len(unit) > 1 or is_table
+                            else 1400
+                        ) if model_mode == "weak"
                         else (3600 if is_table else 2800)
                     ),
                     timeout_seconds=llm_timeout,
@@ -631,7 +811,7 @@ class V7ExtractorService:
                 unit_facts: list[dict] = []
                 for item in items:
                     fact = V7ExtractorService._normalize_fact_from_chunk(item, source, extraction_method)
-                    if fact:
+                    if fact and not V7ExtractorService._is_non_material_setup_fact(fact):
                         fact["_chunk_section"] = anchor.get("section_name", "")
                         fact["_chunk_source_type"] = anchor.get("source_type", "")
                         fact["_source_block_id"] = anchor.get("source_block_id")
@@ -666,7 +846,7 @@ class V7ExtractorService:
         return renumber_fact_ids(all_facts)
 
     @staticmethod
-    def _fact_chunk_priority(chunk: dict) -> tuple[int, int, int]:
+    def _fact_chunk_priority(chunk: dict) -> tuple[int, int, int, int]:
         source_type = chunk.get("source_type")
         section = (chunk.get("section_name") or "").lower()
         type_rank = {
@@ -682,7 +862,8 @@ class V7ExtractorService:
         # Prefer data-rich blocks (tables/charts) over short headings.
         text_len = len(chunk.get("raw_text") or "")
         len_rank = 0 if text_len >= 200 else 1
-        return (type_rank, section_rank, len_rank)
+        signal_rank = -V7ExtractorService._stage2_signal_score(chunk)
+        return (type_rank, section_rank, signal_rank, len_rank)
 
     @staticmethod
     def _fact_chunks(chunks: list[dict]) -> list[dict]:
@@ -751,7 +932,32 @@ class V7ExtractorService:
     def _stage2_execution_units(chunks: list[dict], model_mode: str) -> list[list[dict]]:
         """Batch small text chunks; keep tables as standalone units."""
         if model_mode == "weak":
-            return [[chunk] for chunk in chunks]
+            units: list[list[dict]] = []
+            batch: list[dict] = []
+            batch_chars = 0
+            batch_size = max(1, settings.WEAK_STAGE2_BATCH_SIZE)
+            max_chars = max(2000, settings.WEAK_STAGE2_BATCH_MAX_CHARS)
+            for chunk in chunks:
+                if chunk.get("source_type") == "table_text":
+                    if batch:
+                        units.append(batch)
+                        batch = []
+                        batch_chars = 0
+                    units.append([chunk])
+                    continue
+                chunk_len = min(len(chunk.get("raw_text") or ""), 4500) + 400
+                if batch and (
+                    len(batch) >= batch_size
+                    or batch_chars + chunk_len > max_chars
+                ):
+                    units.append(batch)
+                    batch = []
+                    batch_chars = 0
+                batch.append(chunk)
+                batch_chars += chunk_len
+            if batch:
+                units.append(batch)
+            return units
 
         units: list[list[dict]] = []
         batch: list[dict] = []
@@ -834,6 +1040,29 @@ class V7ExtractorService:
             "extraction_method": extraction_method,
             "confidence": confidence,
         }
+
+    @staticmethod
+    def _is_non_material_setup_fact(fact: dict) -> bool:
+        metric = normalize_for_match(fact.get("metric_or_parameter") or fact.get("subject_text") or "")
+        unit = normalize_for_match(fact.get("unit") or "")
+        evidence = normalize_for_match(fact.get("evidence_text") or "")
+        setup_terms = (
+            "test mass", "test mass material", "test mass weight",
+            "effective length of test mass", "bending test equipment",
+            "equipment model", "xrd scan type", "azimuthal rotation angle",
+            "scan type", "rotation angle",
+        )
+        if any(term in metric for term in setup_terms):
+            return True
+        if "pdms test mass" in evidence or "ipc flexural endurance tester" in evidence:
+            return True
+        if "peltier stage" in evidence and unit in {"uv", "v"}:
+            return True
+        if metric == "imidization degree" and unit not in {"%", "percent"}:
+            return True
+        if metric == "breakdown strength" and unit in {"uv", "mv", "v"}:
+            return True
+        return False
 
     # ------------------------------------------------------------------
     # Stage 2 (weak model): Direct extraction with sample context
@@ -2295,8 +2524,15 @@ class V7ExtractorService:
             llm_timeout=llm_timeout,
         )
         facts = merge_holistic_and_atomic_facts(atomic_facts, holistic_performance_facts)
+        if not any(fact.get("fact_type") == "process" for fact in facts):
+            facts.extend(V7ExtractorService._deterministic_process_facts(chunks))
         facts = renumber_fact_ids(facts)
         facts, sample_mentions = postprocess_extracted_facts(facts, sample_mentions)
+        fact_sample_mentions = V7ExtractorService._sample_mentions_from_fact_candidates(facts)
+        if fact_sample_mentions:
+            sample_mentions = V7ExtractorService._dedupe_sample_mentions(
+                sample_mentions + fact_sample_mentions
+            )
         sample_groups = group_samples(sample_mentions, variable_candidates)
         await _emit("extracting", 50, f"Stage 2: 提取到 {len(facts)} 条事实")
         await _emit("extracting", 65, "Stage 3: 正在分配样品...")

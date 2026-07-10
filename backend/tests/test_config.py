@@ -12,3 +12,6 @@ def test_strong_chunk_limits_sane():
     s = Settings(DEBUG=True)
     assert s.STRONG_MAX_PRIORITY_CHUNKS >= s.WEAK_MAX_PRIORITY_CHUNKS
     assert s.STRONG_MAX_FACT_CHUNKS >= s.WEAK_MAX_FACT_CHUNKS
+    assert s.WEAK_STAGE2_BATCH_SIZE >= 1
+    assert s.WEAK_STAGE2_BATCH_MAX_CHARS >= 2000
+    assert s.WEAK_STAGE2_BATCH_MAX_TOKENS >= 1400

@@ -21,6 +21,9 @@ from typing import Any
 
 import httpx
 
+from app.core.config import settings
+from app.services.llm_budget import dashscope_extra_body
+
 # ---------------------------------------------------------------------------
 # JSON recovery utilities (portable, no dependencies)
 # ---------------------------------------------------------------------------
@@ -191,6 +194,23 @@ def _anthropic_text(data: dict[str, Any]) -> str:
     return "\n".join(part for part in parts if part).strip()
 
 
+def _usage_to_dict(usage: Any) -> dict[str, int]:
+    if usage is None:
+        return {}
+    values: dict[str, int] = {}
+    for source, target in (
+        ("prompt_tokens", "prompt_tokens"),
+        ("completion_tokens", "completion_tokens"),
+        ("total_tokens", "total_tokens"),
+        ("input_tokens", "prompt_tokens"),
+        ("output_tokens", "completion_tokens"),
+    ):
+        value = usage.get(source) if isinstance(usage, dict) else getattr(usage, source, None)
+        if isinstance(value, int):
+            values[target] = value
+    return values
+
+
 # ---------------------------------------------------------------------------
 # LLM Client base class
 # ---------------------------------------------------------------------------
@@ -216,6 +236,7 @@ class LLMClient:
         self.base_url = base_url
         self.timeout_seconds = timeout_seconds
         self.max_retries = max_retries
+        self.last_usage: dict[str, int] = {}
 
     def test_connection(self) -> str:
         content = self.generate_text(
@@ -377,6 +398,11 @@ class OpenAICompatibleClient(LLMClient):
         if base_url.strip():
             kwargs["base_url"] = base_url.strip()
         self.client = OpenAI(**kwargs)
+        self.extra_body = dashscope_extra_body(
+            model=model,
+            base_url=base_url,
+            disable_thinking=settings.LLM_DISABLE_THINKING,
+        )
 
     def generate_text(
         self,
@@ -396,6 +422,8 @@ class OpenAICompatibleClient(LLMClient):
         }
         if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
+        if self.extra_body:
+            kwargs["extra_body"] = self.extra_body
         try:
             response = self.client.chat.completions.create(**kwargs)
         except Exception as exc:
@@ -409,6 +437,7 @@ class OpenAICompatibleClient(LLMClient):
                     ) from retry_exc
             else:
                 raise RuntimeError(_format_ai_exception(exc)) from exc
+        self.last_usage = _usage_to_dict(getattr(response, "usage", None))
         return response.choices[0].message.content or ""
 
     def generate_vision_text(
@@ -426,17 +455,21 @@ class OpenAICompatibleClient(LLMClient):
                 "image_url": {"url": f"data:image/png;base64,{encoded}"},
             })
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
+            kwargs: dict[str, Any] = {
+                "model": self.model,
+                "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": content},
                 ],
-                temperature=0,
-                max_tokens=max_tokens,
-            )
+                "temperature": 0,
+                "max_tokens": max_tokens,
+            }
+            if self.extra_body:
+                kwargs["extra_body"] = self.extra_body
+            response = self.client.chat.completions.create(**kwargs)
         except Exception as exc:
             raise RuntimeError(_format_ai_exception(exc)) from exc
+        self.last_usage = _usage_to_dict(getattr(response, "usage", None))
         return response.choices[0].message.content or ""
 
 

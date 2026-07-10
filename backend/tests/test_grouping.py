@@ -75,3 +75,22 @@ def test_fill_sample_card_variables_uses_group_name():
     groups = [{"sample_ids": ["S1"], "group_variable_name": "CNC loading", "confidence": 0.9}]
     out = fill_sample_card_variables(cards, groups)
     assert out[0]["variable_name"] == "CNC loading"
+
+
+def test_build_sample_cards_applies_global_experimental_process_fact():
+    mentions = [{"normalized_sample_id": "PVDF-TrFE nanowire", "mention_text": "PVDF-TrFE nanowire"}]
+    facts = [{
+        "fact_type": "process",
+        "metric_or_parameter": "annealing temperature",
+        "value": "135",
+        "unit": "°C",
+        "evidence_text": "The nanowires were annealed at 135 °C.",
+        "source_location": "p.3, experimental section",
+        "_chunk_section": "experimental",
+        "candidate_sample_ids": [],
+    }]
+
+    cards = build_sample_cards(mentions, [], [], facts)
+
+    assert cards[0]["process_parameters"]
+    assert "annealing temperature" in cards[0]["process_route"]

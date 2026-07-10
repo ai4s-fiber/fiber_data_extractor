@@ -534,6 +534,15 @@ def build_sample_cards(
             continue
         _merge_background_fact(cards[sid], fact)
 
+    global_background_facts = [
+        fact for fact in fact_candidates
+        if _is_global_background_fact(fact)
+    ]
+    if global_background_facts and cards:
+        for card in cards.values():
+            for fact in global_background_facts:
+                _merge_background_fact(card, fact)
+
     for card in cards.values():
         if not card.get("material_system"):
             card["material_system"] = card.get("composition_expression") or card.get("matrix_name") or ""
@@ -545,6 +554,37 @@ def build_sample_cards(
             card["structure_evidence"] = ""
 
     return fill_sample_card_variables(list(cards.values()), sample_groups)
+
+
+def _is_global_background_fact(fact: dict) -> bool:
+    ftype = fact.get("fact_type")
+    if ftype not in {"composition", "process", "structure"}:
+        return False
+    if normalize_sample_id(fact.get("assigned_sample_id") or fact.get("sample_id")):
+        return False
+    candidates = fact.get("candidate_sample_ids") or []
+    if isinstance(candidates, str):
+        try:
+            candidates = json.loads(candidates)
+        except json.JSONDecodeError:
+            candidates = [candidates]
+    if any(normalize_sample_id(str(candidate)) for candidate in candidates):
+        return False
+    section = normalize_for_match(fact.get("_chunk_section") or fact.get("section_name") or "")
+    source = normalize_for_match(fact.get("source_location") or "")
+    text = normalize_for_match(" ".join([
+        str(fact.get("metric_or_parameter") or ""),
+        str(fact.get("subject_text") or ""),
+        str(fact.get("evidence_text") or ""),
+    ]))
+    if any(term in section or term in source for term in ("experimental", "method", "materials")):
+        return True
+    if ftype == "process" and any(term in text for term in (
+        "electrospinning", "spinning", "anneal", "poling", "drying", "curing",
+        "voltage", "flow rate", "collector", "distance", "heat treatment",
+    )):
+        return True
+    return False
 
 
 def _merge_background_fact(card: dict, fact: dict) -> None:

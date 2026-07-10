@@ -91,15 +91,22 @@ Output JSON format:
   ]
 }"""
 
-WEAK_FACTS_PROMPT = """Extract atomic facts from this single text chunk. Prioritize numeric performance metrics from tables and figures (one value per fact).
+WEAK_FACTS_PROMPT = """Extract atomic material facts from this text chunk or batched chunk group.
 
 Rules:
-1. Use fact_type=performance for all quantifiable material properties (mechanical, thermal, electrical, morphology/size, etc.).
-2. Fill value, unit, and test conditions as completely as possible.
-3. candidate_sample_ids: sample names appearing in the chunk.
-4. Do not summarize or infer beyond the chunk text.
-5. Skip Introduction/background/literature-reference values. Skip EMI SE unless clearly this paper's experimental result.
-6. Distinguish aerogel vs nanofiber specimens when assigning sample names.
+1. Extract composition, process, structure, and performance facts when they are this paper's own material data.
+2. ONE value/parameter = ONE fact. A table row with 4 measured values should produce up to 4 facts.
+3. fact_type:
+   - composition: polymer/matrix/additive/filler/solvent/content/loading/concentration.
+   - process: electrospinning/spinning voltage, flow rate, tip-collector distance, annealing, drawing, poling, drying, curing, heat treatment.
+   - structure: fiber diameter, crystallinity, beta phase, morphology, porosity, roughness, XRD/FTIR/Raman/SEM/TEM observations.
+   - performance: mechanical, thermal, electrical, piezoelectric, dielectric, sensing, filtration, adsorption, electrochemical metrics.
+4. Fill metric_or_parameter, value, unit, method, and condition as completely as possible.
+5. candidate_sample_ids: sample names appearing in the chunk and aligned with the value. Leave [] only for paper-level background facts that clearly apply to all samples.
+6. Do not summarize or infer beyond the chunk text.
+7. Skip Introduction/background/literature-reference values unless clearly this paper's own experimental result.
+8. Distinguish aerogel vs nanofiber vs film vs device specimens when assigning sample names.
+9. When multiple chunks are provided, keep evidence_text and source_location tied to the exact chunk header that contains the value.
 
 Output JSON:
 {"facts":[{"fact_type":"composition|process|structure|performance","candidate_sample_ids":[],"metric_or_parameter":"","value":"","unit":"","method":"","condition":"","category":"","evidence_text":"","source_location":"","confidence":0.0}]}"""

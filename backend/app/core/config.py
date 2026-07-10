@@ -41,6 +41,9 @@ class Settings(BaseSettings):
     # Weak-mode throughput limits (batch literature extraction)
     WEAK_MAX_PRIORITY_CHUNKS: int = 8
     WEAK_MAX_FACT_CHUNKS: int = 35
+    WEAK_STAGE2_BATCH_SIZE: int = 3
+    WEAK_STAGE2_BATCH_MAX_CHARS: int = 9000
+    WEAK_STAGE2_BATCH_MAX_TOKENS: int = 1800
     WEAK_LLM_TIMEOUT_SECONDS: int = 90
     STRONG_MAX_PRIORITY_CHUNKS: int = 40
     STRONG_STAGE1_BATCH_SIZE: int = 5
@@ -57,6 +60,11 @@ class Settings(BaseSettings):
     STRONG_HOLISTIC_PERFORMANCE_MAX_TOKENS: int = 6000
     STRONG_HOLISTIC_RESULTS_MAX_CHARS: int = 35000
     STRONG_HOLISTIC_SENSING_ENABLED: bool = False
+    LLM_DISABLE_THINKING: bool = True
+    LLM_MAX_OUTPUT_TOKENS_PER_CALL: int = 6000
+    LLM_METRICS_LOCAL_ENABLED: bool = True
+    LLM_METRICS_DIR: str = "./reports/llm_metrics"
+    BENCHMARK_REPORT_DIR: str = "./reports/benchmarks"
 
     # Redis (optional progress pub/sub, cache, job queue)
     REDIS_ENABLED: bool = True

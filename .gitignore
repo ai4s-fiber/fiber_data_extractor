@@ -29,6 +29,7 @@ backend/exports/
 backend/uploads/
 backend/parse_artifacts/
 backend/reports/
+backend/benchmark_pdfs/
 backend/*.db
 backend/*.sqlite
 backend/*.sqlite3
