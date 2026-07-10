@@ -1,4 +1,4 @@
-"""Shared async Redis client for cache, sessions, queues, and pub/sub."""
+"""Shared async Redis client for cache, queues, and pub/sub."""
 
 from __future__ import annotations
 

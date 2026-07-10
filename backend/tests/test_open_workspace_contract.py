@@ -37,6 +37,7 @@ def test_auth_user_member_routes_are_not_registered():
     paths = route_paths()
     assert not any(path.startswith("/api/auth") for path in paths)
     assert not any(path.startswith("/api/users") for path in paths)
+    assert not any(path.startswith("/api/admin") for path in paths)
     assert not any("/members" in path for path in paths)
 
 
