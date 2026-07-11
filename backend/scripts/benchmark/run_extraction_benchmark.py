@@ -125,13 +125,14 @@ def _metrics_rollup(metrics) -> dict[str, int | float]:
 
 
 async def _run(args: argparse.Namespace) -> dict:
+    report_root = Path(args.report_dir)
     os.environ.setdefault("DATABASE_URL", args.database_url)
     os.environ.setdefault("ALLOW_SQLITE_FALLBACK", "true")
     os.environ.setdefault("REDIS_ENABLED", "false")
     os.environ.setdefault("DEFAULT_PARSER_STRATEGY", args.parser_strategy)
     os.environ.setdefault("LLM_DISABLE_THINKING", "true")
     os.environ.setdefault("LLM_METRICS_LOCAL_ENABLED", "true")
-    os.environ.setdefault("LLM_METRICS_DIR", "./reports/llm_metrics")
+    os.environ.setdefault("LLM_METRICS_DIR", str(report_root / "llm_metrics"))
 
     api_key = os.environ.get(args.api_key_env, "").strip()
     if not api_key:
@@ -152,7 +153,6 @@ async def _run(args: argparse.Namespace) -> dict:
     from app.services.llm_metrics import get_job_summary
 
     await ensure_runtime_schema()
-    report_root = Path(args.report_dir)
     report_root.mkdir(parents=True, exist_ok=True)
     upload_root = Path(settings.UPLOAD_DIR) / "benchmark"
     upload_root.mkdir(parents=True, exist_ok=True)
