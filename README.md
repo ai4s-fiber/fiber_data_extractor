@@ -2,7 +2,7 @@
 
 开放式本地/私有 Web 工作区，用于从纤维材料文献 PDF 中提取结构化数据。
 
-> 当前仓库为私有部署项目。应用已取消登录和用户系统，能够访问服务的人都可以操作项目数据；请只部署在本机、内网或受控私有环境。
+> 当前代码仓库已公开用于协作查看。应用已取消登录和用户系统，能够访问部署服务的人都可以操作项目数据；实际部署请只放在本机、内网或受控环境中。
 
 ## 架构
 
@@ -54,7 +54,7 @@ fiber_data_extractor/
 ## 获取代码
 
 ```bash
-git clone https://github.com/fafasco16/fiber_data_extractor.git
+git clone https://github.com/ai4s-fiber/fiber_data_extractor.git
 cd fiber_data_extractor
 ```
 
