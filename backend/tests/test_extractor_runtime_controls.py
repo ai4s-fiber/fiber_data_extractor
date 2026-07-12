@@ -29,6 +29,17 @@ def test_weak_stage2_batches_text_chunks_and_keeps_tables_standalone(monkeypatch
     assert units[1][0]["source_type"] == "table_text"
 
 
+def test_chunk_source_location_extracts_fig_and_table_labels():
+    assert (
+        V7ExtractorService._chunk_source_location(_chunk("figure_caption", "Fig. 1 PVDF-2 modulus 20 MPa"))
+        == "p.1, Fig. 1"
+    )
+    assert (
+        V7ExtractorService._chunk_source_location(_chunk("table_text", "Table 2a sample,value\nPVDF-3,30 MPa"))
+        == "p.1, Table 2a"
+    )
+
+
 def test_fact_candidates_backfill_sample_mentions_filters_conditions():
     facts = [
         {

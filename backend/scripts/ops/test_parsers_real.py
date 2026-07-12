@@ -26,7 +26,7 @@ async def check_cloud_token_connection() -> None:
     print("[OK] MINERU_CLOUD_TOKEN is configured")
 
     try:
-        async with httpx.AsyncClient(timeout=10.0, trust_env=False) as http_client:
+        async with httpx.AsyncClient(timeout=10.0, trust_env=True) as http_client:
             response = await http_client.get(
                 "https://mineru.net/api/v4/extract-results/noop",
                 headers={"Authorization": f"Bearer {client.token}"},

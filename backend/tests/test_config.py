@@ -17,6 +17,7 @@ def test_default_parser_uses_mineru_cloud_without_legacy_fallback():
     settings = Settings(DEBUG=False, _env_file=None)
     assert settings.MINERU_ENABLED is True
     assert settings.DEFAULT_PARSER_STRATEGY == "mineru_cloud"
+    assert settings.MINERU_CLOUD_TRUST_ENV is True
     assert settings.MINERU_CLOUD_FALLBACK_LOCAL is False
     assert settings.MINERU_FALLBACK_LEGACY_PARSER is False
     assert ExtractionJob.__table__.columns["parser_strategy"].default.arg == "mineru_cloud"

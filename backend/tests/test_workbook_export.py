@@ -1,7 +1,12 @@
 """Workbook export schema tests."""
 
 from app.models.candidate_record import CandidateRecord
-from app.services.workbook_export import MAIN_DATA_COLUMNS, _main_row, validate_main_data_row
+from app.services.workbook_export import (
+    MAIN_DATA_COLUMNS,
+    _excel_safe_value,
+    _main_row,
+    validate_main_data_row,
+)
 
 
 def test_main_row_matches_export_schema():
@@ -22,3 +27,7 @@ def test_main_row_matches_export_schema():
     row = _main_row(record, None)
     validate_main_data_row(row)
     assert list(row.keys()) == MAIN_DATA_COLUMNS
+
+
+def test_excel_safe_value_removes_control_characters():
+    assert _excel_safe_value("20 kV m\u00011") == "20 kV m1"

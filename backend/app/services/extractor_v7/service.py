@@ -151,15 +151,15 @@ class V7ExtractorService:
         text = chunk.get("raw_text", "") or ""
         source = chunk.get("table_source") or ""
         block_id = chunk.get("source_block_id")
-        fig = re.search(r"(?i)\b(fig\.?|figure)\s*([0-9]+[a-z]?)", text[:300])
-        table = re.search(r"(?i)\btable\s*([0-9]+[a-z]?)", text[:300])
+        fig = re.search(r"(?i)\b(?:fig\.?|figure)\s*(?P<label>[0-9]+[a-z]?)", text[:300])
+        table = re.search(r"(?i)\btable\s*(?P<label>[0-9]+[a-z]?)", text[:300])
         section = chunk.get("section_name", "")
         if source:
             return source
         if fig:
-            return f"p.{page}, Fig. {fig.group(2)}"
+            return f"p.{page}, Fig. {fig.group('label')}"
         if table:
-            return f"p.{page}, Table {table.group(1)}"
+            return f"p.{page}, Table {table.group('label')}"
         if section:
             base = f"p.{page}, {section} section"
             return f"{base}, block {block_id}" if block_id else base

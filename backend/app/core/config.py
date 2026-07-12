@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     MINERU_LANG: str = "ch"
     MINERU_TASK_TIMEOUT_SECONDS: int = 1800
     MINERU_POLL_INTERVAL_SECONDS: float = 2.0
+    MINERU_CLOUD_TRUST_ENV: bool = True
     MINERU_CLOUD_FALLBACK_LOCAL: bool = False
     MINERU_FALLBACK_LEGACY_PARSER: bool = False
 

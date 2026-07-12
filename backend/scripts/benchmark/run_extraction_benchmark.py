@@ -14,6 +14,7 @@ import os
 import shutil
 import sys
 import time
+import traceback
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from collections import Counter
@@ -48,6 +49,7 @@ class BenchmarkPaperResult:
     quality_score: float = 0.0
     coverage: dict[str, int] | None = None
     error: str = ""
+    error_traceback: str = ""
 
 
 def _quality_score(rows: list) -> tuple[float, dict[str, int]]:
@@ -282,7 +284,15 @@ async def _run(args: argparse.Namespace) -> dict:
                 )
             except Exception as exc:
                 elapsed_ms = round((time.monotonic() - paper_started) * 1000, 1)
-                results.append(BenchmarkPaperResult(pdf.name, False, elapsed_ms, error=str(exc)))
+                results.append(
+                    BenchmarkPaperResult(
+                        pdf.name,
+                        False,
+                        elapsed_ms,
+                        error=str(exc),
+                        error_traceback=traceback.format_exc(),
+                    )
+                )
                 write_summary()
                 print(f"[{paper_index}/{len(pdfs)}] failed {pdf.name}: {exc}", flush=True)
 

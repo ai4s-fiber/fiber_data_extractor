@@ -35,7 +35,7 @@ _KNOWN_SAMPLE_PREFIX_RE = re.compile(
 )
 
 _INFERRED_LOADING_RE = re.compile(
-    r"(?i)(?:^|[-\s])(\d+(?:\.\d+)?)\s*(?:wt\.?%|wt%|vol\.?%|mol\.?%)(?:\s|$|[-])"
+    r"(?i)(?:^|[-\s])(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>wt\.?%|wt%|vol\.?%|mol\.?%)(?:\s|$|[-])"
 )
 _INFERRED_PLAIN_PERCENT_RE = re.compile(
     r"(?i)[-\s](\d+(?:\.\d+)?)\s*%(?!\s*strain)"
@@ -73,8 +73,12 @@ def is_explicit_sample_name_in_evidence(sample_id: str, evidence: str) -> bool:
 
 
 def _loading_tokens_in_text(text: str) -> set[str]:
+    def token(match: re.Match[str]) -> str:
+        unit = re.sub(r"\.", "", match.group("unit").lower())
+        return f"{match.group('value')}_{unit}"
+
     return {
-        f"{m.group(1)}_{m.group(2).lower()}"
+        token(m)
         for m in _INFERRED_LOADING_RE.finditer(text or "")
     }
 
@@ -106,7 +110,8 @@ def strip_inferred_loading_suffix(sample_id: str, evidence: str) -> tuple[str, l
 
     match = _INFERRED_LOADING_RE.search(sid)
     if match:
-        token = f"{match.group(1)}_{match.group(2).lower()}"
+        unit = re.sub(r"\.", "", match.group("unit").lower())
+        token = f"{match.group('value')}_{unit}"
         if token not in evidence_loadings:
             sid = _INFERRED_LOADING_RE.sub("", sid).strip(" -_")
             notes.append("removed_inferred_loading_from_sample_id")

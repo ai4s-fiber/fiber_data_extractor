@@ -41,6 +41,13 @@ def test_strip_inferred_loading():
     assert "20" not in sid or "removed_inferred" in str(notes)
 
 
+def test_loading_suffix_with_unit_does_not_crash_or_strip_when_evidenced():
+    ev = "The PVDF composite with 10 wt% CNT showed increased modulus."
+    sid, _, notes = sanitize_sample_id("PVDF-10wt%", ev)
+    assert sid == "PVDF-10wt%"
+    assert "removed_inferred_loading_from_sample_id" not in notes
+
+
 def test_strip_inferred_temperature():
     ev = "2MZ-AZINE-PI3 aerogel was tested."
     sid, _, notes = sanitize_sample_id("2MZ-AZINE-PI-200 °C", ev)

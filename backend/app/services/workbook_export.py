@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from openpyxl import Workbook
+from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 
 from app.models.candidate_record import CandidateRecord
@@ -317,7 +318,7 @@ def _write_sheet(
 
     for row_idx, row in enumerate(rows, 2):
         for col_idx, column in enumerate(columns, 1):
-            cell = ws.cell(row=row_idx, column=col_idx, value=row.get(column))
+            cell = ws.cell(row=row_idx, column=col_idx, value=_excel_safe_value(row.get(column)))
             cell.font = data_font
             cell.alignment = data_alignment
             cell.border = border
@@ -330,3 +331,9 @@ def _write_sheet(
                 max_len = max(max_len, min(len(str(value)), 60))
         ws.column_dimensions[ws.cell(row=1, column=col_idx).column_letter].width = max_len + 3
     ws.freeze_panes = "A2"
+
+
+def _excel_safe_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return ILLEGAL_CHARACTERS_RE.sub("", value)
+    return value

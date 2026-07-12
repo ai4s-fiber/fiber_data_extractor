@@ -303,7 +303,10 @@ class MinerUClient:
             "Content-Type": "application/json",
         }
 
-        async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
+        async with httpx.AsyncClient(
+            timeout=timeout,
+            trust_env=settings.MINERU_CLOUD_TRUST_ENV,
+        ) as client:
             # 1. Apply for upload URL
             data_id = uuid.uuid4().hex
             payload = {
