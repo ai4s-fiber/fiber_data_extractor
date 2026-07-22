@@ -111,6 +111,103 @@ def extract_mineru_zip(zip_bytes: bytes) -> tuple[str, list[dict[str, Any]], lis
     return md_content, content_list, content_list_v2, middle_json
 
 
+def build_cloud_upload_payload(path: str | Path, data_id: str) -> dict[str, Any]:
+    file_payload: dict[str, Any] = {
+        "name": Path(path).name,
+        "data_id": data_id,
+    }
+    if settings.MINERU_CLOUD_PAGE_RANGES.strip():
+        file_payload["page_ranges"] = settings.MINERU_CLOUD_PAGE_RANGES.strip()
+    if settings.MINERU_CLOUD_IS_OCR:
+        file_payload["is_ocr"] = True
+
+    return {
+        "files": [file_payload],
+        "model_version": settings.MINERU_CLOUD_MODEL_VERSION,
+        "language": settings.MINERU_LANG,
+        "enable_formula": settings.MINERU_CLOUD_ENABLE_FORMULA,
+        "enable_table": settings.MINERU_CLOUD_ENABLE_TABLE,
+    }
+
+
+def _bool_form(value: bool) -> str:
+    return "true" if value else "false"
+
+
+def build_local_parse_form_data(*, response_format_zip: bool = False) -> dict[str, str]:
+    data = {
+        "backend": settings.MINERU_BACKEND,
+        "parse_method": settings.MINERU_PARSE_METHOD,
+        "lang_list": settings.MINERU_LANG,
+        "formula_enable": _bool_form(settings.MINERU_FORMULA_ENABLE),
+        "table_enable": _bool_form(settings.MINERU_TABLE_ENABLE),
+        "image_analysis": _bool_form(settings.MINERU_IMAGE_ANALYSIS_ENABLE),
+        "return_md": "true",
+        "return_middle_json": "true",
+        "return_model_output": "false",
+        "return_content_list": "true",
+        "return_images": "false",
+        "response_format_zip": _bool_form(response_format_zip),
+        "return_original_file": "false",
+    }
+    if "hybrid" in settings.MINERU_BACKEND.lower() and settings.MINERU_HYBRID_EFFORT.strip():
+        data["effort"] = settings.MINERU_HYBRID_EFFORT.strip()
+    return data
+
+
+def _looks_like_result_entry(value: dict[str, Any]) -> bool:
+    return any(
+        key in value
+        for key in (
+            "md_content",
+            "markdown",
+            "md",
+            "content_list",
+            "content_list_v2",
+            "middle_json",
+        )
+    )
+
+
+def _normalise_local_result_payload(
+    payload: dict[str, Any],
+    document_name: str,
+) -> dict[str, Any]:
+    if "results" in payload:
+        return payload
+
+    for key in ("data", "result"):
+        value = payload.get(key)
+        if not isinstance(value, dict):
+            continue
+        if "results" in value:
+            return value
+        nested = value.get("result")
+        if isinstance(nested, dict):
+            if "results" in nested:
+                return nested
+            if _looks_like_result_entry(nested):
+                return {
+                    "results": {document_name: nested},
+                    "backend": payload.get("backend") or value.get("backend"),
+                    "version": payload.get("version") or value.get("version"),
+                }
+        if _looks_like_result_entry(value):
+            return {
+                "results": {document_name: value},
+                "backend": payload.get("backend") or value.get("backend"),
+                "version": payload.get("version") or value.get("version"),
+            }
+
+    if _looks_like_result_entry(payload):
+        return {
+            "results": {document_name: payload},
+            "backend": payload.get("backend"),
+            "version": payload.get("version"),
+        }
+    return payload
+
+
 class MinerUClient:
     """Client for MinerU APIs (supports local /tasks and mineru.net cloud API)."""
 
@@ -125,6 +222,8 @@ class MinerUClient:
             return await self.parse_pdf_cloud(pdf_path)
         if strategy == "mineru_local":
             return await self.parse_pdf_local(pdf_path)
+        if strategy == "mineru_local_sync":
+            return await self.parse_pdf_local_sync(pdf_path)
         raise ValueError(f"Unsupported MinerU parser strategy: {strategy}")
 
     async def parse_pdf_local(self, pdf_path: str | Path) -> MinerUParseResult:
@@ -145,6 +244,22 @@ class MinerUClient:
             await self._wait_for_task(client, task_id, started)
             result_payload = await self._fetch_result(client, task_id)
 
+        return self._build_local_parse_result(
+            result_payload,
+            task_id=task_id,
+            document_name=path.name,
+            started=started,
+        )
+
+    def _build_local_parse_result(
+        self,
+        result_payload: dict[str, Any],
+        *,
+        task_id: str,
+        document_name: str,
+        started: float,
+    ) -> MinerUParseResult:
+        result_payload = _normalise_local_result_payload(result_payload, document_name)
         document_name, data = _first_result(result_payload)
         content_list = _loads_json_field(data.get("content_list"), fallback=[])
         content_list_v2 = _loads_json_field(data.get("content_list_v2"), fallback=[])
@@ -157,7 +272,7 @@ class MinerUClient:
         if not isinstance(middle_json, dict):
             middle_json = {}
 
-        md_content = data.get("md_content") or ""
+        md_content = data.get("md_content") or data.get("markdown") or data.get("md") or ""
         if not isinstance(md_content, str):
             md_content = str(md_content)
 
@@ -166,8 +281,8 @@ class MinerUClient:
 
         return MinerUParseResult(
             task_id=task_id,
-            backend=str(result_payload.get("backend") or settings.MINERU_BACKEND),
-            version=result_payload.get("version"),
+            backend=str(result_payload.get("backend") or data.get("backend") or settings.MINERU_BACKEND),
+            version=result_payload.get("version") or data.get("version"),
             document_name=document_name,
             md_content=md_content,
             content_list=content_list,
@@ -182,21 +297,7 @@ class MinerUClient:
             response = await client.post(
                 f"{self.api_url}/tasks",
                 files={"files": (path.name, path.read_bytes(), "application/pdf")},
-                data={
-                    "backend": settings.MINERU_BACKEND,
-                    "parse_method": settings.MINERU_PARSE_METHOD,
-                    "lang_list": settings.MINERU_LANG,
-                    "formula_enable": "true",
-                    "table_enable": "true",
-                    "image_analysis": "true",
-                    "return_md": "true",
-                    "return_middle_json": "true",
-                    "return_model_output": "false",
-                    "return_content_list": "true",
-                    "return_images": "false",
-                    "response_format_zip": "false",
-                    "return_original_file": "false",
-                },
+                data=build_local_parse_form_data(response_format_zip=False),
             )
         except httpx.HTTPError as exc:
             raise MinerUUnavailable(f"Failed to submit MinerU task: {exc}") from exc
@@ -216,6 +317,69 @@ class MinerUClient:
         if not task_id:
             raise MinerUInvalidResult("MinerU task submission did not return task_id")
         return str(task_id)
+
+    async def parse_pdf_local_sync(self, pdf_path: str | Path) -> MinerUParseResult:
+        path = Path(pdf_path)
+        if not path.exists():
+            raise FileNotFoundError(f"PDF file not found: {path}")
+
+        started = time.monotonic()
+        timeout = httpx.Timeout(
+            connect=30.0,
+            read=max(30.0, float(settings.MINERU_TASK_TIMEOUT_SECONDS)),
+            write=30.0,
+            pool=30.0,
+        )
+        async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
+            try:
+                response = await client.post(
+                    f"{self.api_url}/file_parse",
+                    files={"files": (path.name, path.read_bytes(), "application/pdf")},
+                    data=build_local_parse_form_data(response_format_zip=False),
+                )
+            except httpx.HTTPError as exc:
+                raise MinerUUnavailable(f"Failed to run MinerU synchronous parse: {exc}") from exc
+
+        if response.status_code >= 500:
+            raise MinerUUnavailable(
+                f"MinerU synchronous parse failed with HTTP {response.status_code}"
+            )
+        if response.status_code >= 400:
+            raise MinerUTaskFailed(
+                f"MinerU rejected synchronous parse with HTTP {response.status_code}: "
+                f"{response.text[:500]}"
+            )
+
+        content_type = response.headers.get("content-type", "").lower()
+        if "zip" in content_type or response.content[:2] == b"PK":
+            md_content, content_list, content_list_v2, middle_json = extract_mineru_zip(response.content)
+            payload = {
+                "backend": settings.MINERU_BACKEND,
+                "version": None,
+                "results": {
+                    path.name: {
+                        "md_content": md_content,
+                        "content_list": content_list,
+                        "content_list_v2": content_list_v2,
+                        "middle_json": middle_json,
+                    }
+                },
+                "response_format": "zip",
+            }
+        else:
+            try:
+                payload = response.json()
+            except ValueError as exc:
+                raise MinerUInvalidResult("MinerU synchronous parse did not return JSON or ZIP") from exc
+            if not isinstance(payload, dict):
+                raise MinerUInvalidResult("MinerU synchronous parse response is not an object")
+
+        return self._build_local_parse_result(
+            payload,
+            task_id=str(payload.get("task_id") or "file_parse"),
+            document_name=path.name,
+            started=started,
+        )
 
     async def _wait_for_task(
         self,
@@ -309,10 +473,7 @@ class MinerUClient:
         ) as client:
             # 1. Apply for upload URL
             data_id = uuid.uuid4().hex
-            payload = {
-                "files": [{"name": path.name, "data_id": data_id}],
-                "model_version": "vlm"
-            }
+            payload = build_cloud_upload_payload(path, data_id)
 
             try:
                 response = await client.post(
@@ -380,7 +541,7 @@ class MinerUClient:
 
             return MinerUParseResult(
                 task_id=batch_id,
-                backend="vlm",
+                backend=settings.MINERU_CLOUD_MODEL_VERSION,
                 version="cloud_v4",
                 document_name=path.name,
                 md_content=md_content,

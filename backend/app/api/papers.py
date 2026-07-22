@@ -27,7 +27,7 @@ from app.services import redis_cache
 from app.services.paper_cleanup import purge_paper
 
 router = APIRouter(prefix="/projects/{project_id}/papers", tags=["文献"])
-VALID_PARSER_STRATEGIES = {"mineru_cloud", "mineru_local", "legacy"}
+VALID_PARSER_STRATEGIES = {"mineru_cloud", "mineru_local", "mineru_local_sync", "legacy"}
 
 
 async def _candidate_count_for_job(
@@ -339,7 +339,7 @@ async def trigger_extraction(
         raise HTTPException(
             status_code=400,
             detail=(
-                "parser_strategy 必须是 mineru_cloud、mineru_local 或 legacy，"
+                "parser_strategy 必须是 mineru_cloud、mineru_local、mineru_local_sync 或 legacy，"
                 f"不能使用: {parser_strategy}"
             ),
         )

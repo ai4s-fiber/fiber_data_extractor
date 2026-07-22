@@ -45,7 +45,12 @@ from app.services.pdf_utils import (
 
 
 ProgressCallback = Callable[[str, int, str], Any]
-VALID_DOCUMENT_PARSER_STRATEGIES = {"mineru_cloud", "mineru_local", "legacy"}
+VALID_DOCUMENT_PARSER_STRATEGIES = {
+    "mineru_cloud",
+    "mineru_local",
+    "mineru_local_sync",
+    "legacy",
+}
 
 
 @dataclass(slots=True)
@@ -376,6 +381,105 @@ def build_document_context_from_mineru_result(
     )
 
 
+def _mineru_parse_cache_key(parser_strategy: str) -> dict[str, Any]:
+    if parser_strategy == "mineru_cloud":
+        return {
+            "parser_strategy": parser_strategy,
+            "model_version": settings.MINERU_CLOUD_MODEL_VERSION,
+            "language": settings.MINERU_LANG,
+            "page_ranges": settings.MINERU_CLOUD_PAGE_RANGES.strip(),
+            "enable_formula": settings.MINERU_CLOUD_ENABLE_FORMULA,
+            "enable_table": settings.MINERU_CLOUD_ENABLE_TABLE,
+            "is_ocr": settings.MINERU_CLOUD_IS_OCR,
+        }
+    return {
+        "parser_strategy": parser_strategy,
+        "backend": settings.MINERU_BACKEND,
+        "parse_method": settings.MINERU_PARSE_METHOD,
+        "language": settings.MINERU_LANG,
+        "formula_enable": settings.MINERU_FORMULA_ENABLE,
+        "table_enable": settings.MINERU_TABLE_ENABLE,
+        "image_analysis": settings.MINERU_IMAGE_ANALYSIS_ENABLE,
+        "hybrid_effort": settings.MINERU_HYBRID_EFFORT.strip()
+        if "hybrid" in settings.MINERU_BACKEND.lower()
+        else "",
+    }
+
+
+def _load_mineru_parse_result_from_artifacts(
+    *,
+    raw_result_path: str,
+    markdown_path: str,
+    expected_cache_key: dict[str, Any],
+) -> MinerUParseResult | None:
+    raw_path = Path(raw_result_path)
+    md_path = Path(markdown_path)
+    if not raw_path.exists() or not md_path.exists():
+        return None
+    try:
+        raw_result = json.loads(raw_path.read_text(encoding="utf-8"))
+        md_content = md_path.read_text(encoding="utf-8")
+    except Exception:
+        return None
+    if not isinstance(raw_result, dict):
+        return None
+
+    artifact = raw_result.get("_fiber_extractor_mineru_artifact")
+    if not isinstance(artifact, dict):
+        return None
+    if artifact.get("cache_key") != expected_cache_key:
+        return None
+
+    content_list = artifact.get("content_list")
+    content_list_v2 = artifact.get("content_list_v2")
+    middle_json = artifact.get("middle_json")
+    return MinerUParseResult(
+        task_id=str(artifact.get("task_id") or ""),
+        backend=str(artifact.get("backend") or ""),
+        version=artifact.get("version"),
+        document_name=str(artifact.get("document_name") or raw_path.parent.name),
+        md_content=md_content,
+        content_list=content_list if isinstance(content_list, list) else [],
+        content_list_v2=content_list_v2 if isinstance(content_list_v2, list) else [],
+        middle_json=middle_json if isinstance(middle_json, dict) else {},
+        raw_result=raw_result,
+        elapsed_seconds=0.0,
+    )
+
+
+async def _find_reusable_mineru_result(
+    db: AsyncSession,
+    paper_id: int,
+    parser_strategy: str,
+) -> tuple[DocumentParseRun, MinerUParseResult] | None:
+    if not settings.MINERU_REUSE_PARSE_ARTIFACTS:
+        return None
+    if not parser_strategy.startswith("mineru_"):
+        return None
+
+    expected_cache_key = _mineru_parse_cache_key(parser_strategy)
+    result = await db.execute(
+        select(DocumentParseRun)
+        .where(
+            DocumentParseRun.paper_id == paper_id,
+            DocumentParseRun.parser_name == parser_strategy,
+            DocumentParseRun.status == "completed",
+            DocumentParseRun.raw_result_path.is_not(None),
+            DocumentParseRun.markdown_path.is_not(None),
+        )
+        .order_by(DocumentParseRun.id.desc())
+    )
+    for parse_run in result.scalars().all():
+        loaded = _load_mineru_parse_result_from_artifacts(
+            raw_result_path=parse_run.raw_result_path or "",
+            markdown_path=parse_run.markdown_path or "",
+            expected_cache_key=expected_cache_key,
+        )
+        if loaded is not None:
+            return parse_run, loaded
+    return None
+
+
 def _blocks_from_markdown(markdown_text: str) -> list[DocumentBlockData]:
     chunks = [chunk.strip() for chunk in re.split(r"\n{2,}", markdown_text) if chunk.strip()]
     blocks: list[DocumentBlockData] = []
@@ -553,7 +657,11 @@ async def parse_pdf_to_document_context(
         paper_id=paper.id,
         job_id=job_id,
         parser_name=parser_strategy,
-        mineru_backend=settings.MINERU_BACKEND if "mineru" in parser_strategy else None,
+        mineru_backend=(
+            settings.MINERU_CLOUD_MODEL_VERSION
+            if parser_strategy == "mineru_cloud"
+            else settings.MINERU_BACKEND if parser_strategy.startswith("mineru_") else None
+        ),
         parse_method=settings.MINERU_PARSE_METHOD,
         status="running",
         started_at=_now(),
@@ -564,14 +672,26 @@ async def parse_pdf_to_document_context(
 
     try:
         if parser_strategy == "mineru_cloud":
+            artifact_strategy = parser_strategy
             try:
-                if progress_callback:
-                    await _maybe_await(progress_callback("inventory", 3, "正在使用 VLM 智能排版解析 (MinerU Cloud)..."))
+                reusable = await _find_reusable_mineru_result(db, paper.id, parser_strategy)
+                if reusable is not None:
+                    cached_run, result = reusable
+                    parse_run.parse_method = "artifact_reuse"
+                    parse_run.mineru_task_id = cached_run.mineru_task_id
+                    parse_run.mineru_backend = result.backend
+                    parse_run.raw_result_path = cached_run.raw_result_path
+                    parse_run.markdown_path = cached_run.markdown_path
+                    if progress_callback:
+                        await _maybe_await(progress_callback("inventory", 12, "复用已有 MinerU Cloud 解析产物，跳过重新解析..."))
+                else:
+                    if progress_callback:
+                        await _maybe_await(progress_callback("inventory", 3, "正在使用 VLM 智能排版解析 (MinerU Cloud)..."))
 
-                result = await run_with_cancel_poll(
-                    MinerUClient().parse_pdf(pdf_path, strategy="mineru_cloud"),
-                    job_id,
-                )
+                    result = await run_with_cancel_poll(
+                        MinerUClient().parse_pdf(pdf_path, strategy="mineru_cloud"),
+                        job_id,
+                    )
             except MinerUError as cloud_exc:
                 if not settings.MINERU_CLOUD_FALLBACK_LOCAL:
                     raise
@@ -583,21 +703,24 @@ async def parse_pdf_to_document_context(
                         MinerUClient().parse_pdf(pdf_path, strategy="mineru_local"),
                         job_id,
                     )
+                    artifact_strategy = "mineru_local"
                 except MinerUError as local_exc:
                     raise MinerUUnavailable(
                         "MinerU Cloud 解析失败，且本地 MinerU 解析也失败。"
                         f"Cloud 错误: {cloud_exc}; 本地错误: {local_exc}"
                     ) from local_exc
 
-            # If successful with either cloud or local
-            parse_run.mineru_task_id = result.task_id
-            parse_run.mineru_backend = result.backend
-            parse_run.raw_result_path, parse_run.markdown_path = await asyncio.to_thread(
-                _write_parse_artifacts,
-                paper.id,
-                job_id,
-                result,
-            )
+            if parse_run.parse_method != "artifact_reuse":
+                # If successful with either cloud or local
+                parse_run.mineru_task_id = result.task_id
+                parse_run.mineru_backend = result.backend
+                parse_run.raw_result_path, parse_run.markdown_path = await asyncio.to_thread(
+                    _write_parse_artifacts,
+                    paper.id,
+                    job_id,
+                    result,
+                    artifact_strategy,
+                )
             context = await asyncio.to_thread(
                 build_document_context_from_mineru_result,
                 paper.id,
@@ -606,22 +729,40 @@ async def parse_pdf_to_document_context(
                 result,
             )
 
-        elif parser_strategy == "mineru_local":
+        elif parser_strategy in {"mineru_local", "mineru_local_sync"}:
             try:
                 if progress_callback:
-                    await _maybe_await(progress_callback("inventory", 3, "正在提交本地 MinerU 解析任务..."))
-                result = await run_with_cancel_poll(
-                    MinerUClient().parse_pdf(pdf_path, strategy="mineru_local"),
-                    job_id,
-                )
-                parse_run.mineru_task_id = result.task_id
-                parse_run.mineru_backend = result.backend
-                parse_run.raw_result_path, parse_run.markdown_path = await asyncio.to_thread(
-                    _write_parse_artifacts,
-                    paper.id,
-                    job_id,
-                    result,
-                )
+                    message = (
+                        "正在使用本地 MinerU 同步解析 (/file_parse)..."
+                        if parser_strategy == "mineru_local_sync"
+                        else "正在提交本地 MinerU 异步解析任务..."
+                    )
+                    await _maybe_await(progress_callback("inventory", 3, message))
+                reusable = await _find_reusable_mineru_result(db, paper.id, parser_strategy)
+                if reusable is not None:
+                    cached_run, result = reusable
+                    parse_run.parse_method = "artifact_reuse"
+                    parse_run.mineru_task_id = cached_run.mineru_task_id
+                    parse_run.mineru_backend = result.backend
+                    parse_run.raw_result_path = cached_run.raw_result_path
+                    parse_run.markdown_path = cached_run.markdown_path
+                    if progress_callback:
+                        await _maybe_await(progress_callback("inventory", 12, "复用已有 MinerU 解析产物，跳过重新解析..."))
+                else:
+                    result = await run_with_cancel_poll(
+                        MinerUClient().parse_pdf(pdf_path, strategy=parser_strategy),
+                        job_id,
+                    )
+                if parse_run.parse_method != "artifact_reuse":
+                    parse_run.mineru_task_id = result.task_id
+                    parse_run.mineru_backend = result.backend
+                    parse_run.raw_result_path, parse_run.markdown_path = await asyncio.to_thread(
+                        _write_parse_artifacts,
+                        paper.id,
+                        job_id,
+                        result,
+                        parser_strategy,
+                    )
                 context = await asyncio.to_thread(
                     build_document_context_from_mineru_result,
                     paper.id,
@@ -713,11 +854,23 @@ def _write_parse_artifacts(
     paper_id: int,
     job_id: int | None,
     result: MinerUParseResult,
+    parser_strategy: str,
 ) -> tuple[str, str]:
     root = Path(settings.PARSE_ARTIFACT_DIR) / str(paper_id) / str(job_id or "manual")
     root.mkdir(parents=True, exist_ok=True)
     raw_path = root / "mineru_result.json"
     md_path = root / "mineru.md"
-    raw_path.write_text(json.dumps(result.raw_result, ensure_ascii=False, indent=2), encoding="utf-8")
+    raw_result = dict(result.raw_result or {})
+    raw_result["_fiber_extractor_mineru_artifact"] = {
+        "cache_key": _mineru_parse_cache_key(parser_strategy),
+        "task_id": result.task_id,
+        "backend": result.backend,
+        "version": result.version,
+        "document_name": result.document_name,
+        "content_list": result.content_list,
+        "content_list_v2": result.content_list_v2,
+        "middle_json": result.middle_json,
+    }
+    raw_path.write_text(json.dumps(raw_result, ensure_ascii=False, indent=2), encoding="utf-8")
     md_path.write_text(result.md_content or "", encoding="utf-8")
     return str(raw_path), str(md_path)

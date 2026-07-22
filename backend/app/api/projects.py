@@ -8,6 +8,7 @@ from sqlalchemy import delete as sa_delete
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.core.deps import get_project_or_404
 from app.models.candidate_record import CandidateRecord
@@ -79,7 +80,13 @@ async def create_project(
     db: AsyncSession = Depends(get_db),
 ):
     """Create a project without user ownership."""
-    project = Project(name=body.name, description=body.description)
+    project = Project(
+        name=body.name,
+        description=body.description,
+        llm_provider=settings.DEFAULT_LLM_PROVIDER,
+        llm_base_url=settings.DEFAULT_LLM_BASE_URL,
+        llm_model=settings.DEFAULT_LLM_MODEL,
+    )
     db.add(project)
     await db.flush()
     await db.refresh(project)
@@ -173,9 +180,9 @@ async def test_llm_connection(
         api_key = project.llm_api_key
     if not api_key:
         raise HTTPException(status_code=400, detail="API Key 不能为空")
-    provider = body.llm_provider or project.llm_provider or "openai"
-    base_url = body.llm_base_url or project.llm_base_url or "https://api.openai.com/v1"
-    model = body.llm_model or project.llm_model or "gpt-4o"
+    provider = body.llm_provider or project.llm_provider or settings.DEFAULT_LLM_PROVIDER
+    base_url = body.llm_base_url or project.llm_base_url or settings.DEFAULT_LLM_BASE_URL
+    model = body.llm_model or project.llm_model or settings.DEFAULT_LLM_MODEL
     if not provider.lower().startswith("anthropic"):
         diagnostic = await test_openai_compatible_connection(
             api_key=api_key,

@@ -39,6 +39,7 @@ from app.models.extraction_job import ExtractionJob
 from app.core.config import settings
 from app.services.llm_client import create_llm_client, _tolerant_parse_json
 from app.services.llm_budget import clamp_max_tokens
+from app.services.llm_concurrency import llm_call_slot, per_job_llm_parallel_limit
 from app.services.document_context import parse_pdf_to_document_context
 from app.services.pdf_utils import render_pdf_pages
 from app.services.chunking import (
@@ -395,32 +396,93 @@ class V7ExtractorService:
             global_cap=settings.LLM_MAX_OUTPUT_TOKENS_PER_CALL,
         )
         try:
-            async with track_llm_call(
-                job_id=job_id,
-                stage=stage,
-                model=model_name,
-                call_type="json_tolerant",
-                prompt_chars=prompt_chars,
-                requested_max_tokens=budget.requested_max_tokens,
-                effective_max_tokens=budget.max_tokens,
-                capped=budget.was_capped,
-            ) as metric:
-                parsed, raw = await asyncio.wait_for(
-                    client.agenerate_json_tolerant(
-                        system_prompt,
-                        user_prompt,
-                        max_tokens=budget.max_tokens,
-                    ),
-                    timeout=timeout_seconds,
-                )
-                metric.response_chars = len(raw or "")
-                usage = getattr(client, "last_usage", {}) or {}
-                metric.prompt_tokens = int(usage.get("prompt_tokens") or 0)
-                metric.completion_tokens = int(usage.get("completion_tokens") or 0)
-                metric.total_tokens = int(usage.get("total_tokens") or 0)
-                return parsed, raw
+            async with llm_call_slot():
+                async with track_llm_call(
+                    job_id=job_id,
+                    stage=stage,
+                    model=model_name,
+                    call_type="json_tolerant",
+                    prompt_chars=prompt_chars,
+                    requested_max_tokens=budget.requested_max_tokens,
+                    effective_max_tokens=budget.max_tokens,
+                    capped=budget.was_capped,
+                ) as metric:
+                    parsed, raw = await asyncio.wait_for(
+                        client.agenerate_json_tolerant(
+                            system_prompt,
+                            user_prompt,
+                            max_tokens=budget.max_tokens,
+                        ),
+                        timeout=timeout_seconds,
+                    )
+                    metric.response_chars = len(raw or "")
+                    usage = getattr(client, "last_usage", {}) or {}
+                    metric.prompt_tokens = int(usage.get("prompt_tokens") or 0)
+                    metric.completion_tokens = int(usage.get("completion_tokens") or 0)
+                    metric.total_tokens = int(usage.get("total_tokens") or 0)
+                    return parsed, raw
         except asyncio.TimeoutError:
             return {}, ""
+
+    @staticmethod
+    async def _llm_vision_json_tolerant(
+        client,
+        system_prompt: str,
+        user_prompt: str,
+        images: list[bytes],
+        *,
+        max_tokens: int,
+        timeout_seconds: int,
+        stage: str = "vision_llm",
+    ) -> tuple[dict, str]:
+        from app.services.llm_metrics import track_llm_call
+
+        job_id = _current_job_id.get()
+        model_name = getattr(client, "model", "unknown")
+        prompt_chars = len(system_prompt) + len(user_prompt)
+        budget = clamp_max_tokens(
+            requested_max_tokens=max_tokens,
+            prompt_chars=prompt_chars,
+            global_cap=settings.LLM_MAX_OUTPUT_TOKENS_PER_CALL,
+        )
+        try:
+            async with llm_call_slot():
+                async with track_llm_call(
+                    job_id=job_id,
+                    stage=stage,
+                    model=model_name,
+                    call_type="vision_json_tolerant",
+                    prompt_chars=prompt_chars,
+                    requested_max_tokens=budget.requested_max_tokens,
+                    effective_max_tokens=budget.max_tokens,
+                    capped=budget.was_capped,
+                ) as metric:
+                    parsed, raw = await asyncio.wait_for(
+                        client.agenerate_vision_json_tolerant(
+                            system_prompt,
+                            user_prompt,
+                            images,
+                            max_tokens=budget.max_tokens,
+                        ),
+                        timeout=timeout_seconds,
+                    )
+                    metric.response_chars = len(raw or "")
+                    usage = getattr(client, "last_usage", {}) or {}
+                    metric.prompt_tokens = int(usage.get("prompt_tokens") or 0)
+                    metric.completion_tokens = int(usage.get("completion_tokens") or 0)
+                    metric.total_tokens = int(usage.get("total_tokens") or 0)
+                    return parsed, raw
+        except asyncio.TimeoutError:
+            return {}, ""
+
+    @staticmethod
+    def _llm_parallel_calls_for_mode(model_mode: str) -> int:
+        requested = (
+            settings.WEAK_LLM_PARALLEL_CALLS
+            if model_mode == "weak"
+            else settings.STRONG_LLM_PARALLEL_CALLS
+        )
+        return per_job_llm_parallel_limit(requested)
 
     @staticmethod
     async def _stage1_sample_mentions(
@@ -436,11 +498,7 @@ class V7ExtractorService:
         """Extract atomic sample mentions with batched calls (weak + strong)."""
         priority = V7ExtractorService._stage1_chunks(chunks, model_mode)
         batches = V7ExtractorService._stage1_batches(priority, model_mode)
-        parallel_calls = (
-            settings.WEAK_LLM_PARALLEL_CALLS
-            if model_mode == "weak"
-            else settings.STRONG_LLM_PARALLEL_CALLS
-        )
+        parallel_calls = V7ExtractorService._llm_parallel_calls_for_mode(model_mode)
         semaphore = asyncio.Semaphore(max(1, parallel_calls))
         mentions: list[dict] = []
         total = max(len(batches), 1)
@@ -615,11 +673,7 @@ class V7ExtractorService:
                 relevant = priority[:8]
             batches = V7ExtractorService._stage1_batches(relevant, model_mode)
 
-        parallel_calls = (
-            settings.WEAK_LLM_PARALLEL_CALLS
-            if model_mode == "weak"
-            else settings.STRONG_LLM_PARALLEL_CALLS
-        )
+        parallel_calls = V7ExtractorService._llm_parallel_calls_for_mode(model_mode)
         semaphore = asyncio.Semaphore(max(1, parallel_calls))
         variables: list[dict] = []
         total = max(len(batches), 1)
@@ -767,11 +821,7 @@ class V7ExtractorService:
 
         all_facts: list[dict] = []
         total = max(len(units), 1)
-        parallel_calls = (
-            settings.WEAK_LLM_PARALLEL_CALLS
-            if model_mode == "weak"
-            else settings.STRONG_LLM_PARALLEL_CALLS
-        )
+        parallel_calls = V7ExtractorService._llm_parallel_calls_for_mode(model_mode)
         parallel = parallel_calls > 1 and len(units) > 1
         semaphore = asyncio.Semaphore(max(1, parallel_calls))
         completed = 0
@@ -1122,10 +1172,13 @@ class V7ExtractorService:
             prompt = STAGE3_ASSIGNMENT_PROMPT.replace(
                 "{{sample_catalog_json}}", catalog_json
             )
-            parsed, _ = await client.agenerate_json_tolerant(
+            parsed, _ = await V7ExtractorService._llm_json_tolerant(
+                client,
                 prompt,
                 f"Assign these facts to samples:\n{json.dumps(compact_facts, ensure_ascii=False, indent=2)}",
                 max_tokens=3000,
+                timeout_seconds=settings.STRONG_LLM_TIMEOUT_SECONDS,
+                stage="stage3_assignment",
             )
             batch_assignments = parsed.get("assignments") or parsed.get("_items") or []
             all_assignments.extend(batch_assignments)
@@ -2164,7 +2217,8 @@ class V7ExtractorService:
             if not rendered:
                 return facts
 
-            parsed, _ = await client.agenerate_vision_json_tolerant(
+            parsed, _ = await V7ExtractorService._llm_vision_json_tolerant(
+                client,
                 "You are analyzing fiber material literature figures and tables. "
                 "Extract only directly labeled, readable target-paper core performance data "
                 "(for example tensile strength, modulus, density, porosity, shrinkage, "
@@ -2181,6 +2235,8 @@ class V7ExtractorService:
                 "Skip estimates based only on axis interpolation unless a data label is visible.",
                 [r["image"] for r in rendered],
                 max_tokens=1400,
+                timeout_seconds=settings.STRONG_LLM_TIMEOUT_SECONDS,
+                stage="vision_enhancement",
             )
             vision_facts = parsed.get("vision_facts") or parsed.get("_items") or []
             next_id = len(facts) + 1
@@ -2382,8 +2438,8 @@ class V7ExtractorService:
             client = create_llm_client(
                 provider=project.llm_provider or "openai",
                 api_key=project.llm_api_key,
-                model=project.llm_model or "gpt-4o",
-                base_url=project.llm_base_url or "https://api.openai.com/v1",
+                model=project.llm_model or settings.DEFAULT_LLM_MODEL,
+                base_url=project.llm_base_url or settings.DEFAULT_LLM_BASE_URL,
                 timeout_seconds=llm_timeout,
                 max_retries=1,
             )
@@ -2403,7 +2459,7 @@ class V7ExtractorService:
         if model_mode == "auto":
             model_name = (project.llm_model or "").lower()
             strong_keywords = [
-                "gpt-4o", "claude", "o1", "o3", "sonnet", "opus", "haiku",
+                "gpt-5", "gpt-4o", "claude", "o1", "o3", "sonnet", "opus", "haiku",
                 "deepseek-r1", "gemini-2", "mimo",
             ]
             if any(kw in model_name for kw in strong_keywords):

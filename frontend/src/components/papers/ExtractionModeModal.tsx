@@ -3,7 +3,7 @@ import type { LlmConfig, Paper } from './types';
 import { modeLabels } from './types';
 
 export type ExtractionMode = 'auto' | 'weak' | 'strong';
-export type ParserStrategy = 'mineru_cloud' | 'mineru_local';
+export type ParserStrategy = 'mineru_cloud' | 'mineru_local' | 'mineru_local_sync';
 
 interface ExtractionModeModalProps {
   open: boolean;
@@ -106,8 +106,9 @@ export default function ExtractionModeModal({
           buttonStyle="solid"
           style={{ width: '100%' }}
         >
-          <Radio.Button value="mineru_cloud" style={{ width: '50%', textAlign: 'center' }}>MinerU Cloud</Radio.Button>
-          <Radio.Button value="mineru_local" style={{ width: '50%', textAlign: 'center' }}>本地 MinerU</Radio.Button>
+          <Radio.Button value="mineru_cloud" style={{ width: '33.33%', textAlign: 'center' }}>MinerU Cloud</Radio.Button>
+          <Radio.Button value="mineru_local" style={{ width: '33.33%', textAlign: 'center' }}>本地异步</Radio.Button>
+          <Radio.Button value="mineru_local_sync" style={{ width: '33.33%', textAlign: 'center' }}>本地同步</Radio.Button>
         </Radio.Group>
 
         <div style={{
@@ -124,6 +125,13 @@ export default function ExtractionModeModal({
               <div style={{ fontWeight: 'bold', color: '#52c41a', marginBottom: 4 }}>【本地 MinerU 离线抽取】</div>
               <div style={{ color: '#52c41a' }}><strong>✓ 优点：</strong>部署于本地/私有服务器，完全免费，无文件大小与页数硬性限制，适合大规模、大批量处理，且数据完全本地化，安全不泄露。</div>
               <div style={{ color: '#ff4d4f', marginTop: 4 }}><strong>✗ 缺点：</strong>依赖本地计算节点的 GPU/CPU 算力与显存，初次解析可能需要数分钟，需要本地一直跑着 MinerU 后台服务。</div>
+            </div>
+          )}
+          {selectedParserStrategy === 'mineru_local_sync' && (
+            <div>
+              <div style={{ fontWeight: 'bold', color: '#52c41a', marginBottom: 4 }}>【本地 MinerU 同步抽取 /file_parse】</div>
+              <div style={{ color: '#52c41a' }}><strong>✓ 优点：</strong>调用 MinerU 官方同步接口，服务端等待解析完成后一次返回结果，适合本地 GPU/多 worker 服务做高速批处理。</div>
+              <div style={{ color: '#ff4d4f', marginTop: 4 }}><strong>✗ 缺点：</strong>依赖本地 MinerU 版本与算力；单个请求会一直占用到解析完成，需要合理设置超时和服务端并发。</div>
             </div>
           )}
           {selectedParserStrategy === 'mineru_cloud' && (

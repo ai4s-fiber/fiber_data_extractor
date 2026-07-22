@@ -18,7 +18,7 @@ class Project(Base):
     llm_provider: Mapped[str | None] = mapped_column(String(50), nullable=True, default="openai")
     llm_api_key: Mapped[str | None] = mapped_column(String(200), nullable=True)
     llm_base_url: Mapped[str | None] = mapped_column(String(250), nullable=True)
-    llm_model: Mapped[str | None] = mapped_column(String(100), nullable=True, default="gpt-4o")
+    llm_model: Mapped[str | None] = mapped_column(String(100), nullable=True, default="gpt-5.5")
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)

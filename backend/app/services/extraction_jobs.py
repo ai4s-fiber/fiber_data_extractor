@@ -58,6 +58,7 @@ def resolve_model_mode(project: Project, requested_mode: str) -> str:
         "qwen3.7-plus",
     ]
     strong_keywords = [
+        "gpt-5",
         "gpt-4o",
         "claude",
         "o1",

@@ -35,13 +35,26 @@ class Settings(BaseSettings):
     MINERU_TASK_TIMEOUT_SECONDS: int = 1800
     MINERU_POLL_INTERVAL_SECONDS: float = 2.0
     MINERU_CLOUD_TRUST_ENV: bool = True
+    MINERU_CLOUD_MODEL_VERSION: str = "vlm"
+    MINERU_CLOUD_PAGE_RANGES: str = ""
+    MINERU_CLOUD_ENABLE_FORMULA: bool = True
+    MINERU_CLOUD_ENABLE_TABLE: bool = True
+    MINERU_CLOUD_IS_OCR: bool = False
+    MINERU_REUSE_PARSE_ARTIFACTS: bool = True
     MINERU_CLOUD_FALLBACK_LOCAL: bool = False
     MINERU_FALLBACK_LEGACY_PARSER: bool = False
+    MINERU_FORMULA_ENABLE: bool = True
+    MINERU_TABLE_ENABLE: bool = True
+    MINERU_IMAGE_ANALYSIS_ENABLE: bool = True
+    MINERU_HYBRID_EFFORT: str = "medium"
 
     # Extraction runtime
     EXTRACTION_MAX_CONCURRENT_JOBS: int = 2
     EXTRACTION_JOB_POLL_INTERVAL_SECONDS: int = 2
     DEFAULT_PARSER_STRATEGY: str = "mineru_cloud"
+    DEFAULT_LLM_PROVIDER: str = "openai"
+    DEFAULT_LLM_BASE_URL: str = "https://aigw.sotatts.online/v1"
+    DEFAULT_LLM_MODEL: str = "gpt-5.5"
     # Weak-mode throughput limits (batch literature extraction)
     WEAK_MAX_PRIORITY_CHUNKS: int = 8
     WEAK_MAX_FACT_CHUNKS: int = 35
@@ -66,6 +79,9 @@ class Settings(BaseSettings):
     STRONG_HOLISTIC_SENSING_ENABLED: bool = False
     LLM_DISABLE_THINKING: bool = True
     LLM_MAX_OUTPUT_TOKENS_PER_CALL: int = 6000
+    LLM_GLOBAL_MAX_CONCURRENT_CALLS: int = 12
+    LLM_BATCH_MAX_CONCURRENT_CALLS: int = 8
+    LLM_INTERACTIVE_RESERVED_CALLS: int = 4
     LLM_METRICS_LOCAL_ENABLED: bool = True
     LLM_METRICS_DIR: str = "./reports/llm_metrics"
     BENCHMARK_REPORT_DIR: str = "./reports/benchmarks"

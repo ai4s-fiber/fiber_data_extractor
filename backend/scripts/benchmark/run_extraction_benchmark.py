@@ -1,7 +1,7 @@
 """Run extraction benchmarks against local PDFs.
 
 Usage from backend/:
-  $env:DASHSCOPE_API_KEY="..."
+  $env:AIGW_API_KEY="..."
   python scripts/benchmark/run_extraction_benchmark.py --pdf-dir ./benchmark_pdfs
 """
 
@@ -27,12 +27,16 @@ if str(BACKEND_ROOT) not in sys.path:
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Benchmark PDF extraction speed and proxy quality.")
     parser.add_argument("--pdf-dir", required=True, help="Directory containing benchmark PDFs.")
-    parser.add_argument("--api-key-env", default="DASHSCOPE_API_KEY", help="Environment variable holding the API key.")
-    parser.add_argument("--base-url", default="https://dashscope.aliyuncs.com/compatible-mode/v1")
-    parser.add_argument("--model", default="qwen3.7-plus")
+    parser.add_argument("--api-key-env", default="AIGW_API_KEY", help="Environment variable holding the API key.")
+    parser.add_argument("--base-url", default="https://aigw.sotatts.online/v1")
+    parser.add_argument("--model", default="gpt-5.5")
     parser.add_argument("--provider", default="openai")
     parser.add_argument("--model-mode", default="weak", choices=["weak", "strong", "auto"])
-    parser.add_argument("--parser-strategy", default="mineru_cloud", choices=["mineru_cloud", "mineru_local", "legacy"])
+    parser.add_argument(
+        "--parser-strategy",
+        default="mineru_cloud",
+        choices=["mineru_cloud", "mineru_local", "mineru_local_sync", "legacy"],
+    )
     parser.add_argument("--limit", type=int, default=3)
     parser.add_argument("--pdf-name", default="", help="Optional exact PDF filename to benchmark.")
     parser.add_argument("--database-url", default="sqlite+aiosqlite:///./benchmark.db")

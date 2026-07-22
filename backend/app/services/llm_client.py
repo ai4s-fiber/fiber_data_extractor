@@ -411,6 +411,8 @@ class OpenAICompatibleClient(LLMClient):
         max_tokens: int = 4096,
         json_mode: bool = False,
     ) -> str:
+        if json_mode and "json" not in f"{system_prompt}\n{user_prompt}":
+            system_prompt = f"{system_prompt}\nReturn json only."
         kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": [

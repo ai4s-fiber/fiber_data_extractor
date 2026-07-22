@@ -4,6 +4,9 @@ import { SettingOutlined, SecurityScanOutlined, SaveOutlined } from '@ant-design
 import { useProject } from '../stores/project';
 import api from '../api/client';
 
+const DEFAULT_LLM_BASE_URL = 'https://aigw.sotatts.online/v1';
+const DEFAULT_LLM_MODEL = 'gpt-5.5';
+
 interface DiagnosticAttempt {
   base_url: string;
   request_url: string;
@@ -37,8 +40,8 @@ export default function SettingsPage() {
           form.setFieldsValue({
             llm_provider: res.data.llm_provider || 'openai',
             llm_api_key: res.data.llm_api_key_masked || '',
-            llm_base_url: res.data.llm_base_url || 'https://api.openai.com/v1',
-            llm_model: res.data.llm_model || 'gpt-4o',
+            llm_base_url: res.data.llm_base_url || DEFAULT_LLM_BASE_URL,
+            llm_model: res.data.llm_model || DEFAULT_LLM_MODEL,
           });
         })
         .catch(() => {
@@ -187,8 +190,8 @@ export default function SettingsPage() {
             onFinish={handleSave}
             initialValues={{
               llm_provider: 'openai',
-              llm_base_url: 'https://api.openai.com/v1',
-              llm_model: 'gpt-4o'
+              llm_base_url: DEFAULT_LLM_BASE_URL,
+              llm_model: DEFAULT_LLM_MODEL
             }}
           >
             <Form.Item
@@ -198,12 +201,12 @@ export default function SettingsPage() {
             >
               <Select onChange={(val) => {
                 if (val === 'openai') {
-                  form.setFieldsValue({ llm_base_url: 'https://api.openai.com/v1', llm_model: 'gpt-4o' });
+                  form.setFieldsValue({ llm_base_url: DEFAULT_LLM_BASE_URL, llm_model: DEFAULT_LLM_MODEL });
                 } else if (val === 'anthropic') {
                   form.setFieldsValue({ llm_base_url: 'https://api.anthropic.com', llm_model: 'claude-sonnet-4-6' });
                 }
               }}>
-                <Select.Option value="openai">OpenAI (兼容 GPT-4o / DeepSeek 等 OpenAI 接口)</Select.Option>
+                <Select.Option value="openai">OpenAI-compatible (AI Gateway / GPT-5.5 等接口)</Select.Option>
                 <Select.Option value="anthropic">Anthropic (Claude 系列模型)</Select.Option>
               </Select>
             </Form.Item>
@@ -225,7 +228,7 @@ export default function SettingsPage() {
               rules={[{ required: true, message: '请输入接口 Base URL' }]}
             >
               <Input
-                placeholder="如 https://api.openai.com/v1 或 https://api.deepseek.com/v1"
+                placeholder="如 https://aigw.sotatts.online/v1 或 https://api.deepseek.com/v1"
                 className="custom-input"
               />
             </Form.Item>
@@ -236,7 +239,7 @@ export default function SettingsPage() {
               rules={[{ required: true, message: '请输入或选择模型名称' }]}
             >
               <Input
-                placeholder="如 gpt-4o, deepseek-chat, glm-4"
+                placeholder="如 gpt-5.5, deepseek-chat, glm-4"
                 className="custom-input"
               />
             </Form.Item>

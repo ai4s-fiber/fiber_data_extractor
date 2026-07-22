@@ -6,12 +6,14 @@ from typing import Any
 
 import httpx
 
+from app.core.config import settings
+
 
 def normalize_openai_base_url_candidates(raw_base_url: str | None) -> list[str]:
     """Return candidate OpenAI-compatible base URLs to test."""
-    submitted = (raw_base_url or "https://api.openai.com/v1").strip().rstrip("/")
+    submitted = (raw_base_url or settings.DEFAULT_LLM_BASE_URL).strip().rstrip("/")
     if not submitted:
-        submitted = "https://api.openai.com/v1"
+        submitted = settings.DEFAULT_LLM_BASE_URL
 
     for suffix in ("/chat/completions", "/v1/chat/completions"):
         if submitted.endswith(suffix):

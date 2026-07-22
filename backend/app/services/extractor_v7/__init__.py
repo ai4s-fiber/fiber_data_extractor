@@ -2,7 +2,14 @@
 
 from app.services.extractor_v7.exceptions import ExtractionCancelled
 from app.services.extractor_v7.reporting import build_extraction_report
-from app.services.extractor_v7.service import V7ExtractorService
+
+
+def __getattr__(name: str):
+    if name == "V7ExtractorService":
+        from app.services.extractor_v7.service import V7ExtractorService
+
+        return V7ExtractorService
+    raise AttributeError(name)
 
 __all__ = [
     "V7ExtractorService",
