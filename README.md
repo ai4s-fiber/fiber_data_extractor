@@ -91,6 +91,12 @@ npm run dev
 
 开发模式默认使用 SQLite，本地数据库和上传/导出产物会生成在 `backend/` 下，并已被 `.gitignore` 忽略。
 
+### 数据库初始化与升级
+
+- 新克隆或全新数据库直接运行 `python -m app.init_db`。该命令会创建完整表结构、补齐运行时索引，完成后主动释放连接并正常退出。
+- 升级已有数据库前先备份数据库，再在 `backend/` 下运行 `alembic upgrade head`；随后照常执行 `python -m app.init_db` 做幂等的运行时结构检查。
+- 不要对空数据库直接运行 `alembic upgrade head`：仓库的首个 Alembic revision 是既有部署的基线标记，不负责从零创建全量表结构。
+
 ### Docker Compose
 
 ```powershell
@@ -174,6 +180,13 @@ cd backend
 $env:AIGW_API_KEY="你的 AI Gateway Key"
 $env:MINERU_CLOUD_TOKEN="你的 MinerU Token"
 
+# 全量提交前先做本地清单、PDF 限制、去重、磁盘和相关性预检
+python scripts\ops\run_bulk_extraction.py `
+  --pdf-dir "E:\数据\创智的paper" `
+  --dry-run `
+  --report-dir ".\reports\bulk-preflight"
+
+# 预检报告确认后启动正式抽取
 python scripts\ops\run_bulk_extraction.py `
   --pdf-dir "E:\数据\创智的paper" `
   --project-name "Fiber corpus" `
@@ -183,8 +196,12 @@ python scripts\ops\run_bulk_extraction.py `
 ```
 
 - 默认使用硬链接把语料纳入 `uploads/`，源目录与项目不在同一磁盘时自动退回复制；不会修改原始 PDF。
-- 默认跳过已完成和失败文献。确认要重试失败项时增加 `--retry-failed`，确认要重新抽取完成项时增加 `--reextract-completed`。
-- 运行摘要写入 `backend/reports/bulk/bulk_project_<id>_summary.json`；其中 `result_summary` 按论文列出任务状态、样品/事实/候选数、QA 标记、缺失证据和精确重复，只有任务失败、证据缺失或重复结果才会将 `healthy` 置为 `false`。报告、PDF、数据库和解析缓存都已被 `.gitignore` 排除。
+- 默认启用保守型本地相关性预筛。它只用成熟的 `pypdf` 读取元数据和前两页，经过 Unicode 规范化后跳过明确综述、书评、勘误、撤稿和纯临床噪声；仅仅“前两页未出现纤维关键词”不会被跳过，文本不足或判断模糊的论文仍提交 MinerU。报告中的 `relevance_skipped_files` 可逐篇审计，使用 `--include-prefilter-rejected` 可强制纳入。
+- 默认跳过已完成和失败文献，并以每篇论文最新一条任务记录为准。确认要重试最新失败项时增加 `--retry-failed`，确认要重新抽取最新已完成项时增加 `--reextract-completed`；旧成功记录不会再阻止最新失败任务重试。
+- 使用一个或多个 `--pdf-name "exact-name.pdf"` 可以只恢复指定论文，不需要重新扫描和提交整个项目。
+- 运行摘要写入 `backend/reports/bulk/bulk_project_<id>_summary.json`；其中 `result_summary` 按论文列出任务状态、样品/事实/候选数、QA 标记、缺失证据和精确重复。`healthy=false` 表示存在工程失败、任务记录丢失、证据缺失或精确重复；`quality_gate_passed=false` 还可能表示意外空结果、模型/解析器配置漂移或需要人工复核的保守 QA 结果。报告、PDF、数据库和解析缓存都已被 `.gitignore` 排除。
+- 带有明确“previously reported / literature / prior work”等引用语言、且没有当前工作结果信号的外部数值保留在 `FactCandidate` 审计层，不进入最终候选记录；仅凭章节标签不会删除数据，避免版面章节误标造成真实结果丢失。
+- PostgreSQL 启动时会把旧版抽取自由文本列自动扩展为 `TEXT`；部署更新时仍建议先执行 `alembic upgrade head`。SQLite 本身不执行 `VARCHAR(n)` 长度限制。
 - MinerU Cloud 官方限制为每批最多 200 个文件、每账号每天最多 10,000 个文件；每天前 2,000 页享受最高处理优先级，超过后仍可处理但优先级会降低。项目默认每批 20 个，以降低超长尾文献和整批重试的影响；不要为了追求提交速度直接使用 200。
 - 官方参考：[Precision Extract API](https://mineru.net/doc/docs/index_en/)、[API 速率限制](https://mineru.net/doc/docs/limit_en/)、[本地 CLI 与后端参数](https://opendatalab.github.io/MinerU/usage/cli_tools/)、[MinerU 源码](https://github.com/opendatalab/MinerU)。
 
@@ -200,8 +217,8 @@ python scripts\ops\run_bulk_extraction.py `
 - `LLM_GLOBAL_MAX_CONCURRENT_CALLS=16`：进程内所有 LLM 请求共享总并发闸门。
 - `LLM_BATCH_MAX_CONCURRENT_CALLS=12`：批量文献抽取的并发上限；实际预算还会受全局上限和预留通道约束。
 - `LLM_INTERACTIVE_RESERVED_CALLS=4`：从全局 LLM 并发中显式预留日常调用通道；系统会在保证已启动任务至少可前进的前提下压缩批量预算。
-- `STRONG_HOLISTIC_PERFORMANCE_WINDOW_CHARS=9000`：按 MinerU 块边界切分 Results，并行调用 `gpt-5.5`；实测相比单个 24k 大窗口延迟更低，同时总 Token 基本持平。
-- `STRONG_HOLISTIC_PERFORMANCE_TIMEOUT_SECONDS=180`：单个大窗口超时后按 MinerU 块缩小窗口重试；重试仍失败则回滚整篇并交给任务层重试，避免把残缺结果标记为完成。
+- `STRONG_HOLISTIC_PERFORMANCE_WINDOW_CHARS=6000`：按 MinerU 块边界切分 Results，并行调用 `gpt-5.5`，降低大窗口长尾超时。
+- `STRONG_HOLISTIC_PERFORMANCE_TIMEOUT_SECONDS=180`：单个窗口超时后按 MinerU 块缩小重试；仍失败时继续走定向 Stage 2 补抽，最终证据与质量门禁仍不通过时才把论文标记为需处理。
 - `STRONG_HOLISTIC_PARALLEL_CALLS=3`：强模式 Holistic 分支最多并行 3 路；样品目录完成后，背景与性能窗口并行执行。
 - `STRONG_HOLISTIC_BACKGROUND_TIMEOUT_SECONDS=60`：组成/工艺背景支路采用短超时；超时只降低背景字段覆盖率，不阻塞性能主链路。
 - `STRONG_TABLE_LLM_TIMEOUT_SECONDS=75`：结构化表格请求使用独立超时；首轮失败后仅将未覆盖表格交给 Stage 2 重试。
@@ -217,4 +234,17 @@ python scripts\ops\run_bulk_extraction.py `
 
 ## 40 列 Excel 导出
 
-导出文件名：`数据主表.xlsx`，Sheet 名：`数据主表`，字段顺序固定 40 列。
+Web 导出和批量导出统一使用 `Main_Data`、`Papers`、`Evidence`、`Parse_Blocks`、`Quality_Report`。`Main_Data` 固定 40 列，包含文献元数据、样品、成分、工艺、结构、性能和核心证据文本，可独立交付；其余 Sheet 提供细粒度溯源。导出是非破坏操作，不会清除数据库候选记录。
+Web 单次导出对超大项目设有内存保护；超过 200 篇、5 万条候选或 25 万个解析块时应使用下面的逐篇批量导出脚本。
+
+全量工程建议按论文生成工作簿，脚本会原子写入、写后校验并按数据库内容签名续传：
+
+```powershell
+cd backend
+python scripts\ops\export_project_workbooks.py `
+  --project-id 1 `
+  --database-url "postgresql+asyncpg://..." `
+  --output-dir "E:\fiber_exports"
+```
+
+重复运行会校验并跳过未变化的工作簿；增加 `--overwrite` 可强制重建。超大证据或解析块会自动拆分到编号 Sheet，避免超过 Excel 单 Sheet 行数上限。完整原始文件名始终保留在 `Papers.original_filename`，磁盘文件名只做 Windows 安全截断。

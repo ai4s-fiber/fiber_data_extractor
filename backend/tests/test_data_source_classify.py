@@ -71,6 +71,24 @@ def test_explicit_external_report_remains_background():
     assert classify_data_source_type(fact) == "background_reference"
 
 
+def test_figure_grounding_survives_incorrect_intro_section_label():
+    fact = {
+        "fact_type": "performance",
+        "_chunk_section": "introduction",
+        "assigned_sample_id": "PES_0.5G nanofiber membrane",
+        "metric_or_parameter": "fiber_diameter",
+        "value": "296",
+        "unit": "nm",
+        "source_location": "page 5, Fig. 2b",
+        "evidence_text": (
+            "When 0.5% graphene is added to PES, the diameter of nanofibers "
+            "is 296 nm."
+        ),
+    }
+
+    assert classify_data_source_type(fact) == "paper_core_result"
+
+
 def test_known_bandgap_frequency_is_a_result_not_a_test_condition():
     fact = {
         "fact_type": "performance",

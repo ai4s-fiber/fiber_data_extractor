@@ -1,4 +1,4 @@
-"""Export clears review queue tests."""
+"""Paper download route registration test."""
 
 import pytest
 from httpx import ASGITransport, AsyncClient

@@ -50,7 +50,7 @@ def test_default_llm_uses_gpt55_gateway_with_batch_budget():
     assert settings.STRONG_HOLISTIC_SAMPLE_MAX_CHARS == 16000
     assert settings.STRONG_HOLISTIC_CATALOG_REASONING_EFFORT == "low"
     assert settings.STRONG_HOLISTIC_PERFORMANCE_TIMEOUT_SECONDS == 180
-    assert settings.STRONG_HOLISTIC_PERFORMANCE_WINDOW_CHARS == 9000
+    assert settings.STRONG_HOLISTIC_PERFORMANCE_WINDOW_CHARS == 6000
     assert settings.STRONG_HOLISTIC_WINDOW_OVERLAP_BLOCKS == 1
     assert settings.STRONG_HOLISTIC_PARALLEL_CALLS == 3
     assert settings.STRONG_HOLISTIC_BACKGROUND_TIMEOUT_SECONDS == 60

@@ -48,6 +48,20 @@ PERFORMANCE_CATEGORIES: dict[str, dict] = {
                              "E_1_GPa", "E1_GPa", "e_1_gpa", "e1_gpa"],
                 "common_units": ["MPa", "GPa"],
             },
+            "storage_modulus": {
+                "synonyms": [
+                    "储能模量", "storage modulus", "energy storage modulus",
+                    "dynamic storage modulus",
+                ],
+                "common_units": ["MPa", "GPa", "kPa", "Pa"],
+            },
+            "storage_modulus_improvement": {
+                "synonyms": [
+                    "storage modulus improvement", "storage modulus increase",
+                    "increase in storage modulus",
+                ],
+                "common_units": ["%"],
+            },
             "Poissons_ratio": {
                 "synonyms": ["Poisson's ratio", "Poisson ratio", "Poissons ratio", "泊松比"],
                 "common_units": ["-", "dimensionless"],
@@ -88,6 +102,13 @@ PERFORMANCE_CATEGORIES: dict[str, dict] = {
                 "synonyms": ["弯曲强度", "flexural strength", "抗弯强度", "bending strength"],
                 "common_units": ["MPa"],
             },
+            "flexural_strength_improvement": {
+                "synonyms": [
+                    "flexural strength improvement", "flexural strength increase",
+                    "increase in flexural strength",
+                ],
+                "common_units": ["%"],
+            },
             "flexural_modulus": {
                 "synonyms": ["弯曲模量", "flexural modulus", "bending modulus"],
                 "common_units": ["MPa", "GPa"],
@@ -97,8 +118,85 @@ PERFORMANCE_CATEGORIES: dict[str, dict] = {
                 "common_units": ["-", "HV", "Shore D"],
             },
             "impact_strength": {
-                "synonyms": ["冲击强度", "impact strength", "toughness"],
-                "common_units": ["kJ/m²", "J/m"],
+                "synonyms": ["冲击强度", "impact strength"],
+                "common_units": ["kJ/m²", "J/m²"],
+            },
+            "fracture_toughness": {
+                "synonyms": ["fracture toughness"],
+                "common_units": ["J/m²", "kJ/m²", "MPa·m^0.5"],
+            },
+            "interlaminar_fracture_toughness": {
+                "synonyms": ["interlaminar fracture toughness"],
+                "common_units": ["J/m²", "kJ/m²"],
+            },
+            "mode_I_interlaminar_fracture_toughness": {
+                "synonyms": [
+                    "mode I interlaminar fracture toughness",
+                    "mode-I interlaminar fracture toughness", "GIC", "G_IC",
+                ],
+                "common_units": ["J/m²", "kJ/m²"],
+            },
+            "mode_II_interlaminar_fracture_toughness": {
+                "synonyms": [
+                    "mode II interlaminar fracture toughness",
+                    "mode-II interlaminar fracture toughness", "GIIC", "G_IIC",
+                ],
+                "common_units": ["J/m²", "kJ/m²"],
+            },
+            "fracture_toughness_improvement": {
+                "synonyms": [
+                    "fracture toughness improvement",
+                    "fracture toughness increase",
+                    "increase in fracture toughness",
+                ],
+                "common_units": ["%"],
+            },
+            "mode_I_interlaminar_fracture_toughness_improvement": {
+                "synonyms": [
+                    "mode I interlaminar fracture toughness improvement",
+                    "GIC improvement", "G_IC improvement",
+                ],
+                "common_units": ["%"],
+            },
+            "mode_II_interlaminar_fracture_toughness_improvement": {
+                "synonyms": [
+                    "mode II interlaminar fracture toughness improvement",
+                    "GIIC improvement", "G_IIC improvement",
+                ],
+                "common_units": ["%"],
+            },
+            "interlaminar_shear_strength": {
+                "synonyms": [
+                    "interlaminar shear strength", "ILSS",
+                ],
+                "common_units": ["MPa", "GPa"],
+            },
+            "interlaminar_shear_strength_growth_rate": {
+                "synonyms": [
+                    "interlaminar shear strength growth rate",
+                    "ILSS growth rate", "ILSS increase",
+                ],
+                "common_units": ["%"],
+            },
+            "breaking_energy": {
+                "synonyms": ["breaking energy", "break energy"],
+                "common_units": ["J", "mJ"],
+            },
+            "pull_out_force_improvement": {
+                "synonyms": [
+                    "pull-out force improvement", "pullout force improvement",
+                    "pull-out force increase", "pullout force increase",
+                    "pull-out force ratio",
+                ],
+                "common_units": ["times", "fold", "×", "dimensionless"],
+            },
+            "maximum_deformation": {
+                "synonyms": ["maximum deformation", "maximum displacement"],
+                "common_units": ["mm", "cm", "m", "%"],
+            },
+            "deformation_speed": {
+                "synonyms": ["deformation speed", "deformation rate"],
+                "common_units": ["mm/s", "cm/s", "m/s"],
             },
             "tear_strength": {
                 "synonyms": ["撕裂强度", "tear strength"],
@@ -188,6 +286,22 @@ PERFORMANCE_CATEGORIES: dict[str, dict] = {
                              "thermal decomposition temperature", "Td5%", "Td10%",
                              "Td5", "Td10", "T_d5%", "T_d10%"],
                 "common_units": ["°C"],
+            },
+            "austenite_start_temperature": {
+                "synonyms": ["austenite start", "austenite start temperature", "As"],
+                "common_units": ["°C", "K"],
+            },
+            "austenite_finish_temperature": {
+                "synonyms": ["austenite finish", "austenite finish temperature", "Af"],
+                "common_units": ["°C", "K"],
+            },
+            "martensite_start_temperature": {
+                "synonyms": ["martensite start", "martensite start temperature", "Ms"],
+                "common_units": ["°C", "K"],
+            },
+            "martensite_finish_temperature": {
+                "synonyms": ["martensite finish", "martensite finish temperature", "Mf"],
+                "common_units": ["°C", "K"],
             },
             "weight_loss": {
                 "synonyms": ["失重率", "weight loss", "mass loss", "TGA weight loss"],
@@ -450,6 +564,39 @@ PERFORMANCE_CATEGORIES: dict[str, dict] = {
             "fiber_length": {
                 "synonyms": ["纤维长度", "fiber length", "nanofiber length", "长度"],
                 "common_units": ["nm", "μm", "mm"],
+            },
+            "particle_size": {
+                "synonyms": [
+                    "颗粒尺寸", "particle size", "average particle size",
+                    "particle diameter",
+                ],
+                "common_units": ["nm", "μm", "mm"],
+            },
+            "lateral_size": {
+                "synonyms": [
+                    "横向尺寸", "lateral size", "transverse size",
+                    "maximum transverse size",
+                ],
+                "common_units": ["nm", "μm", "mm"],
+            },
+            "areal_density": {
+                "synonyms": [
+                    "面密度", "areal density", "surface density", "basis weight",
+                    "grammage", "gramme per square meter", "gramme/square meter",
+                    "grams per square meter", "GSM",
+                ],
+                "common_units": ["g/m²", "g/m2", "mg/cm²", "gsm"],
+            },
+            "surface_tension": {
+                "synonyms": ["表面张力", "surface tension"],
+                "common_units": ["mN/m", "N/m"],
+            },
+            "degradation_rate": {
+                "synonyms": [
+                    "降解率", "degradation rate", "biodegradation rate",
+                    "mass degradation rate",
+                ],
+                "common_units": ["%"],
             },
             "weight_percent_gain": {
                 "synonyms": [
@@ -769,16 +916,34 @@ CORE_METRICS: set[str] = {
     "thermal_shrinkage",
     "fiber_diameter",
     "fiber_length",
+    "particle_size",
+    "lateral_size",
+    "areal_density",
     "thermal_conductivity",
     "surface_temperature",
     "tensile_strength",
     "elongation_at_break",
     "Youngs_modulus",
+    "storage_modulus",
+    "storage_modulus_improvement",
+    "degradation_rate",
     "inelastic_threshold_stress",
     "compressive_strength",
     "compressive_stress",
     "flexural_strength",
+    "flexural_strength_improvement",
     "flexural_modulus",
+    "fracture_toughness",
+    "interlaminar_fracture_toughness",
+    "mode_I_interlaminar_fracture_toughness",
+    "mode_II_interlaminar_fracture_toughness",
+    "fracture_toughness_improvement",
+    "mode_I_interlaminar_fracture_toughness_improvement",
+    "mode_II_interlaminar_fracture_toughness_improvement",
+    "interlaminar_shear_strength",
+    "interlaminar_shear_strength_growth_rate",
+    "impact_strength",
+    "breaking_energy",
     "water_contact_angle",
     "pH",
     "oil_contact_angle",
@@ -1005,13 +1170,32 @@ def get_common_units(metric: str) -> list[str]:
 
 def find_structure_feature_canonical(name: str) -> str | None:
     """Given a structure feature name, return the canonical name."""
-    lower = name.strip().lower()
+    lower = re.sub(r"[\s_]+", " ", (name or "").strip().lower())
+    if not lower:
+        return None
+    phrase_candidates: list[tuple[str, str]] = []
     for canonical, info in STRUCTURE_FEATURES.items():
-        if lower == canonical.lower():
+        canonical_phrase = canonical.lower().replace("_", " ")
+        if lower == canonical_phrase:
             return canonical
+        phrase_candidates.append((canonical_phrase, canonical))
         for syn in info["synonyms"]:
-            if syn.lower() == lower or syn.lower() in lower or lower in syn.lower():
+            phrase = re.sub(r"[\s_]+", " ", syn.strip().lower())
+            if phrase == lower:
                 return canonical
+            phrase_candidates.append((phrase, canonical))
+
+    # Short symbols such as Ra, fa, fc, ID and Xc are unsafe as substrings
+    # ("storage", "surface", "polyamide"). Only exact matches are accepted
+    # above; longer feature phrases may still appear in qualified labels.
+    for phrase, canonical in sorted(
+        phrase_candidates, key=lambda item: len(item[0]), reverse=True
+    ):
+        compact = re.sub(r"[^\w]", "", phrase, flags=re.UNICODE)
+        if len(compact) < 4:
+            continue
+        if re_search_word_phrase(phrase, lower):
+            return canonical
     return None
 
 def find_process_parameter_canonical(name: str) -> str | None:

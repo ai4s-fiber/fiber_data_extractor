@@ -12,6 +12,7 @@ from app.services.extractor_v7.holistic_extract import (
     catalog_supports_shared_background,
     classify_table_role,
     deterministic_performance_table_facts,
+    deterministic_transposed_performance_table_facts,
     enrich_sample_cards,
     merge_holistic_and_atomic_facts,
     performances_to_facts,
@@ -25,6 +26,8 @@ from app.services.extractor_v7.holistic_extract import (
     split_context_windows,
     table_rows_to_facts,
     is_material_sample_id,
+    _run_performance_sweep,
+    _table_row_shards,
 )
 
 
@@ -39,6 +42,32 @@ def test_sensing_and_spectroscopy_prompts_format():
         rendered = prompt.format(sample_ids="S1, S2")
         assert "S1, S2" in rendered
         assert '{"performances":' in rendered
+
+
+@pytest.mark.asyncio
+async def test_performance_sweep_accepts_nested_list_response():
+    async def fake_llm_json(*_args, **_kwargs):
+        return [[{
+            "sample_id": "S1",
+            "performance_metric": "tensile strength",
+            "performance_value": "12",
+            "performance_unit": "MPa",
+            "evidence_text": "S1 tensile strength was 12 MPa.",
+        }]], ""
+
+    facts = await _run_performance_sweep(
+        prompt=PERFORMANCE_PROMPT,
+        results_text="S1 tensile strength was 12 MPa.",
+        sample_ids=["S1"],
+        llm_json=fake_llm_json,
+        llm_timeout=5,
+        max_tokens=1000,
+        stage="nested_response_test",
+        results_max_chars=1000,
+    )
+
+    assert len(facts) == 1
+    assert facts[0]["metric_or_parameter"] == "tensile_strength"
 
 
 def test_specialized_spectroscopy_context_excludes_unrelated_results():
@@ -229,6 +258,28 @@ def test_split_context_windows_preserves_mineru_blocks_with_overlap():
     assert all(block in "\n\n".join(windows) for block in blocks)
     assert blocks[1] in windows[0]
     assert blocks[1] in windows[1]
+
+
+def test_table_row_shards_preserve_header_and_original_row_numbers():
+    header = "Table 1\n[columns]\tSample\tStrength (MPa)"
+    rows = {
+        index: f"[row {index}]\tS{index}\t{index * 10}"
+        for index in range(1, 9)
+    }
+
+    shards = _table_row_shards(
+        header,
+        rows,
+        row_numbers=list(rows),
+        max_rows=3,
+        max_chars=1000,
+    )
+
+    assert len(shards) == 3
+    assert all(shard.startswith(header) for shard in shards)
+    assert "[row 1]" in shards[0]
+    assert "[row 8]" in shards[-1]
+    assert sum(shard.count("[row ") for shard in shards) == 8
 
 
 def test_performance_context_keeps_data_from_late_pages_not_long_narrative():
@@ -805,6 +856,154 @@ def test_table_rows_to_facts_accepts_matching_unknown_result_column():
     assert len(facts) == 2
     assert {fact["value"] for fact in facts} == {"21.08", "2.940"}
     assert {fact["assigned_sample_id"] for fact in facts} == {"acetylated jute"}
+
+
+def test_table_rows_use_grounded_column_metric_instead_of_llm_alias():
+    table = (
+        "Table 3. Dynamic mechanical results\n"
+        "[columns]\tSample\tEnergy storage modulus (GPa)\n"
+        "[row 1]\tCF/EP\t118"
+    )
+
+    facts = table_rows_to_facts(
+        [{
+            "row": 1,
+            "sample_id": "CF/EP",
+            "metric": "storage modulus",
+            "value": "118",
+            "unit": "GPa",
+            "condition": "25 C",
+        }],
+        table_text=table,
+        source_location="p.6, Table 3",
+        known_sample_ids=["CF/EP"],
+    )
+
+    assert len(facts) == 1
+    assert facts[0]["metric_or_parameter"] == "storage_modulus"
+
+
+def test_table_rows_reject_material_identity_with_embedded_number():
+    table = (
+        "Table 2. Specification of yarn and fabric samples\n"
+        "[columns]\tSample code\tYarn\tFabric\n"
+        "[row 1]\tPOL-I-1\tDtex 156/46/1\tPolyamide 6.6"
+    )
+
+    facts = table_rows_to_facts(
+        [{
+            "row": 1,
+            "sample_id": "POL-I-1",
+            "metric": "Fabric",
+            "value": "Polyamide 6.6",
+            "unit": "",
+            "condition": "",
+        }],
+        table_text=table,
+        source_location="p.5, Table 2",
+        known_sample_ids=["POL-I-1"],
+    )
+
+    assert facts == []
+
+
+def test_catalog_sanitizer_rejects_metric_and_test_parameter_labels():
+    cleaned = sanitize_catalog_samples([
+        {"sample_id": "FRP", "material_system": "fiber-reinforced plastic"},
+        {"sample_id": "Tensile strength in MPa"},
+        {"sample_id": "Young's modulus in GPa"},
+        {"sample_id": "Testing speed in mm/min"},
+        {"sample_id": "Initial force in cN"},
+        {"sample_id": "Warp"},
+    ])
+
+    assert [sample["sample_id"] for sample in cleaned] == ["FRP"]
+
+
+def test_catalog_sanitizer_removes_anaphoric_and_metric_name_prefixes():
+    cleaned = sanitize_catalog_samples([
+        {
+            "sample_id": "that of epoxy resin matrix",
+            "evidence_text": "The value was lower than that of epoxy resin matrix.",
+        },
+        {
+            "sample_id": "energy storage modulus of PES intercalation composite",
+            "evidence_text": (
+                "The energy storage modulus of PES intercalation composite "
+                "was 86 GPa."
+            ),
+        },
+    ])
+
+    assert [sample["sample_id"] for sample in cleaned] == [
+        "epoxy resin matrix",
+        "PES intercalation composite",
+    ]
+
+
+def test_context_only_tables_do_not_spend_performance_extraction_calls():
+    assert classify_table_role(
+        "Table 2. Norm and dimension of FRPs for characterization.\n"
+        "[columns]\tTest\tNorm\tLength\tWidth\tThickness\n"
+        "[row 1]\tTensile\tDIN EN ISO 13934-1\t250\t15\t2"
+    ) == "context"
+    assert classify_table_role(
+        "Table 3. Test parameters for pull-out test.\n"
+        "[columns]\tParameter\tValue\n"
+        "[row 1]\tTesting speed in mm/min\t20"
+    ) == "context"
+    assert classify_table_role(
+        "Table 2. Properties of liquids for experiment.\n"
+        "[columns]\tSolution type\tDensity (g/cm3)\tSurface tension (mN/m)\n"
+        "[row 1]\tWater\t1.01\t68.38"
+    ) == "context"
+
+
+def test_transposed_mechanical_table_is_extracted_deterministically():
+    table = (
+        "Table 4. Mechanical test results.\n"
+        "[columns]\t\tWarp\tSD\tWeft\tSD\n"
+        "[row 1]\tTensile strength in MPa\t170.42\t10.18\t80.62\t10.06\n"
+        "[row 2]\tYoung's modulus in GPa\t7.97\t0.42\t5.18\t0.31\n"
+        "[row 3]\tFlexural strength in MPa\t83.71\t5.85\t35.76\t1.52\n"
+        "[row 4]\tFlexural modulus in GPa\t4.78\t0.51\t2.17\t0.17\n"
+        "[row 5]\tImpact strength in kJ/m $^{2}$\t59.93\t4.98\t28.11\t2.36\n"
+        "[row 6]\tBreaking energy in J\t1.16\t0.06\t0.52\t0.04"
+    )
+
+    facts = deterministic_transposed_performance_table_facts(
+        table_text=table,
+        table_context=(
+            "The mechanical test results of FRP with standard deviation "
+            "are shown in Table 4."
+        ),
+        source_location="p.9, Table 4",
+        source_block_id="B000080",
+        source_page=9,
+    )
+
+    assert len(facts) == 12
+    assert {fact["assigned_sample_id"] for fact in facts} == {
+        "FRP_Warp", "FRP_Weft",
+    }
+    assert {fact["metric_or_parameter"] for fact in facts} == {
+        "tensile_strength",
+        "Youngs_modulus",
+        "flexural_strength",
+        "flexural_modulus",
+        "impact_strength",
+        "breaking_energy",
+    }
+    tensile_warp = next(
+        fact
+        for fact in facts
+        if fact["assigned_sample_id"] == "FRP_Warp"
+        and fact["metric_or_parameter"] == "tensile_strength"
+    )
+    assert tensile_warp["value"] == "170.42"
+    assert tensile_warp["unit"] == "MPa"
+    assert "standard_deviation=10.18 MPa" in tensile_warp["condition"]
+    assert all(fact["extraction_method"] == "rule_table_performance" for fact in facts)
 
 
 ELECTROSPINNING_PROCESS_TABLE = (

@@ -20,14 +20,14 @@ class FactCandidate(Base):
     )  # composition | process | structure | performance
     subject_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     candidate_sample_ids: Mapped[str | None] = mapped_column(Text, nullable=True)
-    metric_or_parameter: Mapped[str | None] = mapped_column(String(300), nullable=True)
-    value: Mapped[str | None] = mapped_column(String(200), nullable=True)
-    unit: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    metric_or_parameter: Mapped[str | None] = mapped_column(Text, nullable=True)
+    value: Mapped[str | None] = mapped_column(Text, nullable=True)
+    unit: Mapped[str | None] = mapped_column(Text, nullable=True)
     method: Mapped[str | None] = mapped_column(Text, nullable=True)
     condition: Mapped[str | None] = mapped_column(Text, nullable=True)
-    category: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    category: Mapped[str | None] = mapped_column(Text, nullable=True)
     evidence_text: Mapped[str | None] = mapped_column(Text, nullable=True)
-    source_location: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    source_location: Mapped[str | None] = mapped_column(Text, nullable=True)
     source_block_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
     source_page: Mapped[int | None] = mapped_column(Integer, nullable=True)
     source_bbox_json: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -40,7 +40,7 @@ class FactCandidate(Base):
     confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
 
     # Sample assignment result
-    assigned_sample_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    assigned_sample_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     assignment_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     assignment_status: Mapped[str] = mapped_column(
         String(30), nullable=False, default="unassigned"

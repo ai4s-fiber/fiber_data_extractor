@@ -40,7 +40,10 @@ from app.services.llm_client import create_llm_client
 from app.services.llm_budget import clamp_max_tokens
 from app.services.llm_concurrency import llm_call_slot, per_job_llm_parallel_limit
 from app.services.document_context import parse_pdf_to_document_context
-from app.services.document_type import classify_document_type
+from app.services.document_type import (
+    classify_document_type,
+    is_plausible_paper_title,
+)
 from app.services.extraction_results import (
     purge_extraction_results,
     restore_paper_status_after_interruption,
@@ -76,7 +79,7 @@ from app.services.extractor_v7.prompts import (
     WEAK_FACTS_PROMPT,
     STAGE3_ASSIGNMENT_PROMPT,
 )
-from app.services.extractor_v7.exceptions import ExtractionCancelled, NoExtractableResults
+from app.services.extractor_v7.exceptions import ExtractionCancelled
 from app.services.extractor_v7.reporting import build_extraction_report
 from app.services.extractor_v7.fact_postprocess import (
     is_placeholder_performance_value,
@@ -105,6 +108,7 @@ from app.services.extractor_v7.sample_value_alignment import (
 )
 from app.services.extractor_v7.holistic_extract import (
     TABLE_PERFORMANCE_PROMPT,
+    _response_rows,
     catalog_to_mentions,
     enrich_sample_cards as enrich_sample_cards_holistic,
     merge_holistic_and_atomic_facts,
@@ -455,18 +459,19 @@ class V7ExtractorService:
         records: list[dict],
         *,
         fact_count: int,
-    ) -> None:
-        """Fail closed when strong source evidence collapses to zero output."""
+    ) -> str:
+        """Describe suspicious zero output so intermediate facts can be retained."""
         if records:
-            return
+            return ""
         signal_blocks = V7ExtractorService._quantitative_result_signal_blocks(chunks)
         if not signal_blocks:
-            return
+            return ""
         preview = ", ".join(signal_blocks[:8])
-        raise NoExtractableResults(
+        return (
             "结果章节存在明确的定量性能证据，但抽取后没有生成可用候选记录"
             f"（中间事实 {fact_count} 条；证据块: {preview}）。"
-            "任务已停止落库，请检查章节识别、模型响应或事实到记录的转换。"
+            "已保留样品卡和中间事实并标记人工复核，请检查章节识别、"
+            "模型响应或事实到记录的转换。"
         )
 
     @staticmethod
@@ -1095,7 +1100,7 @@ class V7ExtractorService:
                     metric.prompt_tokens = int(usage.get("prompt_tokens") or 0)
                     metric.completion_tokens = int(usage.get("completion_tokens") or 0)
                     metric.total_tokens = int(usage.get("total_tokens") or 0)
-                    if parsed.get("_parse_failed"):
+                    if isinstance(parsed, dict) and parsed.get("_parse_failed"):
                         raise RuntimeError(
                             f"LLM stage '{stage}' returned unusable JSON"
                         )
@@ -1152,7 +1157,7 @@ class V7ExtractorService:
                     metric.prompt_tokens = int(usage.get("prompt_tokens") or 0)
                     metric.completion_tokens = int(usage.get("completion_tokens") or 0)
                     metric.total_tokens = int(usage.get("total_tokens") or 0)
-                    if parsed.get("_parse_failed"):
+                    if isinstance(parsed, dict) and parsed.get("_parse_failed"):
                         raise RuntimeError(
                             f"Vision LLM stage '{stage}' returned unusable JSON"
                         )
@@ -1209,7 +1214,7 @@ class V7ExtractorService:
                     timeout_seconds=llm_timeout,
                 )
                 batch_mentions: list[dict] = []
-                items = parsed.get("sample_mentions") or parsed.get("_items") or []
+                items = _response_rows(parsed, "sample_mentions", "_items")
                 if isinstance(items, dict):
                     items = [items]
                 anchor = batch[0]
@@ -1431,7 +1436,7 @@ class V7ExtractorService:
                     timeout_seconds=llm_timeout,
                 )
                 batch_vars: list[dict] = []
-                items = parsed.get("variable_candidates") or parsed.get("_items") or []
+                items = _response_rows(parsed, "variable_candidates", "_items")
                 if isinstance(items, dict):
                     items = [items]
                 for item in items:
@@ -1538,12 +1543,28 @@ class V7ExtractorService:
                 if year_match:
                     metadata["year"] = year_match.group(1)
 
-        if not metadata.get("paper_title"):
-            lines = [clean_line(line) for line in front_matter.splitlines() if clean_line(line)]
+        if not is_plausible_paper_title(
+            str(metadata.get("paper_title") or "")
+        ):
+            metadata.pop("paper_title", None)
+            chunk_lines = [
+                clean_line(str(chunk.get("raw_text") or ""))
+                for chunk in chunks or []
+                if int(chunk.get("page_number") or 0) <= 2
+                and str(chunk.get("section_name") or "") == "title_abstract"
+            ]
+            lines = [
+                *chunk_lines,
+                *[
+                    clean_line(line)
+                    for line in front_matter.splitlines()
+                    if clean_line(line)
+                ],
+            ]
             title_candidates = [
-                line for line in lines[:30]
+                line for line in lines[:60]
                 if 20 <= len(line) <= 220
-                and not re.search(r"^(abstract|keywords|doi|http|journal|volume)\b", line, re.IGNORECASE)
+                and is_plausible_paper_title(line)
                 and not re.search(r"^\[page\s+\d+\]$", line, re.IGNORECASE)
                 and not _looks_like_affiliation_or_address(line)
             ]
@@ -1635,11 +1656,62 @@ class V7ExtractorService:
                     else V7ExtractorService._chunk_for_prompt(anchor, 6500)
                 )
                 is_table = any(c.get("source_type") == "table_text" for c in unit)
+
+                async def call_stage2_with_retry(
+                    system_prompt: str,
+                    user_prompt: str,
+                    *,
+                    max_tokens: int,
+                    timeout_seconds: int,
+                    stage: str,
+                    retry_user_prompt: str | None = None,
+                ):
+                    try:
+                        return await V7ExtractorService._llm_json_tolerant(
+                            client,
+                            system_prompt,
+                            user_prompt,
+                            max_tokens=max_tokens,
+                            timeout_seconds=timeout_seconds,
+                            stage=stage,
+                        )
+                    except ExtractionCancelled:
+                        raise
+                    except Exception as first_exc:
+                        message = str(first_exc).lower()
+                        exception_name = type(first_exc).__name__.lower()
+                        retryable = isinstance(first_exc, TimeoutError) or any(
+                            token in f"{exception_name} {message}"
+                            for token in (
+                                "timed out",
+                                "timeout",
+                                "unusable json",
+                                "non-json",
+                                "no json",
+                            )
+                        )
+                        if not retryable:
+                            raise
+                        try:
+                            return await V7ExtractorService._llm_json_tolerant(
+                                client,
+                                system_prompt,
+                                retry_user_prompt or user_prompt,
+                                max_tokens=max(900, int(max_tokens * 0.8)),
+                                timeout_seconds=min(timeout_seconds, 120),
+                                stage=f"{stage}_retry",
+                            )
+                        except ExtractionCancelled:
+                            raise
+                        except Exception as retry_exc:
+                            raise RuntimeError(
+                                f"{first_exc}; retry failed: {retry_exc}"
+                            ) from retry_exc
+
                 try:
                     if is_table and model_mode == "strong":
                         table_text = str(anchor.get("raw_text") or "")
-                        parsed, _ = await V7ExtractorService._llm_json_tolerant(
-                            client,
+                        parsed, _ = await call_stage2_with_retry(
                             TABLE_PERFORMANCE_PROMPT.format(
                                 sample_ids=", ".join(known_sample_ids or [])
                                 or "Use the exact material/specimen labels in the table",
@@ -1652,9 +1724,7 @@ class V7ExtractorService:
                             ),
                             stage="stage2_table_fallback",
                         )
-                        items = parsed.get("rows") or parsed.get("_items") or []
-                        if isinstance(items, dict):
-                            items = [items]
+                        items = _response_rows(parsed, "rows", "_items")
                         unit_facts = table_rows_to_facts(
                             items,
                             table_text=table_text,
@@ -1665,8 +1735,7 @@ class V7ExtractorService:
                             known_sample_ids=known_sample_ids,
                         )
                     else:
-                        parsed, _ = await V7ExtractorService._llm_json_tolerant(
-                            client,
+                        parsed, _ = await call_stage2_with_retry(
                             prompt,
                             prompt_text,
                             max_tokens=(
@@ -1680,10 +1749,9 @@ class V7ExtractorService:
                             ),
                             timeout_seconds=llm_timeout,
                             stage="stage2_facts",
+                            retry_user_prompt=prompt_text[:4500],
                         )
-                        items = parsed.get("facts") or parsed.get("_items") or []
-                        if isinstance(items, dict):
-                            items = [items]
+                        items = _response_rows(parsed, "facts", "_items")
                         extraction_method = V7ExtractorService._extraction_method_for_chunk(anchor)
                         unit_facts = []
                         for item in items:
@@ -1911,17 +1979,12 @@ class V7ExtractorService:
         return len(unique)
 
     @staticmethod
-    def _guard_incomplete_holistic_performance(warnings: list[str]) -> None:
-        """Reject partial strong-mode performance sweeps after targeted retries."""
-        failures = [
+    def _guard_incomplete_holistic_performance(warnings: list[str]) -> list[str]:
+        """Return core sweep failures that require full Stage 2 fallback."""
+        return [
             warning for warning in warnings
             if warning.startswith("performances:")
         ]
-        if failures:
-            raise RuntimeError(
-                "Holistic performance extraction incomplete after targeted retry; "
-                f"refusing partial output: {'; '.join(failures)}"
-            )
 
     @staticmethod
     def _stage2_execution_units(chunks: list[dict], model_mode: str) -> list[list[dict]]:
@@ -2189,7 +2252,7 @@ class V7ExtractorService:
                 timeout_seconds=settings.STRONG_LLM_TIMEOUT_SECONDS,
                 stage="stage3_assignment",
             )
-            batch_assignments = parsed.get("assignments") or parsed.get("_items") or []
+            batch_assignments = _response_rows(parsed, "assignments", "_items")
             all_assignments.extend(batch_assignments)
 
         # Build assignment lookup by fact_id
@@ -2466,6 +2529,61 @@ class V7ExtractorService:
         return [value]
 
     @staticmethod
+    def _serialize_sample_aliases(value: Any) -> str | None:
+        aliases = parse_sample_aliases(value)
+        return (
+            json.dumps(aliases, ensure_ascii=False)
+            if aliases
+            else None
+        )
+
+    @staticmethod
+    def _sanitize_sample_cards(sample_cards: list[dict]) -> list[dict]:
+        """Apply the shared sample-ID sanitizer before catalog persistence."""
+        from app.services.extractor_v7.sample_id_rules import sanitize_sample_id
+
+        cleaned: list[dict] = []
+        by_id: dict[str, dict] = {}
+        for raw_card in sample_cards:
+            card = dict(raw_card)
+            original = str(card.get("sample_id") or "").strip()
+            sample_id, _, _ = sanitize_sample_id(
+                original,
+                str(card.get("evidence_text") or ""),
+            )
+            if not sample_id or not is_material_sample_id(sample_id):
+                continue
+            aliases = set(parse_sample_aliases(card.get("sample_aliases")))
+            if normalize_for_match(original) != normalize_for_match(sample_id):
+                aliases.add(original)
+            card["sample_id"] = sample_id
+            card["sample_aliases"] = sorted(
+                alias
+                for alias in aliases
+                if alias
+                and normalize_for_match(alias) != normalize_for_match(sample_id)
+            )
+            key = normalize_for_match(sample_id)
+            existing = by_id.get(key)
+            if existing is None:
+                by_id[key] = card
+                cleaned.append(card)
+                continue
+            existing_aliases = set(
+                parse_sample_aliases(existing.get("sample_aliases"))
+            )
+            existing["sample_aliases"] = sorted(existing_aliases | aliases)
+            for field in (
+                "sample_group_id", "material_system", "fiber_type",
+                "variable_name", "variable_value", "variable_unit",
+                "composition_expression", "process_route",
+                "source_location", "evidence_text",
+            ):
+                if not existing.get(field) and card.get(field):
+                    existing[field] = card[field]
+        return cleaned
+
+    @staticmethod
     def _append_unique(existing: str | None, addition: str | None) -> str:
         addition = (addition or "").strip()
         if not addition:
@@ -2571,6 +2689,104 @@ class V7ExtractorService:
                     fact["assigned_sample_id"] = best_sid
                     fact["assignment_confidence"] = max(float(fact.get("assignment_confidence") or 0), 0.8)
                     fact["assignment_status"] = "assigned"
+        return facts
+
+    @staticmethod
+    def _repair_sample_assignment_from_variable_context(
+        facts: list[dict],
+        samples: list[dict],
+    ) -> list[dict]:
+        """Bind scoped composition/load conditions to the matching sample card."""
+        generic_variable_words = {
+            "amount", "content", "fraction", "level", "loading",
+            "concentration", "ratio", "percentage",
+        }
+        variable_samples: list[tuple[dict, str, str, tuple[str, ...]]] = []
+        for sample in samples:
+            value_match = re.fullmatch(
+                r"[+-]?\d+(?:\.\d+)?",
+                str(sample.get("variable_value") or "").strip(),
+            )
+            unit = re.sub(
+                r"[\s.]",
+                "",
+                str(sample.get("variable_unit") or "").lower(),
+            )
+            if not value_match or unit not in {"%", "wt%", "vol%", "mol%"}:
+                continue
+            concepts = tuple(
+                token
+                for token in re.findall(
+                    r"[a-z0-9]+",
+                    str(sample.get("variable_name") or "").lower(),
+                )
+                if token not in generic_variable_words and len(token) >= 2
+            )
+            if concepts:
+                variable_samples.append(
+                    (sample, value_match.group(0), unit, concepts)
+                )
+
+        for fact in facts:
+            if fact.get("_background_only"):
+                continue
+            if (
+                fact.get("extraction_method") in {
+                    "AI_holistic_table", "rule_table_performance",
+                }
+                and fact.get("_source_table_row") is not None
+            ):
+                continue
+            condition = str(fact.get("condition") or "").strip()
+            if not condition:
+                continue
+            condition_lower = condition.lower()
+            matches: dict[str, dict] = {}
+            for sample, value, unit, concepts in variable_samples:
+                if not any(
+                    re.search(rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])",
+                              condition_lower)
+                    for term in concepts
+                ):
+                    continue
+                unit_pattern = {
+                    "%": r"%",
+                    "wt%": r"(?:wt\.?\s*%|%)",
+                    "vol%": r"(?:vol\.?\s*%|%)",
+                    "mol%": r"(?:mol\.?\s*%|%)",
+                }[unit]
+                if not re.search(
+                    rf"(?<![\d.]){re.escape(value)}(?![\d.])\s*{unit_pattern}",
+                    condition,
+                    re.IGNORECASE,
+                ):
+                    continue
+                sid = str(sample.get("sample_id") or "").strip()
+                if sid:
+                    matches[V7ExtractorService._normalize_for_match(sid)] = sample
+
+            if len(matches) != 1:
+                continue
+            matched_sample = next(iter(matches.values()))
+            sample_id = str(matched_sample.get("sample_id") or "")
+            if (
+                V7ExtractorService._normalize_for_match(
+                    fact.get("assigned_sample_id") or ""
+                )
+                == V7ExtractorService._normalize_for_match(sample_id)
+            ):
+                continue
+            fact["assigned_sample_id"] = sample_id
+            fact["candidate_sample_ids"] = [sample_id]
+            fact["assignment_confidence"] = max(
+                float(fact.get("assignment_confidence") or 0),
+                0.92,
+            )
+            fact["assignment_status"] = "assigned"
+            fact["assignment_reason"] = V7ExtractorService._append_unique(
+                fact.get("assignment_reason"),
+                "sample_bound_from_variable_context",
+            )
         return facts
 
     @staticmethod
@@ -2795,7 +3011,8 @@ class V7ExtractorService:
                 qa_reasons.append(f"fact_type={ftype}")
             if is_condition_parameter:
                 qa_reasons.append("condition_parameter")
-            if is_background_or_reference_fact(fact):
+            background_or_reference = is_background_or_reference_fact(fact)
+            if background_or_reference:
                 priority = "Narrative"
                 qa_reasons.append("background_or_reference")
             if fact.get("_alignment_review_required"):
@@ -2837,6 +3054,11 @@ class V7ExtractorService:
             # Handle checklist failure
             if fact.get("_checklist_failed"):
                 qa_reasons.append("checklist_failed")
+                checklist_failures = fact.get("_checklist_failures") or []
+                if isinstance(checklist_failures, str):
+                    checklist_failures = [checklist_failures]
+                for failure in checklist_failures:
+                    qa_reasons.append(f"checklist:{failure}")
             force_qa = ftype != "performance" or any(
                 reason in qa_reasons
                 for reason in (
@@ -2847,7 +3069,13 @@ class V7ExtractorService:
                     "checklist_failed", "export_tier_B_review",
                 )
             )
-            if output_channel == "characterization_feature":
+            explicit_background_reference = bool(
+                fact.get("_explicit_background_reference")
+            )
+            if explicit_background_reference:
+                # Explicitly cited external values stay in FactCandidate only.
+                export_target = "Not exported"
+            elif output_channel == "characterization_feature":
                 export_target = "Characterization_Features"
             elif output_channel == "structure_feature":
                 export_target = "Characterization_Features"  # Structure features also go to characterization
@@ -2937,7 +3165,160 @@ class V7ExtractorService:
                     "range_part": idx if len(cleaned_values) > 1 else None,
                     "_source_fact": fact,
                 })
-        return V7ExtractorService._drop_redundant_intrinsic_qa_results(result_facts)
+        result_facts = V7ExtractorService._drop_redundant_intrinsic_qa_results(
+            result_facts
+        )
+        return V7ExtractorService._dedupe_result_restatements(result_facts)
+
+    @staticmethod
+    def _dedupe_result_restatements(result_facts: list[dict]) -> list[dict]:
+        """Collapse repeated prose mentions while retaining distinct conditions."""
+
+        def base_key(result: dict) -> tuple[str, str, str, str]:
+            return (
+                normalize_for_match(result.get("sample_id") or ""),
+                normalize_for_match(result.get("canonical_metric") or ""),
+                normalize_for_match(result.get("clean_value") or ""),
+                normalize_for_match(result.get("clean_unit") or ""),
+            )
+
+        def condition_text(result: dict) -> str:
+            qa_reasons = {
+                reason.strip()
+                for reason in str(result.get("qa_reason") or "").split(";")
+                if reason.strip()
+            }
+            return "; ".join(
+                part
+                for part in (
+                    segment.strip()
+                    for segment in str(
+                        result.get("performance_condition") or ""
+                    ).split(";")
+                )
+                if part and part not in qa_reasons
+            )
+
+        def numeric_context(result: dict) -> set[str]:
+            return set(re.findall(
+                r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)",
+                condition_text(result).replace(",", ""),
+            ))
+
+        def text_tokens(value: str) -> set[str]:
+            return set(re.findall(r"[a-z0-9]+", normalize_for_match(value)))
+
+        def categorical_context(value: str) -> dict[str, str]:
+            normalized = " ".join(
+                re.findall(r"[a-z0-9]+", normalize_for_match(value))
+            )
+            groups = {
+                "mode": ("mode iii", "mode ii", "mode i"),
+                "moisture": ("dry", "wet"),
+                "direction": (
+                    "longitudinal",
+                    "transverse",
+                    "warp",
+                    "weft",
+                    "axial",
+                    "radial",
+                ),
+                "treatment": (
+                    "acid treated",
+                    "alkali treated",
+                    "silane treated",
+                    "plasma treated",
+                    "heat treated",
+                    "untreated",
+                    "treated",
+                ),
+                "sequence": ("before", "after"),
+                "cycle": ("loading", "unloading"),
+                "mechanics": ("tension", "compression"),
+            }
+            context = {}
+            for group, variants in groups.items():
+                for variant in variants:
+                    if re.search(
+                        rf"(?<![a-z0-9]){re.escape(variant)}(?![a-z0-9])",
+                        normalized,
+                    ):
+                        context[group] = variant
+                        break
+            return context
+
+        def compatible(first: dict, second: dict) -> bool:
+            first_numbers = numeric_context(first)
+            second_numbers = numeric_context(second)
+            if first_numbers and second_numbers:
+                return (
+                    first_numbers.issubset(second_numbers)
+                    or second_numbers.issubset(first_numbers)
+                )
+            first_condition = text_tokens(condition_text(first))
+            second_condition = text_tokens(condition_text(second))
+            if first_condition and second_condition:
+                first_categories = categorical_context(condition_text(first))
+                second_categories = categorical_context(condition_text(second))
+                shared_groups = set(first_categories) & set(second_categories)
+                if any(
+                    first_categories[group] != second_categories[group]
+                    for group in shared_groups
+                ):
+                    return False
+                # With no numeric or categorical conflict, identical
+                # sample/metric/value/unit rows are prose restatements even
+                # when one condition uses different explanatory wording.
+                return True
+            first_method = text_tokens(
+                str(first.get("performance_method") or "")
+            )
+            second_method = text_tokens(
+                str(second.get("performance_method") or "")
+            )
+            return (
+                not first_method
+                or not second_method
+                or first_method.issubset(second_method)
+                or second_method.issubset(first_method)
+            )
+
+        def quality_score(result: dict) -> tuple[int, int, int, float]:
+            target_score = {
+                "Core_Final_Records": 2,
+                "Result_Facts_QA": 1,
+            }.get(str(result.get("export_target") or ""), 0)
+            priority_score = {
+                "Core": 2,
+                "Secondary": 1,
+            }.get(str(result.get("metric_priority") or ""), 0)
+            specificity = len(numeric_context(result)) + len(
+                text_tokens(condition_text(result))
+            )
+            confidence = float(result.get("ai_confidence") or 0.0)
+            return target_score, priority_score, specificity, confidence
+
+        kept: list[dict] = []
+        indexes_by_key: dict[tuple[str, str, str, str], list[int]] = defaultdict(
+            list
+        )
+        for result in result_facts:
+            key = base_key(result)
+            duplicate_index = next(
+                (
+                    index
+                    for index in indexes_by_key[key]
+                    if compatible(kept[index], result)
+                ),
+                None,
+            )
+            if duplicate_index is None:
+                indexes_by_key[key].append(len(kept))
+                kept.append(result)
+                continue
+            if quality_score(result) > quality_score(kept[duplicate_index]):
+                kept[duplicate_index] = result
+        return kept
 
     @staticmethod
     def _drop_redundant_intrinsic_qa_results(result_facts: list[dict]) -> list[dict]:
@@ -3490,7 +3871,7 @@ class V7ExtractorService:
                 timeout_seconds=settings.STRONG_LLM_TIMEOUT_SECONDS,
                 stage="vision_enhancement",
             )
-            vision_facts = parsed.get("vision_facts") or parsed.get("_items") or []
+            vision_facts = _response_rows(parsed, "vision_facts", "_items")
             next_id = len(facts) + 1
             for vf in vision_facts:
                 sid = vf.get("sample_id", "").strip()
@@ -3668,6 +4049,8 @@ class V7ExtractorService:
         await db.commit()
 
         document_type = classify_document_type(raw_text, paper.paper_title or "")
+        paper.document_type = document_type.kind
+        paper.extraction_skip_reason = None
         if document_type.kind == "review" and not settings.EXTRACT_REVIEW_ARTICLES:
             # A confirmed review intentionally has no primary-study extraction output.
             await purge_extraction_results(db, paper.project_id, paper_id)
@@ -3679,6 +4062,7 @@ class V7ExtractorService:
             )
             paper.doi_or_url = paper_metadata.get("doi_or_url", "")
             paper.journal = paper_metadata.get("journal", "")
+            paper.extraction_skip_reason = "review_article"
             paper.status = "review"
             db.add(paper)
             await db.commit()
@@ -3913,8 +4297,12 @@ class V7ExtractorService:
                 pipeline_warnings.append(f"holistic: {exc}")
 
         if holistic_performance_incomplete:
-            V7ExtractorService._guard_incomplete_holistic_performance(
+            failures = V7ExtractorService._guard_incomplete_holistic_performance(
                 holistic.warnings
+            )
+            pipeline_warnings.append(
+                "quality_recovery: holistic performance sweep incomplete; "
+                f"running full Stage 2 block fallback ({len(failures)} failure(s))"
             )
 
         if holistic_primary and not sample_mentions:
@@ -4035,11 +4423,7 @@ class V7ExtractorService:
             sample_cards = enrich_sample_cards_holistic(
                 sample_cards, holistic_samples, holistic_background,
             )
-        sample_cards = [
-            card
-            for card in sample_cards
-            if is_material_sample_id(str(card.get("sample_id") or ""))
-        ]
+        sample_cards = V7ExtractorService._sanitize_sample_cards(sample_cards)
 
         sample_mentions, facts, sample_cards = merge_sample_identities(
             sample_mentions,
@@ -4047,11 +4431,7 @@ class V7ExtractorService:
             sample_cards,
             holistic_samples=holistic_samples,
         )
-        sample_cards = [
-            card
-            for card in sample_cards
-            if is_material_sample_id(str(card.get("sample_id") or ""))
-        ]
+        sample_cards = V7ExtractorService._sanitize_sample_cards(sample_cards)
         sample_groups = group_samples(sample_mentions, variable_candidates)
         sample_cards = V7ExtractorService._propagate_sample_card_backgrounds(sample_cards)
         sample_cards = V7ExtractorService._enrich_sample_cards_from_repeated_fact_variants(
@@ -4067,6 +4447,7 @@ class V7ExtractorService:
             sample_cards,
             holistic_samples=holistic_samples,
         )
+        sample_cards = V7ExtractorService._sanitize_sample_cards(sample_cards)
         sample_groups = group_samples(sample_mentions, variable_candidates)
         for fact in facts:
             if fact.get("_background_only"):
@@ -4082,11 +4463,19 @@ class V7ExtractorService:
         facts = sanitize_assigned_sample_ids(facts, sample_cards, sample_mentions)
         facts = V7ExtractorService._local_sample_assignment(facts, sample_cards)
         facts = V7ExtractorService._repair_sample_assignment_specificity(facts, sample_cards)
+        facts = V7ExtractorService._repair_sample_assignment_from_variable_context(
+            facts,
+            sample_cards,
+        )
         facts = apply_sample_value_alignment(facts, sample_cards)
         facts = normalize_metrics_in_facts(facts)
         facts = repair_contextual_fact_assignments(facts, sample_cards)
         facts = sanitize_assigned_sample_ids(facts, sample_cards, sample_mentions)
         facts = V7ExtractorService._local_sample_assignment(facts, sample_cards)
+        facts = V7ExtractorService._repair_sample_assignment_from_variable_context(
+            facts,
+            sample_cards,
+        )
         facts = reconcile_holistic_table_duplicates(facts)
         facts = merge_duplicate_facts(facts)
         facts = renumber_fact_ids(facts)
@@ -4128,11 +4517,41 @@ class V7ExtractorService:
             variable_candidates=variable_candidates,
             sample_groups=sample_groups,
         )
-        V7ExtractorService._guard_suspicious_empty_records(
+        empty_record_warning = V7ExtractorService._guard_suspicious_empty_records(
             chunks,
             records,
             fact_count=len(facts),
         )
+        if empty_record_warning:
+            pipeline_warnings.append(f"quality_gate: {empty_record_warning}")
+            report_data["suspicious_empty_records"] = True
+            report_data["quality_conclusions"] = sorted(set([
+                *report_data["quality_conclusions"],
+                "定量证据未形成候选，需人工复核",
+            ]))
+            report_data["manual_review_recommendations"] = sorted(set([
+                *report_data["manual_review_recommendations"],
+                "复核中间事实到候选记录的数值、样品归属和输出通道",
+            ]))
+        else:
+            report_data["suspicious_empty_records"] = False
+        non_record_outputs_only = bool(report_data["result_facts"]) and all(
+            result.get("export_target") in {
+                "Characterization_Features",
+                "Formula_Method_Parameters",
+            }
+            for result in report_data["result_facts"]
+        )
+        report_data["non_record_outputs_only"] = (
+            not records
+            and not empty_record_warning
+            and non_record_outputs_only
+        )
+        if report_data["non_record_outputs_only"]:
+            report_data["quality_conclusions"] = sorted(set([
+                *report_data["quality_conclusions"],
+                "仅含表征或方法参数，无目标性能候选",
+            ]))
         await _emit("saving", 85, "Stage 4完成: 正在准备原子保存...")
 
         sample_models = [
@@ -4140,7 +4559,9 @@ class V7ExtractorService:
                 paper_id=paper_id,
                 project_id=paper.project_id,
                 sample_id=sample.get("sample_id", ""),
-                sample_aliases=sample.get("sample_aliases") or None,
+                sample_aliases=V7ExtractorService._serialize_sample_aliases(
+                    sample.get("sample_aliases")
+                ),
                 sample_group_id=sample.get("sample_group_id", "G000"),
                 material_system=sample.get("material_system", ""),
                 fiber_type=sample.get("fiber_type", ""),
@@ -4283,6 +4704,8 @@ class V7ExtractorService:
                 "核心记录数": report_data["core_record_count"],
                 "补充记录数": report_data["secondary_record_count"],
                 "QA事实数量": report_data["qa_result_fact_count"],
+                "候选为空质量告警": report_data["suspicious_empty_records"],
+                "仅非记录输出": report_data["non_record_outputs_only"],
                 "有证据记录比例": report_data["evidence_text_record_ratio"],
                 "文献信息缺失率": report_data["paper_metadata_missing_rate"],
                 "文献信息完整率": report_data["paper_metadata_complete_rate"],
@@ -4342,7 +4765,7 @@ class V7ExtractorService:
                         page_start=r.get("_source_page"),
                         page_end=r.get("_source_page"),
                         source_location=r.get("source_location", ""),
-                        evidence_text=r.get("evidence_text", "")[:2000],
+                        evidence_text=r.get("evidence_text", ""),
                         normalized_payload=json.dumps({
                             "fact_id": fact_id,
                             "metric": r["performance_metric"],
@@ -4358,11 +4781,21 @@ class V7ExtractorService:
                 "paper_title", paper.original_filename
             )
             paper.doi_or_url = paper_metadata.get("doi_or_url", "")
+            raw_year = paper_metadata.get("year")
             try:
-                paper.year = int(paper_metadata.get("year", 2025))
+                paper.year = int(raw_year) if str(raw_year or "").strip() else None
             except (ValueError, TypeError):
                 paper.year = None
             paper.journal = paper_metadata.get("journal", "")
+            paper.document_type = document_type.kind
+            if empty_record_warning:
+                paper.extraction_skip_reason = (
+                    "quantitative_evidence_without_candidates"
+                )
+            elif report_data["non_record_outputs_only"]:
+                paper.extraction_skip_reason = "non_record_outputs_only"
+            else:
+                paper.extraction_skip_reason = None
             paper.status = "review"
             db.add(paper)
             await db.commit()

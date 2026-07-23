@@ -63,6 +63,40 @@ def test_background_intro_fact_marked_tier_c():
     assert out[0].get("_export_tier") == "C"
 
 
+def test_short_chunk_label_cannot_override_source_block_section():
+    facts = [{
+        "fact_type": "performance",
+        "metric_or_parameter": "fiber_diameter",
+        "value": "296",
+        "unit": "nm",
+        "evidence_text": (
+            "When graphene is added, the average nanofiber diameter is 296 nm."
+        ),
+        "assigned_sample_id": "PES_0.5G nanofiber membrane",
+        "source_location": "page 5, Fig. 2b",
+        "_source_block_id": "B000086",
+    }]
+    out = apply_fact_quality_enhancements(
+        facts,
+        chunks=[
+            {
+                "block_id": "B000001",
+                "section_name": "introduction",
+                "raw_text": "a",
+            },
+            {
+                "block_id": "B000086",
+                "section_name": "results",
+                "raw_text": facts[0]["evidence_text"],
+            },
+        ],
+    )
+
+    assert out[0]["_chunk_section"] == "results"
+    assert out[0]["_data_source_type"] == "paper_core_result"
+    assert out[0]["_export_tier"] != "C"
+
+
 def test_sample_form_mismatch_tensile_on_aerogel_is_tier_b():
     fact = {
         "fact_type": "performance",

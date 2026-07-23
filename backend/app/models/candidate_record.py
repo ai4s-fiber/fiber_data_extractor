@@ -26,33 +26,33 @@ class CandidateRecord(Base):
     # 3. paper_title
     paper_title: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 4. doi_or_url
-    doi_or_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    doi_or_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 5. year
     year: Mapped[str | None] = mapped_column(String(20), nullable=True)
     # 6. journal
-    journal: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    journal: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 7. sample_group_id
     sample_group_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     # 8. sample_id
-    sample_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    sample_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 9. material_system
     material_system: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 10. fiber_type
-    fiber_type: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    fiber_type: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 11. variable_name
-    variable_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    variable_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 12. variable_value
-    variable_value: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    variable_value: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 13. variable_unit
-    variable_unit: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    variable_unit: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 14. composition_expression
     composition_expression: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 15. matrix_name
-    matrix_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    matrix_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 16. matrix_content
-    matrix_content: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    matrix_content: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 17. matrix_unit
-    matrix_unit: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    matrix_unit: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 18. additive_expression
     additive_expression: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 19. solvent_or_aid
@@ -62,7 +62,7 @@ class CandidateRecord(Base):
     # 21. process_route
     process_route: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 22. spinning_method
-    spinning_method: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    spinning_method: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 23. process_parameters
     process_parameters: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 24. post_treatment
@@ -76,13 +76,13 @@ class CandidateRecord(Base):
     # 28. structure_evidence
     structure_evidence: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 29. performance_category
-    performance_category: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    performance_category: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 30. performance_metric
-    performance_metric: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    performance_metric: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 31. performance_value
-    performance_value: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    performance_value: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 32. performance_unit
-    performance_unit: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    performance_unit: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 33. performance_method
     performance_method: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 34. performance_condition
@@ -106,7 +106,7 @@ class CandidateRecord(Base):
     candidate_status: Mapped[str] = mapped_column(
         String(30), nullable=False, default="draft"
     )  # draft, submitted, approved, rejected
-    source_location: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    source_location: Mapped[str | None] = mapped_column(Text, nullable=True)
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)

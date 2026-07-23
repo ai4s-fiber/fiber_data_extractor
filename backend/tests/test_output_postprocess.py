@@ -9,6 +9,7 @@ from app.services.validation import (
     is_characterization_peak_metric,
     is_formula_method_parameter_fact,
     metric_unit_compatible,
+    normalize_metric_name,
 )
 
 
@@ -24,6 +25,14 @@ def test_table_header_brackets_do_not_break_unit_compatibility():
     assert metric_unit_compatible("Youngs_modulus", "[GPa]")
     assert metric_unit_compatible("tensile_strength", "[MPa]")
     assert metric_unit_compatible("elongation_at_break", "[%]")
+
+
+def test_metric_normalization_preserves_specific_modulus_metric():
+    assert (
+        normalize_metric_name("storage_modulus_improvement")
+        == "storage_modulus_improvement"
+    )
+    assert metric_unit_compatible("storage_modulus_improvement", "%")
 
 
 def test_spaced_inverse_cubic_density_unit_is_normalized():

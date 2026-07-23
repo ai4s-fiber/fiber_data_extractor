@@ -30,7 +30,7 @@ class EvidenceItem(Base):
     )  # metadata, experimental_text, table, figure_caption, vision_page, supplementary_hint
     page_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
     page_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    source_location: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    source_location: Mapped[str | None] = mapped_column(Text, nullable=True)
     evidence_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     normalized_payload: Mapped[str | None] = mapped_column(Text, nullable=True)
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)

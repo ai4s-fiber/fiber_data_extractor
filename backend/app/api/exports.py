@@ -1,12 +1,13 @@
 """Export routes: trigger export, download, list history."""
 
+import asyncio
 import json
 from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -19,10 +20,12 @@ from app.models.export_job import ExportJob
 from app.models.paper import Paper
 from app.schemas.export import ExportCreateResult, ExportJobOut, ExportRequest
 from app.services import redis_cache
-from app.services.candidate_cleanup import purge_candidate_records
 from app.services.workbook_export import generate_structured_workbook
 
 router = APIRouter(prefix="/projects/{project_id}/exports", tags=["导出"])
+MAX_WEB_EXPORT_PAPERS = 200
+MAX_WEB_EXPORT_RECORDS = 50_000
+MAX_WEB_EXPORT_PARSE_BLOCKS = 250_000
 
 REVIEW_STATUS_ALIASES = {
     "pending": ["pending", "待审核"],
@@ -38,6 +41,11 @@ REVIEW_STATUS_ALIASES = {
     "deleted": ["deleted", "已删除"],
     "已删除": ["deleted", "已删除"],
 }
+
+
+def _id_chunks(values: list[int], size: int = 500):
+    for index in range(0, len(values), size):
+        yield values[index : index + size]
 
 
 def _expand_review_statuses(statuses: list[str]) -> list[str]:
@@ -56,50 +64,96 @@ async def create_export(
     await get_project_or_404(db, project_id)
     statuses = body.review_status_filter or ["approved"]
     status_values = _expand_review_statuses(statuses)
+    filters = (
+        CandidateRecord.project_id == project_id,
+        CandidateRecord.review_status.in_(status_values),
+    )
+    count_result = await db.execute(
+        select(
+            func.count(CandidateRecord.id),
+            func.count(func.distinct(CandidateRecord.source_paper_id)),
+        ).where(*filters)
+    )
+    record_count, paper_count = count_result.one()
+    if not record_count:
+        raise HTTPException(400, f"没有找到状态为 {statuses} 的候选记录，请先在审核队列中审批通过。")
+    if (
+        int(paper_count or 0) > MAX_WEB_EXPORT_PAPERS
+        or int(record_count) > MAX_WEB_EXPORT_RECORDS
+    ):
+        raise HTTPException(
+            400,
+            "Web 单次导出规模过大。请使用 "
+            "scripts/ops/export_project_workbooks.py 按论文原子导出并续传。",
+        )
+
     query = (
         select(CandidateRecord)
-        .where(
-            CandidateRecord.project_id == project_id,
-            CandidateRecord.review_status.in_(status_values),
-        )
+        .where(*filters)
         .order_by(CandidateRecord.id)
     )
     result = await db.execute(query)
     records = result.scalars().all()
 
-    if not records:
-        raise HTTPException(400, f"没有找到状态为 {statuses} 的候选记录，请先在审核队列中审批通过。")
-
     record_ids = [record.id for record in records]
     paper_ids = sorted({record.source_paper_id for record in records})
-
-    papers_result = await db.execute(select(Paper).where(Paper.id.in_(paper_ids)))
-    papers = papers_result.scalars().all()
-
-    evidence_result = await db.execute(
-        select(EvidenceItem)
-        .where(EvidenceItem.candidate_record_id.in_(record_ids))
-        .order_by(EvidenceItem.id)
+    block_count_result = await db.execute(
+        select(func.count(DocumentBlock.id)).where(
+            DocumentBlock.paper_id.in_(paper_ids)
+        )
     )
-    evidence_items = evidence_result.scalars().all()
+    block_count = int(block_count_result.scalar() or 0)
+    if block_count > MAX_WEB_EXPORT_PARSE_BLOCKS:
+        raise HTTPException(
+            400,
+            "Web 单次导出的解析块过多。请使用 "
+            "scripts/ops/export_project_workbooks.py 按论文原子导出并续传。",
+        )
 
-    blocks_result = await db.execute(
-        select(DocumentBlock)
-        .where(DocumentBlock.paper_id.in_(paper_ids))
-        .order_by(DocumentBlock.paper_id, DocumentBlock.page_number, DocumentBlock.order_index)
+    papers = []
+    evidence_items = []
+    document_blocks = []
+    for record_id_chunk in _id_chunks(record_ids):
+        evidence_result = await db.execute(
+            select(EvidenceItem).where(
+                EvidenceItem.candidate_record_id.in_(record_id_chunk)
+            )
+        )
+        evidence_items.extend(evidence_result.scalars().all())
+    for paper_id_chunk in _id_chunks(paper_ids):
+        papers_result = await db.execute(
+            select(Paper).where(Paper.id.in_(paper_id_chunk))
+        )
+        papers.extend(papers_result.scalars().all())
+
+        blocks_result = await db.execute(
+            select(DocumentBlock).where(
+                DocumentBlock.paper_id.in_(paper_id_chunk)
+            )
+        )
+        document_blocks.extend(blocks_result.scalars().all())
+    papers.sort(key=lambda item: item.id)
+    evidence_items.sort(key=lambda item: item.id)
+    document_blocks.sort(
+        key=lambda item: (
+            item.paper_id,
+            item.page_number,
+            item.order_index,
+            item.id,
+        )
     )
-    document_blocks = blocks_result.scalars().all()
 
     export_dir = Path(settings.EXPORT_DIR) / str(project_id)
     export_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
     filename = f"数据主表_{timestamp}.xlsx"
     filepath = export_dir / filename
-    generate_structured_workbook(
-        records=records,
-        papers=papers,
-        evidence_items=evidence_items,
-        document_blocks=document_blocks,
+    await asyncio.to_thread(
+        generate_structured_workbook,
+        records=list(records),
+        papers=list(papers),
+        evidence_items=list(evidence_items),
+        document_blocks=list(document_blocks),
         filepath=str(filepath),
     )
 
@@ -114,13 +168,12 @@ async def create_export(
     await db.flush()
     await db.refresh(job)
 
-    cleared_count = await purge_candidate_records(db, project_id, record_ids)
     await redis_cache.bump_project_cache(project_id)
 
     return ExportCreateResult(
         **ExportJobOut.model_validate(job).model_dump(),
         exported_record_count=len(records),
-        cleared_record_count=cleared_count,
+        cleared_record_count=0,
     )
 
 

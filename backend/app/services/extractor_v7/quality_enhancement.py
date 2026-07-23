@@ -302,11 +302,20 @@ def apply_fact_quality_enhancements(
 ) -> list[dict]:
     """Apply generic quality rules before record generation."""
     themes = infer_paper_theme(chunks, paper_metadata)
-    chunk_section_by_text: dict[str, str] = {}
+    chunk_section_by_id: dict[str, str] = {}
+    searchable_chunks: list[tuple[str, str]] = []
     for chunk in chunks or []:
-        text_key = (chunk.get("raw_text") or "")[:120]
-        if text_key:
-            chunk_section_by_text[text_key] = chunk.get("section_name") or ""
+        section = str(chunk.get("section_name") or "")
+        block_id = str(chunk.get("block_id") or "")
+        if block_id:
+            chunk_section_by_id[block_id] = section
+        searchable_text = re.sub(
+            r"\s+",
+            " ",
+            str(chunk.get("raw_text") or "").strip(),
+        )
+        if len(searchable_text) >= 40:
+            searchable_chunks.append((searchable_text, section))
 
     kept: list[dict] = []
     for fact in facts:
@@ -315,10 +324,18 @@ def apply_fact_quality_enhancements(
             continue
 
         evidence = str(fact.get("evidence_text") or "")
-        for key, section in chunk_section_by_text.items():
-            if key and key in evidence:
-                fact["_chunk_section"] = section
-                break
+        source_block_id = str(
+            fact.get("_source_block_id") or fact.get("source_block_id") or ""
+        )
+        if source_block_id and source_block_id in chunk_section_by_id:
+            fact["_chunk_section"] = chunk_section_by_id[source_block_id]
+        else:
+            evidence_key = re.sub(r"\s+", " ", evidence.strip())[:160]
+            if len(evidence_key) >= 40:
+                for chunk_text, section in searchable_chunks:
+                    if evidence_key in chunk_text:
+                        fact["_chunk_section"] = section
+                        break
 
         fact = remap_loss_tangent_metric(fact)
         fact = restructure_loading_cycles_fact(fact)

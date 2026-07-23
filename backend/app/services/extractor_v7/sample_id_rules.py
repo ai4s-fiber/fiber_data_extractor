@@ -5,6 +5,10 @@ from __future__ import annotations
 import re
 
 from app.services.grouping import normalize_for_match, normalize_sample_id
+from app.services.metrics_dictionary import (
+    find_metric_canonical,
+    find_structure_feature_canonical,
+)
 
 # Entire sample_id must not be only a test/process condition token.
 _CONDITION_ONLY_PATTERNS: tuple[re.Pattern[str], ...] = (
@@ -47,6 +51,9 @@ _SEMICOLON_CONTEXT_SUFFIX_RE = re.compile(
     r"(?i)^(?:(?:optimum|optimal|optimized|optimised|best|selected|"
     r"representative|average|mean)\b.*\b(?:sample|specimen|material|fibers?)s?|"
     r"sample\s+(?:showing|with|at|under)\b.+)$"
+)
+_ANAPHORIC_SAMPLE_PREFIX_RE = re.compile(
+    r"(?i)^(?:that|those|this|these)\s+of\s+"
 )
 
 
@@ -146,6 +153,20 @@ def sanitize_sample_id(sample_id: str, evidence: str = "") -> tuple[str, str, li
         notes.append("sample_id_was_condition_only")
         return "", sid, notes
 
+    anaphoric = _ANAPHORIC_SAMPLE_PREFIX_RE.match(sid)
+    if anaphoric:
+        sid = normalize_sample_id(sid[anaphoric.end():])
+        notes.append("stripped_anaphoric_sample_prefix")
+
+    if " of " in sid.lower():
+        prefix, remainder = re.split(r"(?i)\s+of\s+", sid, maxsplit=1)
+        if remainder and (
+            find_metric_canonical(prefix)
+            or find_structure_feature_canonical(prefix)
+        ):
+            sid = normalize_sample_id(remainder)
+            notes.append("stripped_metric_prefix_from_sample_id")
+
     condition_appendix = ""
     if ";" in sid and not is_explicit_sample_name_in_evidence(sid, evidence):
         base, suffix = (part.strip() for part in sid.split(";", 1))
@@ -161,6 +182,23 @@ def sanitize_sample_id(sample_id: str, evidence: str = "") -> tuple[str, str, li
     notes.extend(temp_notes)
     sid, load_notes = strip_inferred_loading_suffix(sid, evidence)
     notes.extend(load_notes)
+
+    numeric_tail = re.search(r"(?<!\d)(\d+)$", sid)
+    if numeric_tail and evidence:
+        escaped = re.escape(sid).replace("_", r"[\s_/-]*")
+        exact = re.search(
+            rf"(?<![a-z0-9]){escaped}(?![\d.a-z])",
+            evidence,
+            re.IGNORECASE,
+        )
+        decimal_extension = re.search(
+            rf"(?<![a-z0-9]){escaped}\.\d",
+            evidence,
+            re.IGNORECASE,
+        )
+        if decimal_extension and not exact:
+            notes.append("sample_id_was_decimal_prefix_only")
+            return "", condition_appendix, notes
 
     trailing = _TRAILING_CONDITION_RE.search(sid)
     if trailing and not is_explicit_sample_name_in_evidence(sid, evidence):

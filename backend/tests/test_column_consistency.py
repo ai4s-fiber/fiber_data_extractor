@@ -48,8 +48,8 @@ def _parse_sheet_field_names(sheet_key: str) -> list[str]:
 
 
 def test_main_data_column_count_is_stable():
-    assert len(MAIN_DATA_COLUMNS) == 32
-    assert len(_parse_main_data_columns_from_frontend()) == 32
+    assert len(MAIN_DATA_COLUMNS) == 40
+    assert len(_parse_main_data_columns_from_frontend()) == 40
 
 
 def test_main_data_columns_match_frontend_exactly():

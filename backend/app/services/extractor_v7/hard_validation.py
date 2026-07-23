@@ -24,6 +24,17 @@ _ROUGHNESS_RE = re.compile(
 _NANOFIBER_RE = re.compile(r"(?i)nanofiber|nanofibers")
 _AEROGEL_RE = re.compile(r"(?i)\baerogel\b")
 _PI1_RE = re.compile(r"(?i)\bPI\s*1\b|\bPI1\b")
+_MATH_SEPARATOR = r"(?:\\mathrm|\\text|[\s_{}$])*"
+_G_IIC_RE = re.compile(
+    rf"(?i)(?<![A-Za-z])G{_MATH_SEPARATOR}I{_MATH_SEPARATOR}"
+    rf"I{_MATH_SEPARATOR}C(?![A-Za-z])"
+)
+_G_IC_RE = re.compile(
+    rf"(?i)(?<![A-Za-z])G{_MATH_SEPARATOR}I{_MATH_SEPARATOR}"
+    rf"C(?![A-Za-z])"
+)
+_MODE_II_TOUGHNESS_RE = re.compile(r"(?i)\bmode[\s-]*II\b")
+_MODE_I_TOUGHNESS_RE = re.compile(r"(?i)\bmode[\s-]*I(?!I)\b")
 _SAMPLE_ID_TAIL_RE = re.compile(
     r"(?i)\b("
     r"2MZ-AZINE-PI-\d+%(?:\s+aerogel)?|"
@@ -104,6 +115,18 @@ _TRANSITION_METRICS = frozenset({
     "damage_transition_strain",
     "stiffness_recovery_strain",
 })
+_TEMPERATURE_PERFORMANCE_METRICS = frozenset({
+    "surface_temperature",
+    "glass_transition_temperature",
+    "melting_temperature",
+    "decomposition_temperature",
+    "austenite_start_temperature",
+    "austenite_finish_temperature",
+    "martensite_start_temperature",
+    "martensite_finish_temperature",
+    "thermal_stability",
+    "oxidation_resistance",
+})
 
 
 def _transition_value_key(value: Any) -> tuple[str, ...]:
@@ -182,11 +205,43 @@ def refine_sample_name_before_paren(before: str) -> str:
     return ""
 
 
+def _nearest_mechanical_metric(evidence: str, value: Any) -> str | None:
+    """Resolve flexural-strength/ILSS ambiguity by proximity to the value."""
+    number = re.search(r"[+-]?\d+(?:\.\d+)?", str(value or ""))
+    if not number:
+        return None
+    value_pattern = re.compile(
+        rf"(?<![\d.]){re.escape(number.group(0))}(?![\d.])"
+    )
+    value_positions = [match.start() for match in value_pattern.finditer(evidence)]
+    if not value_positions:
+        return None
+
+    candidates: list[tuple[int, str]] = []
+    for metric, pattern in (
+        ("flexural_strength", re.compile(
+            r"(?i)\b(?:flexural|bending)\s+strength\b"
+        )),
+        ("interlaminar_shear_strength", re.compile(
+            r"(?i)\b(?:interlaminar\s+shear\s+strength|ILSS)\b"
+        )),
+    ):
+        for metric_match in pattern.finditer(evidence):
+            distance = min(
+                abs(value_position - metric_match.end())
+                for value_position in value_positions
+            )
+            if distance <= 240:
+                candidates.append((distance, metric))
+    return min(candidates)[1] if candidates else None
+
+
 def infer_metric_from_evidence(
     evidence: str,
     *,
     unit: str = "",
     current_metric: str = "",
+    value: Any = "",
 ) -> str | None:
     """Evidence-first metric inference; overrides wrong LLM labels."""
     from app.services.extractor_v7.sample_value_alignment import parse_metric_value_pairs
@@ -195,9 +250,77 @@ def infer_metric_from_evidence(
     lower = ev.lower()
     unit_norm = normalize_unit(unit)
     current = find_metric_canonical(current_metric) or current_metric
+    relative_change = unit_norm == "%" and bool(re.search(
+        r"(?i)\b(?:increas|improv|enhanc|growth|gain|higher|rise|rose)\w*\b",
+        ev,
+    ))
 
     if unit_norm == "ph" and re.search(r"(?i)\bpH\b", ev):
         return "pH"
+
+    if re.search(r"(?i)\b(?:energy\s+|dynamic\s+)?storage\s+modulus\b", ev):
+        if relative_change:
+            return "storage_modulus_improvement"
+        return "storage_modulus"
+
+    g_iic = bool(_G_IIC_RE.search(ev))
+    g_ic = bool(_G_IC_RE.search(ev))
+    toughness_context = bool(
+        re.search(r"(?i)\b(?:fracture\s+toughness|interlaminar)\b", ev)
+        or g_iic
+        or g_ic
+    )
+    mode_ii = g_iic or (
+        toughness_context and bool(_MODE_II_TOUGHNESS_RE.search(ev))
+    )
+    mode_i = g_ic or (
+        toughness_context and bool(_MODE_I_TOUGHNESS_RE.search(ev))
+    )
+    if mode_ii:
+        if relative_change:
+            return "mode_II_interlaminar_fracture_toughness_improvement"
+        return "mode_II_interlaminar_fracture_toughness"
+    if mode_i:
+        if relative_change:
+            return "mode_I_interlaminar_fracture_toughness_improvement"
+        return "mode_I_interlaminar_fracture_toughness"
+
+    if re.search(r"(?i)\bfracture\s+toughness\b", ev):
+        if relative_change:
+            return "fracture_toughness_improvement"
+        interlaminar = bool(re.search(r"(?i)\binterlaminar\b", ev))
+        if interlaminar:
+            return "interlaminar_fracture_toughness"
+        return "fracture_toughness"
+
+    nearest_mechanical = _nearest_mechanical_metric(ev, value)
+    if nearest_mechanical == "flexural_strength":
+        return (
+            "flexural_strength_improvement"
+            if relative_change
+            else "flexural_strength"
+        )
+    if nearest_mechanical == "interlaminar_shear_strength":
+        return (
+            "interlaminar_shear_strength_growth_rate"
+            if relative_change
+            else "interlaminar_shear_strength"
+        )
+
+    if re.search(r"(?i)\b(?:interlaminar\s+shear\s+strength|ILSS)\b", ev):
+        if unit_norm == "%" and re.search(
+            r"(?i)\b(?:increas|improv|enhanc|growth|gain)\w*\b", ev
+        ):
+            return "interlaminar_shear_strength_growth_rate"
+        if unit_norm in {"mpa", "gpa", "kpa", "pa"}:
+            return "interlaminar_shear_strength"
+
+    if (
+        unit_norm == "%"
+        and re.search(r"(?i)\bflexural\s+strength\b", ev)
+        and re.search(r"(?i)\b(?:increas|improv|enhanc|growth|gain)\w*\b", ev)
+    ):
+        return "flexural_strength_improvement"
 
     if (
         unit_norm in {"mpa", "gpa", "kpa", "pa"}
@@ -328,6 +451,7 @@ def fix_condition_as_performance_value(fact: dict) -> dict:
     metric = find_metric_canonical(str(fact.get("metric_or_parameter") or "")) or ""
     value = str(fact.get("value") or "").strip()
     unit = str(fact.get("unit") or "").strip().lower()
+    unit_norm = normalize_unit(unit)
 
     existing = str(fact.get("condition") or "").strip()
     # Existing conditions are scoped by the extractor to this value. Appending
@@ -354,14 +478,10 @@ def fix_condition_as_performance_value(fact: dict) -> dict:
                 fact.get("assignment_reason"), "condition_not_performance_value"
             )
 
-    if unit in ("°c", "c", "degree") and metric in (
-        "surface_temperature",
-        "glass_transition_temperature",
-        "Tg",
-    ):
+    if unit_norm in {"°c", "k"} and metric in _TEMPERATURE_PERFORMANCE_METRICS:
         pass  # legitimate temperature performance
-    elif unit in ("°c", "c") and metric not in ("surface_temperature",):
-        cond_bits.append(f"{value} °C")
+    elif unit_norm in {"°c", "k"}:
+        cond_bits.append(f"{value} {str(fact.get('unit') or unit_norm).strip()}")
         fact["assignment_reason"] = _append_reason(
             fact.get("assignment_reason"), "temperature_moved_to_condition"
         )
@@ -669,10 +789,15 @@ def apply_hard_validation(facts: list[dict]) -> list[dict]:
         if fact.get("fact_type") != "performance":
             continue
         fact = bind_metric_to_parsed_value(fact)
+        semantic_context = " ".join(
+            str(fact.get(field) or "")
+            for field in ("evidence_text", "method", "condition")
+        )
         inferred = infer_metric_from_evidence(
-            str(fact.get("evidence_text") or ""),
+            semantic_context,
             unit=str(fact.get("unit") or ""),
             current_metric=str(fact.get("metric_or_parameter") or ""),
+            value=fact.get("value"),
         )
         if inferred:
             fact["metric_or_parameter"] = inferred

@@ -22,6 +22,11 @@ class Paper(Base):
     doi_or_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     year: Mapped[int | None] = mapped_column(Integer, nullable=True)
     journal: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    document_type: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    extraction_skip_reason: Mapped[str | None] = mapped_column(
+        String(100),
+        nullable=True,
+    )
     status: Mapped[str] = mapped_column(
         String(30), nullable=False, default="uploaded"
     )  # uploaded, queued, extracting, review, completed, failed

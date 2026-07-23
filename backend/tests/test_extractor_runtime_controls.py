@@ -1,7 +1,8 @@
+import json
+
 import pytest
 
 from app.core.config import settings
-from app.services.extractor_v7.exceptions import NoExtractableResults
 from app.services.extractor_v7.service import V7ExtractorService
 
 
@@ -47,6 +48,36 @@ def test_paper_metadata_scans_late_first_page_publisher_blocks():
         "year": "2024",
         "journal": "Adv. Eng. Mater.",
     }
+
+
+def test_paper_metadata_ignores_leading_mineru_image_markdown():
+    title = (
+        "Development of an adaptive morphing wing based on "
+        "fiber-reinforced plastics and shape memory alloys"
+    )
+    chunks = [
+        {
+            "page_number": 1,
+            "source_type": "figure",
+            "section_name": "title_abstract",
+            "raw_text": "![](images/cover.jpg)",
+        },
+        {
+            "page_number": 1,
+            "source_type": "paragraph",
+            "section_name": "title_abstract",
+            "raw_text": title,
+        },
+    ]
+
+    metadata = V7ExtractorService._fill_paper_metadata_fallback(
+        {"paper_title": "![](images/cover.jpg)"},
+        f"![](images/cover.jpg)\n{title}\nAbstract",
+        "fiber__10.1177_1528083718823295.pdf",
+        chunks,
+    )
+
+    assert metadata["paper_title"] == title
 
 
 def test_redundant_intrinsic_qa_restatement_is_dropped():
@@ -116,6 +147,110 @@ def test_repeated_intrinsic_qa_restatements_keep_one_evidence_row():
         non_intrinsic,
         non_intrinsic_restatement,
     ]
+
+
+def test_result_restatements_collapse_subset_conditions_but_keep_distinct_tests():
+    base = {
+        "sample_id": "adaptive_morphing_wing",
+        "canonical_metric": "maximum_deformation",
+        "clean_value": "2.8",
+        "clean_unit": "mm",
+        "export_target": "Result_Facts_QA",
+        "metric_priority": "Secondary",
+        "performance_method": "cyclic deformation test",
+        "qa_reason": "checklist_failed",
+        "ai_confidence": 0.88,
+    }
+    detailed = {
+        **base,
+        "source_location": "page 11",
+        "performance_condition": (
+            "at 0.8 A during a 0.5 A to 1.2 A cycle for 60 s; checklist_failed"
+        ),
+    }
+    conclusion_restatement = {
+        **base,
+        "source_location": "page 13",
+        "performance_condition": "cyclic activation for 60 s; checklist_failed",
+    }
+    distinct_temperature = {
+        **base,
+        "source_location": "page 14",
+        "performance_condition": "tested at 80 C; checklist_failed",
+    }
+
+    out = V7ExtractorService._dedupe_result_restatements([
+        detailed,
+        conclusion_restatement,
+        distinct_temperature,
+    ])
+
+    assert out == [detailed, distinct_temperature]
+
+
+def test_result_restatements_merge_mode_paraphrases_but_keep_distinct_modes():
+    base = {
+        "sample_id": "CF/EP",
+        "canonical_metric": "impact_strength",
+        "clean_value": "1097",
+        "clean_unit": "J/m^2",
+        "export_target": "Core_Final_Records",
+        "metric_priority": "Core",
+        "performance_method": "",
+        "qa_reason": "",
+        "ai_confidence": 0.9,
+    }
+    mode_ii_curve = {
+        **base,
+        "source_location": "page 6",
+        "performance_condition": "mode II propagation R-curve",
+    }
+    mode_ii_fracture = {
+        **base,
+        "source_location": "page 8",
+        "performance_condition": "mode II fracture test",
+    }
+    mode_i = {
+        **base,
+        "source_location": "page 9",
+        "performance_condition": "mode I fracture test",
+    }
+
+    out = V7ExtractorService._dedupe_result_restatements([
+        mode_ii_curve,
+        mode_ii_fracture,
+        mode_i,
+    ])
+
+    assert out == [mode_ii_curve, mode_i]
+
+
+def test_result_restatements_keep_distinct_surface_treatments():
+    base = {
+        "sample_id": "jute/epoxy",
+        "canonical_metric": "tensile_strength",
+        "clean_value": "120",
+        "clean_unit": "MPa",
+        "export_target": "Core_Final_Records",
+        "metric_priority": "Core",
+        "performance_method": "tensile test",
+        "qa_reason": "",
+        "ai_confidence": 0.9,
+    }
+    acid = {
+        **base,
+        "source_location": "page 6",
+        "performance_condition": "acid-treated fibers",
+    }
+    alkali = {
+        **base,
+        "source_location": "page 7",
+        "performance_condition": "alkali-treated fibers",
+    }
+
+    out = V7ExtractorService._dedupe_result_restatements([acid, alkali])
+
+    assert out == [acid, alkali]
 
 
 def test_repeated_fact_context_recovers_unique_fiber_volume_fraction():
@@ -308,6 +443,7 @@ def test_checklist_failure_is_never_routed_to_core_records():
 
     assert rows[0]["export_target"] == "Result_Facts_QA"
     assert "checklist_failed" in rows[0]["qa_reason"]
+    assert "checklist:sample_id_not_found_in_evidence" in rows[0]["qa_reason"]
 
 
 def test_vision_fact_rejects_background_and_accepts_grounded_core_value():
@@ -470,17 +606,20 @@ def test_holistic_core_count_excludes_characterization_peaks():
     assert V7ExtractorService._holistic_core_fact_count(facts) == 1
 
 
-def test_incomplete_core_holistic_sweep_refuses_partial_output():
-    with pytest.raises(RuntimeError, match="refusing partial output"):
-        V7ExtractorService._guard_incomplete_holistic_performance([
-            "performances: LLM stage timed out after 180s",
-        ])
+def test_incomplete_core_holistic_sweep_requests_stage2_fallback():
+    failures = V7ExtractorService._guard_incomplete_holistic_performance([
+        "performances: LLM stage timed out after 180s",
+    ])
+
+    assert failures == ["performances: LLM stage timed out after 180s"]
 
 
 def test_specialized_holistic_warning_does_not_fail_core_output():
-    V7ExtractorService._guard_incomplete_holistic_performance([
+    failures = V7ExtractorService._guard_incomplete_holistic_performance([
         "spectroscopy: LLM stage timed out after 75s",
     ])
+
+    assert failures == []
 
 
 @pytest.mark.asyncio
@@ -685,6 +824,44 @@ async def test_stage2_local_failure_keeps_existing_holistic_results(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_stage2_retries_timeout_once_and_keeps_recovered_fact(monkeypatch):
+    stages: list[str] = []
+
+    async def timeout_then_succeed(*_args, **kwargs):
+        stages.append(kwargs["stage"])
+        if len(stages) == 1:
+            raise TimeoutError
+        return {"facts": [{
+            "fact_type": "performance",
+            "candidate_sample_ids": ["S1"],
+            "metric_or_parameter": "tensile_strength",
+            "value": "12",
+            "unit": "MPa",
+            "evidence_text": "S1 had a tensile strength of 12 MPa.",
+            "source_location": "results section",
+        }]}, ""
+
+    monkeypatch.setattr(
+        V7ExtractorService,
+        "_llm_json_tolerant",
+        timeout_then_succeed,
+    )
+    facts = await V7ExtractorService._stage2_fact_candidates(
+        object(),
+        [{
+            **_chunk("text", "S1 had a tensile strength of 12 MPa."),
+            "source_block_id": "B-retry",
+        }],
+        model_mode="strong",
+    )
+
+    assert stages == ["stage2_facts", "stage2_facts_retry"]
+    assert len(facts) == 1
+    assert facts[0]["metric_or_parameter"] == "tensile_strength"
+    assert facts[0]["_source_block_id"] == "B-retry"
+
+
+@pytest.mark.asyncio
 async def test_stage2_failure_remains_fatal_without_prior_results(monkeypatch):
     async def timeout(*_args, **_kwargs):
         raise RuntimeError("LLM stage timed out")
@@ -781,7 +958,7 @@ def test_complete_holistic_sweep_still_repairs_intrinsic_constituent_properties(
     assert [chunk["source_block_id"] for chunk in selected] == ["B000026"]
 
 
-def test_quantitative_result_guard_rejects_silent_zero_output():
+def test_quantitative_result_guard_flags_silent_zero_output():
     chunks = [
         {
             **_chunk(
@@ -800,15 +977,14 @@ def test_quantitative_result_guard_rejects_silent_zero_output():
         },
     ]
 
-    with pytest.raises(NoExtractableResults) as exc_info:
-        V7ExtractorService._guard_suspicious_empty_records(
-            chunks,
-            [],
-            fact_count=0,
-        )
+    warning = V7ExtractorService._guard_suspicious_empty_records(
+        chunks,
+        [],
+        fact_count=0,
+    )
 
-    assert exc_info.value.error_code == "no_extractable_results"
-    assert "B0042" in str(exc_info.value)
+    assert "B0042" in warning
+    assert "已保留样品卡和中间事实" in warning
 
 
 def test_quantitative_result_guard_ignores_conditions_and_non_result_sections():
@@ -817,21 +993,23 @@ def test_quantitative_result_guard_ignores_conditions_and_non_result_sections():
         _chunk("text", "Prior work reported a tensile strength of 30 MPa.", "introduction"),
     ]
 
-    V7ExtractorService._guard_suspicious_empty_records(
+    warning = V7ExtractorService._guard_suspicious_empty_records(
         chunks,
         [],
         fact_count=0,
     )
+    assert warning == ""
 
 
 def test_quantitative_result_guard_accepts_nonempty_records():
     chunks = [_chunk("text", "The tensile strength was 30 MPa.")]
 
-    V7ExtractorService._guard_suspicious_empty_records(
+    warning = V7ExtractorService._guard_suspicious_empty_records(
         chunks,
         [{"performance_metric": "tensile_strength"}],
         fact_count=1,
     )
+    assert warning == ""
 
 
 def test_non_material_setup_fact_filter_keeps_real_material_metrics():
@@ -981,6 +1159,92 @@ def test_local_assignment_does_not_turn_peak_phrase_into_sample():
     out = V7ExtractorService._local_sample_assignment(facts, cards)
 
     assert out[0]["assigned_sample_id"] is None
+
+
+def test_variable_context_overrides_generic_filler_assignment():
+    samples = [
+        {
+            "sample_id": "PES_0.5wtG_CF_EP",
+            "variable_name": "graphene loading",
+            "variable_value": "0.5",
+            "variable_unit": "wt%",
+        },
+        {
+            "sample_id": "PES_1.5wtG_CF_EP",
+            "variable_name": "graphene loading",
+            "variable_value": "1.5",
+            "variable_unit": "wt%",
+        },
+    ]
+    facts = [{
+        "fact_type": "performance",
+        "assigned_sample_id": "graphene",
+        "candidate_sample_ids": ["graphene"],
+        "condition": "1.5 % graphene in the PES nanofiber membrane",
+        "evidence_text": "The average nanofiber diameter was 319 nm.",
+    }]
+
+    out = V7ExtractorService._repair_sample_assignment_from_variable_context(
+        facts,
+        samples,
+    )
+
+    assert out[0]["assigned_sample_id"] == "PES_1.5wtG_CF_EP"
+    assert out[0]["assignment_confidence"] == 0.92
+    assert "sample_bound_from_variable_context" in out[0]["assignment_reason"]
+
+
+def test_variable_context_does_not_confuse_weight_loss_with_filler_loading():
+    samples = [{
+        "sample_id": "PES_5wtG_CF_EP",
+        "variable_name": "graphene loading",
+        "variable_value": "5",
+        "variable_unit": "wt%",
+    }]
+    facts = [{
+        "fact_type": "performance",
+        "assigned_sample_id": "pure PES membrane",
+        "condition": "5 wt% weight loss; decomposition at 445 °C",
+    }]
+
+    out = V7ExtractorService._repair_sample_assignment_from_variable_context(
+        facts,
+        samples,
+    )
+
+    assert out[0]["assigned_sample_id"] == "pure PES membrane"
+
+
+def test_sample_card_sanitizer_merges_cleaned_anaphoric_identity():
+    cards = V7ExtractorService._sanitize_sample_cards([
+        {
+            "sample_id": "that of epoxy resin matrix",
+            "evidence_text": "The value was lower than that of epoxy resin matrix.",
+        },
+        {
+            "sample_id": "epoxy resin matrix",
+            "material_system": "epoxy",
+            "evidence_text": "The epoxy resin matrix was used as the control.",
+        },
+    ])
+
+    assert len(cards) == 1
+    assert cards[0]["sample_id"] == "epoxy resin matrix"
+    assert cards[0]["material_system"] == "epoxy"
+    assert "that of epoxy resin matrix" in cards[0]["sample_aliases"]
+
+
+def test_sample_aliases_are_serialized_before_database_binding():
+    encoded = V7ExtractorService._serialize_sample_aliases([
+        "PES nanofiber film",
+        "pure PES nanofiber membrane",
+    ])
+
+    assert json.loads(encoded) == [
+        "PES nanofiber film",
+        "pure PES nanofiber membrane",
+    ]
+    assert V7ExtractorService._serialize_sample_aliases([]) is None
 
 
 def test_deterministic_transition_fallback_recovers_explicit_strains():

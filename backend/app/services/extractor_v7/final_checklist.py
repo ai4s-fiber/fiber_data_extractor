@@ -58,6 +58,55 @@ def _identity_appears_in_evidence(identity: str, evidence: str) -> bool:
     return re.search(pattern, evidence_norm) is not None
 
 
+def _loosely_spaced_identity_appears(identity: str, evidence: str) -> bool:
+    """Match MinerU/LaTeX-spaced composition IDs without prefix collisions."""
+    chars = re.findall(r"[a-z0-9]", identity.lower())
+    if len(chars) < 6:
+        return False
+    separator = r"[\s_{}^./\\-]*"
+    pattern = (
+        r"(?<![a-z0-9])"
+        + separator.join(re.escape(char) for char in chars)
+        + r"(?![a-z0-9]|\s*[_/-]\s*[a-z0-9])"
+    )
+    return re.search(pattern, evidence, re.I) is not None
+
+
+def _composition_loading_identity_appears(identity: str, evidence: str) -> bool:
+    """Match canonical loading IDs against source forms such as PES_0.5-CF/EP."""
+    loading = re.search(
+        r"(?i)(?<![\d.])(\d+(?:\.\d+)?)\s*"
+        r"(?:wt(?:%|[a-z]+)|vol%|mol%|%)",
+        identity,
+    )
+    if not loading:
+        return False
+    stripped = identity[:loading.start()] + " " + identity[loading.end():]
+    family_tokens = {
+        token
+        for token in re.findall(r"[a-z][a-z0-9]*", stripped.lower())
+        if token not in {
+            "based", "composite", "control", "fiber", "fibers", "fibre",
+            "fibres", "film", "laminate", "material", "membrane",
+            "nanofiber", "nanofibers", "sample", "specimen",
+        }
+    }
+    if not family_tokens:
+        return False
+    for value_match in re.finditer(
+        rf"(?<![\d.]){re.escape(loading.group(1))}(?![\d.])",
+        evidence,
+        re.IGNORECASE,
+    ):
+        window = evidence[
+            max(0, value_match.start() - 80): value_match.end() + 80
+        ]
+        window_tokens = set(re.findall(r"[a-z][a-z0-9]*", window.lower()))
+        if family_tokens <= window_tokens:
+            return True
+    return False
+
+
 def _check_sample_id_in_evidence(fact: dict) -> str | None:
     """Check 1: sample_id must appear in evidence_text."""
     sid = str(fact.get("assigned_sample_id") or "").strip()
@@ -95,6 +144,17 @@ def _check_sample_id_in_evidence(fact: dict) -> str | None:
     sid_display = re.sub(r"[_/-]+", " ", sid)
     ev_norm = normalize_for_match(evidence)
     if _identity_appears_in_evidence(sid, evidence):
+        return None
+    if _loosely_spaced_identity_appears(sid, evidence):
+        return None
+    if _composition_loading_identity_appears(sid, evidence):
+        return None
+    control_base = re.sub(
+        r"(?i)[\s_/-]+(?:control|reference|baseline)\s*$",
+        "",
+        sid,
+    ).strip()
+    if control_base != sid and _identity_appears_in_evidence(control_base, evidence):
         return None
     # Try base name without form suffix
     base = re.sub(r"\s+(aerogel|nanofiber|nanofibers|film|membrane|foam|coating|powder|hydrogel|fiber|composite|laminate)s?$", "", sid_display, flags=re.I).strip()
@@ -171,6 +231,28 @@ def _check_sample_id_in_evidence(fact: dict) -> str | None:
     }:
         grounded_row = fact.get("_source_table_row")
         grounded_column = fact.get("_source_table_column")
+        axis_match = re.search(
+            r"(?i)(?:^|;\s*)axis\s*=\s*([^;]+)",
+            str(fact.get("condition") or ""),
+        )
+        if (
+            fact.get("extraction_method") == "rule_table_performance"
+            and grounded_row is not None
+            and grounded_column is not None
+            and axis_match
+        ):
+            axis = axis_match.group(1).strip()
+            base = re.sub(
+                rf"(?i)[\s_/-]+{re.escape(axis)}\s*$",
+                "",
+                sid,
+            ).strip()
+            if (
+                base
+                and _identity_appears_in_evidence(base, evidence)
+                and _identity_appears_in_evidence(axis, evidence)
+            ):
+                return None
         has_sample_column = bool(
             re.search(r"(?i)\[columns\].*\b(?:sample|specimen)\b", evidence)
         )
@@ -326,8 +408,10 @@ def _check_condition_not_as_value(fact: dict) -> str | None:
             return "cycle_count_as_performance_value"
     if unit in ("°c", "c") and metric not in (
         "surface_temperature", "glass_transition_temperature",
-        "onset_decomposition_temperature", "Tg", "Tm", "Td5",
-        "melting_point",
+        "decomposition_temperature", "onset_decomposition_temperature",
+        "austenite_start_temperature", "austenite_finish_temperature",
+        "martensite_start_temperature", "martensite_finish_temperature",
+        "Tg", "Tm", "Td5", "melting_point", "melting_temperature",
     ):
         return "bare_temperature_as_performance_value"
     return None

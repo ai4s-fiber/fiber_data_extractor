@@ -103,9 +103,12 @@ def normalize_metric_name(metric: str) -> str:
     """Map raw metric text to standard English snake_case name."""
     metric = metric.strip()
     lower = metric.lower()
-    for key, value in METRIC_MAP.items():
-        if key in lower:
-            return value
+    canonical = find_metric_canonical(metric)
+    if canonical:
+        return canonical
+    exact = METRIC_MAP.get(lower)
+    if exact:
+        return exact
     # Fallback: replace non-alphanumeric with underscores
     normalized = re.sub(r"[^0-9A-Za-z]+", "_", metric).strip("_")
     return normalized or metric
@@ -124,6 +127,7 @@ def normalize_unit(unit: str) -> str:
         text = bracketed.group(1)
     lower = text.lower().replace(" ", "")
     lower = lower.replace("·", "").replace("−", "-").replace("–", "-")
+    lower = lower.replace("**2", "²").replace("^2", "²")
     mapping = {
         "mpa": "mpa",
         "gpa": "gpa",
@@ -177,9 +181,30 @@ UNIT_RULES: dict[str, set[str]] = {
     "compressive_stress": {"mpa", "gpa", "kpa", "pa"},
     "breaking_strength": {"mpa", "gpa", "kpa", "pa", "cn/dtex"},
     "Youngs_modulus": {"mpa", "gpa", "kpa", "pa"},
+    "storage_modulus": {"mpa", "gpa", "kpa", "pa"},
+    "storage_modulus_improvement": {"%"},
     "Poissons_ratio": {"-", "dimensionless"},
     "inelastic_threshold_stress": {"mpa", "gpa", "kpa", "pa"},
     "compressive_modulus": {"mpa", "gpa", "kpa", "pa"},
+    "flexural_strength": {"mpa", "gpa", "kpa", "pa"},
+    "flexural_strength_improvement": {"%"},
+    "flexural_modulus": {"mpa", "gpa", "kpa", "pa"},
+    "impact_strength": {"j/m²", "j/m2", "kj/m²", "kj/m2"},
+    "fracture_toughness": {
+        "j/m²", "j/m2", "kj/m²", "kj/m2", "mpa·m^0.5", "mpam^0.5",
+    },
+    "interlaminar_fracture_toughness": {"j/m²", "j/m2", "kj/m²", "kj/m2"},
+    "mode_I_interlaminar_fracture_toughness": {"j/m²", "j/m2", "kj/m²", "kj/m2"},
+    "mode_II_interlaminar_fracture_toughness": {"j/m²", "j/m2", "kj/m²", "kj/m2"},
+    "fracture_toughness_improvement": {"%"},
+    "mode_I_interlaminar_fracture_toughness_improvement": {"%"},
+    "mode_II_interlaminar_fracture_toughness_improvement": {"%"},
+    "interlaminar_shear_strength": {"mpa", "gpa", "kpa", "pa"},
+    "interlaminar_shear_strength_growth_rate": {"%"},
+    "breaking_energy": {"j", "mj"},
+    "pull_out_force_improvement": {"times", "fold", "×", "dimensionless", "-"},
+    "maximum_deformation": {"mm", "cm", "m", "%"},
+    "deformation_speed": {"mm/s", "cm/s", "m/s"},
     "elongation_at_break": {"%"},
     "knee_strain": {"%"},
     "damage_transition_strain": {"%"},
@@ -199,8 +224,18 @@ UNIT_RULES: dict[str, set[str]] = {
     "surface_roughness": {"nm", "μm", "um", "µm", "å", "a", "angstrom", "angström"},
     "fiber_diameter": {"nm", "μm", "um", "µm"},
     "fiber_length": {"nm", "μm", "um", "µm", "mm"},
+    "particle_size": {"nm", "μm", "um", "µm", "mm"},
+    "lateral_size": {"nm", "μm", "um", "µm", "mm"},
+    "areal_density": {"g/m²", "g/m2", "mg/cm²", "mg/cm2", "gsm"},
+    "surface_tension": {"mn/m", "n/m"},
+    "degradation_rate": {"%"},
     "surface_temperature": {"°c", "k"},
     "glass_transition_temperature": {"°c", "k"},
+    "decomposition_temperature": {"°c", "k"},
+    "austenite_start_temperature": {"°c", "k"},
+    "austenite_finish_temperature": {"°c", "k"},
+    "martensite_start_temperature": {"°c", "k"},
+    "martensite_finish_temperature": {"°c", "k"},
     "imidization_degree": {"%"},
     "orientation_factor": {"-", "dimensionless"},
     "compressive_displacement": {"mm", "cm", "m", "μm", "um", "µm"},

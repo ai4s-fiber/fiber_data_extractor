@@ -117,6 +117,37 @@ def test_build_result_facts_exports_numeric_process_facts():
     assert result[0]["sample_id"] == "S1"
 
 
+def test_background_reference_fact_stays_out_of_deliverable_records():
+    facts = [{
+        "fact_id": "F-BG-1",
+        "fact_type": "performance",
+        "metric_or_parameter": "tensile_strength",
+        "value": "250",
+        "unit": "MPa",
+        "assigned_sample_id": "S1",
+        "assignment_status": "assigned",
+        "evidence_text": "Previous studies reported a tensile strength of 250 MPa.",
+        "source_location": "Introduction",
+        "confidence": 0.9,
+        "_data_source_type": "background_reference",
+        "_explicit_background_reference": True,
+    }]
+    cards = [{"sample_id": "S1", "sample_group_id": "G1"}]
+
+    result = V7ExtractorService._build_result_facts(facts, cards)
+    records, report = V7ExtractorService._stage4_generate_records(
+        paper_id=1,
+        project_id=1,
+        paper_metadata={},
+        sample_cards=cards,
+        facts=facts,
+    )
+
+    assert result[0]["export_target"] == "Not exported"
+    assert records == []
+    assert report["result_fact_count"] == 1
+
+
 def test_process_voltage_is_not_canonicalized_as_dielectric_breakdown_strength():
     result = V7ExtractorService._build_result_facts(
         [{

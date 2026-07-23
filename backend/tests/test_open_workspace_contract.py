@@ -44,6 +44,6 @@ def test_auth_user_member_routes_are_not_registered():
 def test_core_extraction_contract_is_preserved():
     assert hasattr(V7ExtractorService, "run_full_pipeline_for_paper")
     assert callable(V7ExtractorService.run_full_pipeline_for_paper)
-    assert len(MAIN_DATA_COLUMNS) >= 32
+    assert len(MAIN_DATA_COLUMNS) == 40
     assert "record_id" in MAIN_DATA_COLUMNS
-    assert "evidence_id" in MAIN_DATA_COLUMNS
+    assert "evidence_text" in MAIN_DATA_COLUMNS

@@ -33,6 +33,7 @@ from app.models.document_parse import (
 from app.models.paper import Paper
 from app.services.chunking import classify_section, classify_section_transition
 from app.services.extractor_v7.exceptions import ExtractionCancelled
+from app.services.file_integrity import file_sha256
 from app.services.job_cancellation import run_with_cancel_poll
 from app.services.mineru_client import (
     MinerUClient,
@@ -495,16 +496,7 @@ def _mineru_parse_cache_key(parser_strategy: str) -> dict[str, Any]:
 
 
 def _file_sha256(path: str) -> str:
-    digest = hashlib.sha256()
-    with open(path, "rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def file_sha256(path: str | Path) -> str:
-    """Public streaming hash helper used by resumable ingestion tooling."""
-    return _file_sha256(str(path))
+    return file_sha256(path)
 
 
 def _cache_key_digest(parser_strategy: str) -> str:

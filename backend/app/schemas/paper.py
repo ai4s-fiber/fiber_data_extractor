@@ -18,6 +18,8 @@ class PaperOut(BaseModel):
     doi_or_url: str | None
     year: int | None
     journal: str | None
+    document_type: str | None = None
+    extraction_skip_reason: str | None = None
     status: str
     page_count: int | None
     created_at: datetime

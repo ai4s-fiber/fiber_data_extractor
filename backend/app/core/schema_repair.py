@@ -62,10 +62,84 @@ EVIDENCE_ITEM_COLUMNS_POSTGRES = {
 
 PAPER_COLUMNS_SQLITE = {
     "content_sha256": "VARCHAR(64)",
+    "document_type": "VARCHAR(30)",
+    "extraction_skip_reason": "VARCHAR(100)",
 }
 
 PAPER_COLUMNS_POSTGRES = {
     "content_sha256": "VARCHAR(64)",
+    "document_type": "VARCHAR(30)",
+    "extraction_skip_reason": "VARCHAR(100)",
+}
+
+EXTRACTION_TEXT_COLUMNS = {
+    "candidate_records": {
+        "paper_title",
+        "doi_or_url",
+        "journal",
+        "sample_id",
+        "material_system",
+        "fiber_type",
+        "variable_name",
+        "variable_value",
+        "variable_unit",
+        "composition_expression",
+        "matrix_name",
+        "matrix_content",
+        "matrix_unit",
+        "additive_expression",
+        "solvent_or_aid",
+        "composition_evidence",
+        "process_route",
+        "spinning_method",
+        "process_parameters",
+        "post_treatment",
+        "process_evidence",
+        "structure_methods",
+        "structure_features",
+        "structure_evidence",
+        "performance_category",
+        "performance_metric",
+        "performance_value",
+        "performance_unit",
+        "performance_method",
+        "performance_condition",
+        "performance_evidence",
+        "evidence_text",
+        "reviewer_comment",
+        "source_location",
+    },
+    "sample_catalogs": {
+        "sample_id",
+        "sample_aliases",
+        "material_system",
+        "fiber_type",
+        "variable_name",
+        "variable_value",
+        "variable_unit",
+        "composition_expression",
+        "process_route",
+        "source_location",
+        "evidence_text",
+    },
+    "fact_candidates": {
+        "subject_text",
+        "candidate_sample_ids",
+        "metric_or_parameter",
+        "value",
+        "unit",
+        "method",
+        "condition",
+        "category",
+        "evidence_text",
+        "source_location",
+        "assigned_sample_id",
+    },
+    "evidence_items": {
+        "source_location",
+        "evidence_text",
+        "normalized_payload",
+    },
 }
 
 
@@ -87,6 +161,29 @@ async def _add_missing_postgres_columns(conn, table_name: str, columns: dict[str
                 f"ADD COLUMN IF NOT EXISTS {column_name} {column_sql}"
             )
         )
+
+
+async def _widen_postgres_extraction_text(conn) -> None:
+    for table_name, target_columns in EXTRACTION_TEXT_COLUMNS.items():
+        rows = await conn.execute(
+            text(
+                "SELECT column_name, data_type "
+                "FROM information_schema.columns "
+                "WHERE table_schema=current_schema() AND table_name=:table_name"
+            ),
+            {"table_name": table_name},
+        )
+        column_types = {row[0]: row[1] for row in rows.fetchall()}
+        for column_name in sorted(target_columns):
+            if column_types.get(column_name) in {None, "text"}:
+                continue
+            await conn.execute(
+                text(
+                    f'ALTER TABLE "{table_name}" '
+                    f'ALTER COLUMN "{column_name}" TYPE TEXT '
+                    f'USING "{column_name}"::text'
+                )
+            )
 
 
 async def ensure_runtime_schema() -> None:
@@ -121,6 +218,7 @@ async def ensure_runtime_schema() -> None:
             await _add_missing_postgres_columns(
                 conn, "evidence_items", EVIDENCE_ITEM_COLUMNS_POSTGRES
             )
+            await _widen_postgres_extraction_text(conn)
 
         await conn.execute(
             text("UPDATE extraction_jobs SET status='queued' WHERE status='pending'")

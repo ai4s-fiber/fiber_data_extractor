@@ -43,6 +43,100 @@ def test_grounded_bare_table_sample_uses_sample_column_and_row_label():
     assert "sample_id_not_found_in_evidence" not in checked.get("_checklist_failures", [])
 
 
+def test_transposed_table_axis_sample_is_grounded_by_base_and_axis():
+    fact = {
+        "fact_type": "performance",
+        "assigned_sample_id": "FRP_Warp",
+        "metric_or_parameter": "tensile_strength",
+        "value": "170.42",
+        "unit": "MPa",
+        "condition": "axis=Warp; standard_deviation=10.18 MPa",
+        "extraction_method": "rule_table_performance",
+        "_source_table_row": 1,
+        "_source_table_column": 1,
+        "evidence_text": (
+            "The mechanical test results of FRP are shown in Table 4.\n"
+            "[columns]\t\tWarp\tSD\tWeft\tSD\n"
+            "[row 1]\tTensile strength in MPa\t170.42\t10.18\t80.62\t10.06"
+        ),
+    }
+
+    checked = run_final_checklist([fact])[0]
+
+    assert "sample_id_not_found_in_evidence" not in checked.get(
+        "_checklist_failures", []
+    )
+
+
+def test_latex_spaced_sample_identity_is_grounded():
+    fact = {
+        "fact_type": "performance",
+        "assigned_sample_id": "PES_0.5-CF/EP",
+        "metric_or_parameter": "mode_I_interlaminar_fracture_toughness",
+        "value": "289",
+        "unit": "J/m²",
+        "evidence_text": (
+            "The G_IC of P E S _ { 0 . 5 ^ { - } } C F / E P "
+            "was 289 J / m ^ 2."
+        ),
+    }
+
+    checked = run_final_checklist([fact])[0]
+
+    assert "sample_id_not_found_in_evidence" not in checked.get(
+        "_checklist_failures", []
+    )
+
+
+def test_loading_canonical_identity_matches_source_order_variant():
+    fact = {
+        "fact_type": "performance",
+        "assigned_sample_id": "PES_CF_EP_0.5wtG",
+        "metric_or_parameter": "mode_I_interlaminar_fracture_toughness",
+        "value": "289",
+        "unit": "J/m²",
+        "evidence_text": "The G_IC of PES_0.5-CF/EP was 289 J/m².",
+    }
+
+    checked = run_final_checklist([fact])[0]
+
+    assert "sample_id_not_found_in_evidence" not in checked.get(
+        "_checklist_failures", []
+    )
+
+
+def test_loading_identity_does_not_match_when_loading_is_absent():
+    fact = {
+        "fact_type": "performance",
+        "assigned_sample_id": "PES_CF_EP_1wtG",
+        "metric_or_parameter": "mode_I_interlaminar_fracture_toughness",
+        "value": "351",
+        "unit": "J/m²",
+        "evidence_text": "The G_IC of PES-CF/EP was 351 J/m².",
+    }
+
+    checked = run_final_checklist([fact])[0]
+
+    assert "sample_id_not_found_in_evidence" in checked["_checklist_failures"]
+
+
+def test_control_suffix_is_supported_by_explicit_base_identity():
+    fact = {
+        "fact_type": "performance",
+        "assigned_sample_id": "CF_EP_control",
+        "metric_or_parameter": "flexural_strength",
+        "value": "1663",
+        "unit": "MPa",
+        "evidence_text": "The flexural strength of CF/EP was 1663 MPa.",
+    }
+
+    checked = run_final_checklist([fact])[0]
+
+    assert "sample_id_not_found_in_evidence" not in checked.get(
+        "_checklist_failures", []
+    )
+
+
 def test_grounded_s_prefixed_table_run_uses_material_and_row_label():
     fact = {
         "fact_type": "performance",

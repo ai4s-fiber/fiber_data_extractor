@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import uuid
+from pathlib import Path
 from typing import Any
 
 from openpyxl import Workbook
@@ -17,8 +19,12 @@ from app.models.paper import Paper
 MAIN_DATA_COLUMNS = [
     "record_id",
     "paper_id",
-    "sample_id",
+    "paper_title",
+    "doi_or_url",
+    "year",
+    "journal",
     "sample_group_id",
+    "sample_id",
     "material_system",
     "fiber_type",
     "variable_name",
@@ -30,21 +36,25 @@ MAIN_DATA_COLUMNS = [
     "matrix_unit",
     "additive_expression",
     "solvent_or_aid",
+    "composition_evidence",
     "process_route",
     "spinning_method",
     "process_parameters",
     "post_treatment",
+    "process_evidence",
     "structure_methods",
     "structure_features",
+    "structure_evidence",
     "performance_category",
     "performance_metric",
     "performance_value",
     "performance_unit",
     "performance_method",
     "performance_condition",
-    "evidence_id",
-    "source_page",
-    "confidence",
+    "performance_evidence",
+    "extraction_method",
+    "evidence_text",
+    "ai_confidence",
     "review_status",
     "reviewer_comment",
 ]
@@ -91,6 +101,7 @@ PARSE_BLOCK_COLUMNS = [
 ]
 
 QUALITY_COLUMNS = ["metric", "value"]
+MAX_DATA_ROWS_PER_SHEET = 1_000_000
 
 
 def paper_export_id(record_or_paper: CandidateRecord | Paper) -> str:
@@ -100,14 +111,14 @@ def paper_export_id(record_or_paper: CandidateRecord | Paper) -> str:
 
 
 def validate_main_data_row(row: dict[str, Any]) -> None:
-    """Assert Main_Data row uses exactly the allowed 32 export columns in order."""
+    """Assert Main_Data row uses exactly the canonical 40 columns in order."""
     if list(row.keys()) != MAIN_DATA_COLUMNS:
         raise ValueError(
             f"Main_Data column order mismatch: expected {MAIN_DATA_COLUMNS}, got {list(row.keys())}"
         )
     internal_fields = {
         "candidate_status", "source_location", "raw_value", "value_operator",
-        "export_target", "fact_id", "source_block_id",
+        "export_target", "fact_id", "source_block_id", "evidence_id", "source_page",
     }
     leaked = internal_fields & set(row.keys())
     if leaked:
@@ -133,6 +144,7 @@ def generate_structured_workbook(
         paper_id: _paper_id_for_records(paper_id, records)
         for paper_id in paper_by_id
     }
+    records_by_id = _record_lookup(records)
 
     main_rows = [
         _main_row(record, evidence_by_record.get(record.id))
@@ -145,14 +157,19 @@ def generate_structured_workbook(
         for paper in papers
     ]
     evidence_rows = [
-        _evidence_row(evidence, paper_export_ids, records)
+        _evidence_row(evidence, paper_export_ids, records_by_id)
         for evidence in evidence_items
     ]
     block_rows = [
         _block_row(block, paper_export_ids)
         for block in document_blocks
     ]
-    quality_rows = _quality_rows(records, evidence_items, document_blocks)
+    quality_rows = _quality_rows(
+        records,
+        papers,
+        evidence_items,
+        document_blocks,
+    )
 
     wb = Workbook()
     default = wb.active
@@ -162,7 +179,16 @@ def generate_structured_workbook(
     _write_sheet(wb, "Evidence", EVIDENCE_COLUMNS, evidence_rows, "7C3AED")
     _write_sheet(wb, "Parse_Blocks", PARSE_BLOCK_COLUMNS, block_rows, "92400E")
     _write_sheet(wb, "Quality_Report", QUALITY_COLUMNS, quality_rows, "374151")
-    wb.save(filepath)
+    output_path = Path(filepath)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = output_path.with_name(
+        f".{output_path.stem}-{uuid.uuid4().hex}.tmp{output_path.suffix}"
+    )
+    try:
+        wb.save(temporary_path)
+        temporary_path.replace(output_path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 
 def _paper_id_for_records(paper_id: int, records: list[CandidateRecord]) -> str:
@@ -173,11 +199,18 @@ def _paper_id_for_records(paper_id: int, records: list[CandidateRecord]) -> str:
 
 
 def _main_row(record: CandidateRecord, evidence: EvidenceItem | None) -> dict[str, Any]:
+    evidence_text = record.evidence_text or (
+        evidence.evidence_text if evidence is not None else ""
+    )
     return {
         "record_id": record.record_id,
         "paper_id": paper_export_id(record),
-        "sample_id": record.sample_id,
+        "paper_title": record.paper_title,
+        "doi_or_url": record.doi_or_url,
+        "year": record.year,
+        "journal": record.journal,
         "sample_group_id": record.sample_group_id,
+        "sample_id": record.sample_id,
         "material_system": record.material_system,
         "fiber_type": record.fiber_type,
         "variable_name": record.variable_name,
@@ -189,21 +222,25 @@ def _main_row(record: CandidateRecord, evidence: EvidenceItem | None) -> dict[st
         "matrix_unit": record.matrix_unit,
         "additive_expression": record.additive_expression,
         "solvent_or_aid": record.solvent_or_aid,
+        "composition_evidence": record.composition_evidence,
         "process_route": record.process_route,
         "spinning_method": record.spinning_method,
         "process_parameters": record.process_parameters,
         "post_treatment": record.post_treatment,
+        "process_evidence": record.process_evidence,
         "structure_methods": record.structure_methods,
         "structure_features": record.structure_features,
+        "structure_evidence": record.structure_evidence,
         "performance_category": record.performance_category,
         "performance_metric": record.performance_metric,
         "performance_value": record.performance_value,
         "performance_unit": record.performance_unit,
         "performance_method": record.performance_method,
         "performance_condition": record.performance_condition,
-        "evidence_id": evidence.id if evidence else "",
-        "source_page": evidence.page_start if evidence else "",
-        "confidence": record.ai_confidence,
+        "performance_evidence": record.performance_evidence,
+        "extraction_method": record.extraction_method,
+        "evidence_text": evidence_text,
+        "ai_confidence": record.ai_confidence,
         "review_status": record.review_status,
         "reviewer_comment": record.reviewer_comment,
     }
@@ -232,9 +269,8 @@ def _record_lookup(records: list[CandidateRecord]) -> dict[int, CandidateRecord]
 def _evidence_row(
     evidence: EvidenceItem,
     paper_export_ids: dict[int, str],
-    records: list[CandidateRecord],
+    records_by_id: dict[int, CandidateRecord],
 ) -> dict[str, Any]:
-    records_by_id = _record_lookup(records)
     record = records_by_id.get(evidence.candidate_record_id or -1)
     return {
         "evidence_id": evidence.id,
@@ -272,17 +308,29 @@ def _block_row(
 
 def _quality_rows(
     records: list[CandidateRecord],
+    papers: list[Paper],
     evidence_items: list[EvidenceItem],
     document_blocks: list[DocumentBlock],
 ) -> list[dict[str, Any]]:
-    with_evidence = len({item.candidate_record_id for item in evidence_items if item.candidate_record_id})
+    record_ids = {record.id for record in records}
+    with_evidence = len({
+        item.candidate_record_id
+        for item in evidence_items
+        if item.candidate_record_id in record_ids
+    })
     approved = len([record for record in records if record.review_status in ("approved", "通过")])
     uncertain = len([record for record in records if record.review_status in ("uncertain", "存疑")])
     return [
+        {"metric": "main_data_schema", "value": "v40"},
+        {"metric": "main_data_columns", "value": len(MAIN_DATA_COLUMNS)},
         {"metric": "main_data_rows", "value": len(records)},
-        {"metric": "paper_count", "value": len({record.source_paper_id for record in records})},
+        {"metric": "paper_count", "value": len(papers)},
         {"metric": "evidence_rows", "value": len(evidence_items)},
         {"metric": "rows_with_evidence", "value": with_evidence},
+        {
+            "metric": "rows_without_evidence",
+            "value": max(0, len(records) - with_evidence),
+        },
         {"metric": "document_blocks", "value": len(document_blocks)},
         {"metric": "approved_rows", "value": approved},
         {"metric": "uncertain_rows", "value": uncertain},
@@ -296,7 +344,6 @@ def _write_sheet(
     rows: list[dict[str, Any]],
     color: str,
 ) -> None:
-    ws = wb.create_sheet(title)
     header_font = Font(name="微软雅黑", bold=True, size=11, color="FFFFFF")
     header_fill = PatternFill(start_color=color, end_color=color, fill_type="solid")
     header_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
@@ -309,31 +356,45 @@ def _write_sheet(
         bottom=Side(style="thin", color="CCCCCC"),
     )
 
-    for col_idx, column in enumerate(columns, 1):
-        cell = ws.cell(row=1, column=col_idx, value=column)
-        cell.font = header_font
-        cell.fill = header_fill
-        cell.alignment = header_alignment
-        cell.border = border
+    chunks = [
+        rows[index : index + MAX_DATA_ROWS_PER_SHEET]
+        for index in range(0, len(rows), MAX_DATA_ROWS_PER_SHEET)
+    ] or [[]]
+    for chunk_index, chunk in enumerate(chunks, start=1):
+        sheet_title = title if chunk_index == 1 else f"{title}_{chunk_index:03d}"
+        ws = wb.create_sheet(sheet_title)
+        max_lengths = [len(column) for column in columns]
 
-    for row_idx, row in enumerate(rows, 2):
         for col_idx, column in enumerate(columns, 1):
-            cell = ws.cell(row=row_idx, column=col_idx, value=_excel_safe_value(row.get(column)))
-            cell.font = data_font
-            cell.alignment = data_alignment
+            cell = ws.cell(row=1, column=col_idx, value=column)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = header_alignment
             cell.border = border
 
-    for col_idx, column in enumerate(columns, 1):
-        max_len = len(column)
-        for row_idx in range(2, len(rows) + 2):
-            value = ws.cell(row=row_idx, column=col_idx).value
-            if value not in (None, ""):
-                max_len = max(max_len, min(len(str(value)), 60))
-        ws.column_dimensions[ws.cell(row=1, column=col_idx).column_letter].width = max_len + 3
-    ws.freeze_panes = "A2"
+        for row_idx, row in enumerate(chunk, 2):
+            for col_idx, column in enumerate(columns, 1):
+                value = _excel_safe_value(row.get(column))
+                cell = ws.cell(row=row_idx, column=col_idx, value=value)
+                cell.font = data_font
+                cell.alignment = data_alignment
+                cell.border = border
+                if value not in (None, ""):
+                    max_lengths[col_idx - 1] = max(
+                        max_lengths[col_idx - 1],
+                        min(len(str(value)), 60),
+                    )
+
+        for col_idx, max_len in enumerate(max_lengths, 1):
+            column_letter = ws.cell(row=1, column=col_idx).column_letter
+            ws.column_dimensions[column_letter].width = max_len + 3
+        ws.freeze_panes = "A2"
 
 
 def _excel_safe_value(value: Any) -> Any:
     if isinstance(value, str):
-        return ILLEGAL_CHARACTERS_RE.sub("", value)
+        cleaned = ILLEGAL_CHARACTERS_RE.sub("", value)
+        if cleaned.lstrip().startswith(("=", "+", "-", "@")):
+            return f"'{cleaned}"
+        return cleaned
     return value

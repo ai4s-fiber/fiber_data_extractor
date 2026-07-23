@@ -76,6 +76,32 @@ def test_semicolon_run_suffix_becomes_numbered_sample_id():
     assert "normalized_semicolon_run_sample_id" in notes
 
 
+def test_sample_id_strips_anaphoric_and_metric_prefixes():
+    sid, _, notes = sanitize_sample_id(
+        "that of epoxy resin matrix",
+        "The storage modulus was lower than that of epoxy resin matrix.",
+    )
+    assert sid == "epoxy resin matrix"
+    assert "stripped_anaphoric_sample_prefix" in notes
+
+    sid, _, notes = sanitize_sample_id(
+        "energy storage modulus of PES intercalation composite",
+        "The energy storage modulus of PES intercalation composite was 86 GPa.",
+    )
+    assert sid == "PES intercalation composite"
+    assert "stripped_metric_prefix_from_sample_id" in notes
+
+
+def test_sample_id_rejects_decimal_prefix_hallucination():
+    sid, _, notes = sanitize_sample_id(
+        "PES_1",
+        "The maximum G_IIC was obtained for PES_1.5-CF/EP.",
+    )
+
+    assert sid == ""
+    assert "sample_id_was_decimal_prefix_only" in notes
+
+
 def test_imidization_not_crystallinity():
     facts = [{
         "fact_id": "F001",

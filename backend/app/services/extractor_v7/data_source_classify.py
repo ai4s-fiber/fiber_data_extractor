@@ -77,11 +77,8 @@ def _text_has_this_work_signal(text: str) -> bool:
     return any(hint in lower for hint in _THIS_WORK_HINTS)
 
 
-def _text_has_background_signal(text: str, section: str = "") -> bool:
+def _text_has_explicit_background_signal(text: str) -> bool:
     lower = normalize_for_match(text)
-    section_lower = (section or "").lower().strip()
-    if section_lower in _INTRO_SECTIONS:
-        return True
     if any(hint in lower for hint in _BACKGROUND_HINTS):
         return True
     has_citation = bool(_CITATION_RE.search(text))
@@ -91,6 +88,14 @@ def _text_has_background_signal(text: str, section: str = "") -> bool:
     ):
         return True
     return False
+
+
+def _text_has_background_signal(text: str, section: str = "") -> bool:
+    section_lower = (section or "").lower().strip()
+    return (
+        section_lower in _INTRO_SECTIONS
+        or _text_has_explicit_background_signal(text)
+    )
 
 
 def _text_has_comparison_signal(text: str) -> bool:
@@ -110,6 +115,7 @@ def classify_data_source_type(fact: dict) -> str:
     unit = str(fact.get("unit") or "")
     method = str(fact.get("method") or "")
     combined = f"{evidence} {subject}"
+    source_location = str(fact.get("source_location") or "")
 
     # 1. Method parameter (formulas, reference peaks, calibration)
     if is_formula_method_parameter_fact(fact):
@@ -143,16 +149,25 @@ def classify_data_source_type(fact: dict) -> str:
         return "paper_core_result"
 
     # 4. Background reference (Introduction / prior work)
+    explicit_background = _text_has_explicit_background_signal(combined)
     is_bg = _text_has_background_signal(combined, section)
-    is_this = _text_has_this_work_signal(combined) or (
-        section.lower().strip() in {"results", "conclusion", "experimental"}
-        and text_has_primary_result_signal(combined)
+    primary_result_signal = text_has_primary_result_signal(combined)
+    is_this = _text_has_this_work_signal(combined) or primary_result_signal
+    source_grounded = bool(
+        fact.get("assigned_sample_id")
+        and fact.get("value") not in (None, "")
+        and re.search(
+            r"(?i)(?:\bfig(?:ure)?\.?\s*\d|\btable\s*\d)",
+            source_location,
+        )
     )
 
-    if is_bg and not is_this:
+    if explicit_background and not is_this:
         # 5. Comparison literature (explicit comparison with other work)
         if _text_has_comparison_signal(combined):
             return "comparison_literature"
+        return "background_reference"
+    if is_bg and not (is_this or source_grounded):
         return "background_reference"
 
     # 6. Ambiguous / unverified
@@ -174,6 +189,15 @@ def apply_data_source_classification(facts: list[dict]) -> list[dict]:
     for fact in facts:
         if fact.get("fact_type") != "performance":
             continue
+        combined = " ".join([
+            str(fact.get("evidence_text") or ""),
+            str(fact.get("subject_text") or ""),
+        ])
+        fact["_explicit_background_reference"] = (
+            _text_has_explicit_background_signal(combined)
+            and not _text_has_this_work_signal(combined)
+            and not text_has_primary_result_signal(combined)
+        )
         source_type = classify_data_source_type(fact)
         fact["_data_source_type"] = source_type
     return facts

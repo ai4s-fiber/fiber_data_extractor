@@ -9,6 +9,7 @@ from app.services.extractor_v7.metric_normalize import (
 from app.services.metrics_dictionary import (
     find_metric_canonical,
     find_process_parameter_canonical,
+    find_structure_feature_canonical,
 )
 
 
@@ -28,6 +29,26 @@ def test_ph_unit_and_evidence_override_unrelated_metric_label():
 def test_short_metric_symbol_does_not_use_substring_lookup():
     assert find_metric_canonical("E") is None
     assert find_metric_canonical("UTS") == "tensile_strength"
+
+
+def test_short_structure_symbols_do_not_match_inside_unrelated_words():
+    assert find_structure_feature_canonical("surface tension") is None
+    assert find_structure_feature_canonical("storage modulus") is None
+    assert find_structure_feature_canonical("Polyamide 6.6") is None
+    assert find_structure_feature_canonical("Ra") == "surface_roughness"
+    assert find_structure_feature_canonical("fa") == "orientation_factor"
+    assert (
+        find_structure_feature_canonical("measured fiber diameter")
+        == "fiber_diameter"
+    )
+
+
+def test_common_physical_metrics_do_not_drift_to_structure_symbols():
+    assert canonicalize_metric_name("energy storage modulus") == "storage_modulus"
+    assert canonicalize_metric_name("surface tension") == "surface_tension"
+    assert canonicalize_metric_name("degradation rate") == "degradation_rate"
+    assert canonicalize_metric_name("maximum transverse size") == "lateral_size"
+    assert canonicalize_metric_name("Polyamide 6.6") == "polyamide_6_6"
 
 
 def test_normalize_spectroscopy_peaks_numbers_ftir_bands():

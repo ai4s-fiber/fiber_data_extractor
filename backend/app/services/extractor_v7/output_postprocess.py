@@ -95,8 +95,15 @@ def _resolve_metric_unit(fact: dict) -> dict:
     if not unit:
         return fact
     canonical = canonical or find_metric_canonical(metric) or metric
+    semantic_context = " ".join(
+        str(fact.get(field) or "")
+        for field in ("evidence_text", "method", "condition")
+    )
     inferred_ev = infer_metric_from_evidence(
-        evidence, unit=unit, current_metric=metric
+        semantic_context,
+        unit=unit,
+        current_metric=metric,
+        value=fact.get("value"),
     )
     if inferred_ev:
         fact["metric_or_parameter"] = inferred_ev
@@ -171,8 +178,8 @@ def _sanitize_fact_sample(fact: dict) -> dict:
         fact["condition"] = f"{existing}; {cond}".strip("; ") if existing else cond
     if cleaned != sid:
         fact["assigned_sample_id"] = cleaned or None
-        for note in notes:
-            fact["assignment_reason"] = _append_reason(fact.get("assignment_reason"), note)
+    for note in notes:
+        fact["assignment_reason"] = _append_reason(fact.get("assignment_reason"), note)
     return fact
 
 

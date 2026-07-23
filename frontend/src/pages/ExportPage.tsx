@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { App, Button, Table, Tag, Select, Space, Empty, Popconfirm, Typography, Alert } from 'antd';
+import { App, Button, Table, Tag, Select, Space, Empty, Popconfirm, Typography } from 'antd';
 import { DownloadOutlined, ExportOutlined, DeleteOutlined } from '@ant-design/icons';
 import { useProject } from '../stores/project';
 import api from '../api/client';
@@ -82,12 +82,7 @@ export default function ExportPage() {
     setExporting(true);
     try {
       const res = await api.post(`/projects/${pid}/exports`, { review_status_filter: statusFilter });
-      const cleared = res.data?.cleared_record_count ?? 0;
-      message.success(
-        cleared > 0
-          ? `导出成功，已从审核队列清除 ${cleared} 条记录`
-          : '导出成功',
-      );
+      message.success(`导出成功，共写入 ${res.data?.exported_record_count ?? 0} 条记录`);
       loadExports();
       loadStatusCounts();
     } catch (err: any) {
@@ -180,19 +175,11 @@ export default function ExportPage() {
         </Space>
       </div>
 
-      <Alert
-        type="warning"
-        showIcon
-        style={{ marginBottom: 16 }}
-        message="导出会永久清除审核队列中的对应数据"
-        description="生成 Excel 后，已写入工作簿的候选记录会从「数据审核」列表中删除，且不可恢复。请确认筛选条件无误后再导出。"
-      />
-
       <div style={{ marginBottom: 24, padding: 20, background: 'var(--color-bg-tertiary)', borderRadius: 12, border: '1px solid var(--color-border)' }}>
         <p style={{ color: 'var(--color-text-secondary)', fontSize: 13, margin: 0 }}>
           导出文件名：<strong>数据主表.xlsx</strong>；工作簿包含 <strong>Main_Data</strong>、<strong>Papers</strong>、<strong>Evidence</strong>、<strong>Parse_Blocks</strong>、<strong>Quality_Report</strong>。
-          <strong>Main_Data</strong> 是主数据表，固定 32 列；文献信息、原文证据和解析块分别放在独立 Sheet 中。
-          默认只导出审核状态为"通过"的候选记录。
+          <strong>Main_Data</strong> 是可独立交付的 40 列主数据表；文献信息、证据明细和解析块同时保留在独立 Sheet 中。
+          默认只导出审核状态为"通过"的候选记录，导出不会删除数据库中的原始结果。
         </p>
       </div>
 

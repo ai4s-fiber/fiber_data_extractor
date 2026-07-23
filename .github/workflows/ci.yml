@@ -18,6 +18,10 @@ jobs:
           python-version: "3.11"
       - name: Install dependencies
         run: pip install -r requirements.txt
+      - name: Lint and compile
+        run: |
+          python -m ruff check app scripts tests
+          python -m compileall -q app scripts
       - name: Run pytest
         env:
           DATABASE_URL: sqlite+aiosqlite:///./test_ci.db
@@ -37,5 +41,5 @@ jobs:
           node-version: "20"
       - name: Install and build
         run: |
-          npm ci || npm install
+          npm ci
           npm run build

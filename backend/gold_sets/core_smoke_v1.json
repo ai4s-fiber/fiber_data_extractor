@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "name": "fiber-core-smoke-v1",
+  "description": "Primary-paper regression facts verified against the cited source text and tables.",
+  "thresholds": {
+    "precision": 0.97,
+    "recall": 0.95,
+    "sample_assignment_accuracy": 0.98,
+    "unit_accuracy": 0.98,
+    "evidence_coverage": 1.0,
+    "document_type_accuracy": 1.0
+  },
+  "papers": [
+    {
+      "filename": "fiber__10.1002_adem.202001002.pdf",
+      "sha256": "77fa1ad82d558f7cb39a2376ae482db3a37d5bac4235cd77c5ab96f9f76de4aa",
+      "document_type": "review",
+      "exhaustive": true,
+      "facts": []
+    },
+    {
+      "filename": "fiber__10.1002_adem.202400017.pdf",
+      "sha256": "87f2802bf061c314873c3ac9cf29b0ef2bff9b761701a1d080809c9a42151b61",
+      "document_type": "research",
+      "exhaustive": true,
+      "sample_aliases": {
+        "P-type_TPMS_TPU_CF_metamaterial": [
+          "P-type_TPMS_TPU_T300_CF_metamaterial",
+          "TPU_TPMS_fiber_reinforced_10vol%"
+        ]
+      },
+      "facts": [
+        {"sample_id": "P-type_TPMS_TPU_CF_metamaterial", "metric": "Poissons_ratio", "value": "0.42", "unit": "dimensionless", "evidence_contains": ["Poisson's ratio", "0.42"]},
+        {"sample_id": "P-type_TPMS_TPU_CF_metamaterial", "metric": "Youngs_modulus", "value": "26", "unit": "MPa", "evidence_contains": ["elastic modulus", "26 MPa"]},
+        {"sample_id": "P-type_TPMS_TPU_CF_metamaterial", "metric": "acceleration_reduction", "value": "46", "unit": "%", "evidence_contains": ["decrease of more than 46%"]},
+        {"sample_id": "P-type_TPMS_TPU_CF_metamaterial", "metric": "bandgap_frequency_range", "value": "1050", "unit": "Hz", "evidence_contains": ["1050 to 1400 Hz"]},
+        {"sample_id": "P-type_TPMS_TPU_CF_metamaterial", "metric": "bandgap_frequency_range", "value": "1400", "unit": "Hz", "evidence_contains": ["1050 to 1400 Hz"]},
+        {"sample_id": "P-type_TPMS_TPU_CF_metamaterial", "metric": "compressive_displacement", "value": "17", "unit": "mm", "evidence_contains": ["17 mm"]},
+        {"sample_id": "P-type_TPMS_TPU_CF_metamaterial", "metric": "compressive_displacement", "value": "8.8", "unit": "mm", "evidence_contains": ["fiber-reinforced structure material was 8.8 mm"]},
+        {"sample_id": "P-type_TPMS_TPU_CF_metamaterial", "metric": "density", "value": "1257", "unit": "kg m^-3", "evidence_contains": ["density", "1257 kg m^-3"]},
+        {"sample_id": "P-type_TPMS_TPU_CF_metamaterial", "metric": "eigenfrequency", "value": "743", "unit": "Hz", "evidence_contains": ["919 Hz", "743 Hz"]},
+        {"sample_id": "P-type_TPMS_TPU_CF_metamaterial", "metric": "eigenfrequency", "value": "919", "unit": "Hz", "evidence_contains": ["919 Hz", "743 Hz"]},
+        {"sample_id": "P-type_TPMS_TPU_CF_metamaterial", "metric": "load_bearing_stability_improvement", "value": "23", "unit": "%", "evidence_contains": ["increased by 23%"]},
+        {"sample_id": "P-type_TPMS_TPU_CF_metamaterial", "metric": "maximum_acceleration", "value": "37", "unit": "dimensionless", "evidence_contains": ["maximum acceleration of 37"]},
+        {"sample_id": "P-type_TPMS_TPU_CF_metamaterial", "metric": "normalized_bandgap_frequency_range", "value": "0.145", "unit": "dimensionless", "evidence_contains": ["0.145 to 0.194"]},
+        {"sample_id": "P-type_TPMS_TPU_CF_metamaterial", "metric": "normalized_bandgap_frequency_range", "value": "0.194", "unit": "dimensionless", "evidence_contains": ["0.145 to 0.194"]},
+        {"sample_id": "P-type_TPMS_TPU_CF_metamaterial", "metric": "softening_load", "value": "430", "unit": "N", "evidence_contains": ["composite material was 430 N"]},
+        {"sample_id": "P-type_TPMS_TPU_CF_metamaterial", "metric": "transmission_attenuation_frequency_range", "value": "1250", "unit": "Hz", "evidence_contains": ["1250–1500 Hz"]},
+        {"sample_id": "P-type_TPMS_TPU_CF_metamaterial", "metric": "transmission_attenuation_frequency_range", "value": "1500", "unit": "Hz", "evidence_contains": ["1250–1500 Hz"]},
+        {"sample_id": "T300_carbon_fiber", "metric": "Poissons_ratio", "value": "0.2", "unit": "dimensionless", "evidence_contains": ["T300 carbon fiber", "Poisson's ratio of 0.2"]},
+        {"sample_id": "T300_carbon_fiber", "metric": "Youngs_modulus", "value": "230", "unit": "GPa", "evidence_contains": ["T300 carbon fiber", "230 GPa"]},
+        {"sample_id": "T300_carbon_fiber", "metric": "density", "value": "1770", "unit": "kg m^-3", "evidence_contains": ["T300 carbon fiber"]},
+        {"sample_id": "TPU_matrix", "metric": "Poissons_ratio", "value": "0.43", "unit": "dimensionless", "evidence_contains": ["matrix material", "Poisson's ratio of 0.43"]},
+        {"sample_id": "TPU_matrix", "metric": "Youngs_modulus", "value": "20", "unit": "MPa", "evidence_contains": ["matrix material", "20 MPa"]},
+        {"sample_id": "TPU_matrix", "metric": "compressive_displacement", "value": "16.7", "unit": "mm", "evidence_contains": ["TPU material structure was 16.7 mm"]},
+        {"sample_id": "TPU_matrix", "metric": "density", "value": "1200", "unit": "kg m^-3", "evidence_contains": ["matrix material"]},
+        {"sample_id": "TPU_matrix", "metric": "maximum_acceleration", "value": "69", "unit": "dimensionless", "evidence_contains": ["TPU had a dimensionless maximum acceleration of 69"]},
+        {"sample_id": "TPU_matrix", "metric": "softening_load", "value": "350", "unit": "N", "evidence_contains": ["TPU material was 350 N"]}
+      ]
+    },
+    {
+      "filename": "fiber__10.1002_adem.202500946.pdf",
+      "sha256": "b655c2070194afd2c8326802e971ac663612c504827dc3a7f47628527a89a820",
+      "document_type": "research",
+      "exhaustive": true,
+      "facts": [
+        {"sample_id": "PCL/AA", "metric": "Youngs_modulus", "value": "33", "unit": "MPa", "evidence_contains": ["PCL/AA", "33 ± 7"]},
+        {"sample_id": "PCL/AA", "metric": "elongation_at_break", "value": "255", "unit": "%", "evidence_contains": ["PCL/AA", "255 ± 38"]},
+        {"sample_id": "PCL/AA", "metric": "tensile_strength", "value": "4", "unit": "MPa", "evidence_contains": ["PCL/AA", "4 ± 1"]},
+        {"sample_id": "PCL/AA/S", "metric": "Youngs_modulus", "value": "9", "unit": "MPa", "evidence_contains": ["PCL/AA/S", "9 ± 2"]},
+        {"sample_id": "PCL/AA/S", "metric": "elongation_at_break", "value": "138", "unit": "%", "evidence_contains": ["PCL/AA/S", "138 ± 18"]},
+        {"sample_id": "PCL/AA/S", "metric": "pH", "value": "7.60", "unit": "pH", "evidence_contains": ["7.60 and 7.64"]},
+        {"sample_id": "PCL/AA/S", "metric": "tensile_strength", "value": "2.4", "unit": "MPa", "evidence_contains": ["PCL/AA/S", "2.4 ± 0.4"]},
+        {"sample_id": "PCL/AA/S", "metric": "water_contact_angle", "value": "56.6", "unit": "°", "evidence_contains": ["56.6° for PCL/AA/S"]},
+        {"sample_id": "PCL/AA/S", "metric": "water_contact_angle", "value": "93.4", "unit": "°", "evidence_contains": ["93.4°", "PCL/AA/S"]},
+        {"sample_id": "PCL/AA/SBCu", "metric": "Youngs_modulus", "value": "10", "unit": "MPa", "evidence_contains": ["PCL/AA/SBCu", "10 ± 5"]},
+        {"sample_id": "PCL/AA/SBCu", "metric": "elongation_at_break", "value": "240", "unit": "%", "evidence_contains": ["PCL/AA/SBCu", "240 ± 26"]},
+        {"sample_id": "PCL/AA/SBCu", "metric": "pH", "value": "7.64", "unit": "pH", "evidence_contains": ["7.60 and 7.64"]},
+        {"sample_id": "PCL/AA/SBCu", "metric": "tensile_strength", "value": "2", "unit": "MPa", "evidence_contains": ["PCL/AA/SBCu", "2 ± 1"]},
+        {"sample_id": "PCL/AA/SBCu", "metric": "water_contact_angle", "value": "73.77", "unit": "°", "evidence_contains": ["73.77° for PCL/AA/SBCu"]},
+        {"sample_id": "PCL/AA/SBCu", "metric": "water_contact_angle", "value": "97.5", "unit": "°", "evidence_contains": ["97.5°", "PCL/AA/SBCu"]}
+      ]
+    }
+  ]
+}

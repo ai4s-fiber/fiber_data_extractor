@@ -216,7 +216,9 @@ Rules:
 3. Row/sample number, temperature, time, concentration, composition/loading and cycle count are conditions, not measured results.
 4. Put all non-result columns needed to distinguish the row into condition.
 5. Use exactly one Known material sample ID as the base and append the table row label when rows are distinct specimens/runs. Never replace a known material with generic "sample N". A reuse cycle stays a condition on the same material.
-6. Skip empty cells and purely descriptive columns."""
+6. Skip empty cells and purely descriptive columns. A material name containing digits (for example Polyamide 6.6), instrument model, yarn specification, or test standard is not a numeric result.
+7. If row labels are metrics and column labels are samples/directions, use the row label as metric and the column label as the sample/condition; never swap them.
+8. SD, standard error and uncertainty columns belong in condition and are never separate measured results."""
 
 TABLE_REPAIR_PROMPT = """Repair only the listed missing measured cells from one structured table.
 
@@ -242,6 +244,28 @@ class HolisticExtractionResult:
     results_chars: int = 0
     warnings: list[str] = field(default_factory=list)
     covered_table_block_ids: list[str] = field(default_factory=list)
+
+
+def _flatten_dict_rows(value: Any) -> list[dict]:
+    """Flatten model list/list-of-lists drift while rejecting scalar debris."""
+    if isinstance(value, dict):
+        return [value]
+    if not isinstance(value, list):
+        return []
+    rows: list[dict] = []
+    for item in value:
+        rows.extend(_flatten_dict_rows(item))
+    return rows
+
+
+def _response_rows(parsed: Any, *keys: str) -> list[dict]:
+    if isinstance(parsed, dict):
+        for key in keys:
+            value = parsed.get(key)
+            if value:
+                return _flatten_dict_rows(value)
+        return []
+    return _flatten_dict_rows(parsed)
 
 
 def _chunk_header(chunk: dict) -> str:
@@ -623,6 +647,15 @@ _CHARACTERIZATION_PREP_RE = re.compile(
     r"sputter[- ]?coat(?:ed|ing)?.{0,80}(?:image|SEM|TEM)|"
     r"(?:Pt|platinum)\s*/?\s*(?:Pd|palladium).{0,60}(?:SEM|image quality)"
 )
+_CATALOG_MEASUREMENT_LABEL_RE = re.compile(
+    r"(?i)\b(?:strength|modulus|energy|speed|rate|force|length|width|"
+    r"thickness|temperature|pressure|frequency|duration|displacement|"
+    r"deformation)\b.{0,40}\bin\s+"
+    r"(?:[kmg]?pa|[cmkµμn]?n|[µμnmck]?m(?:/[a-z]+)?|%|j|kj/m\^?2)\s*$"
+)
+_TABLE_AXIS_PSEUDO_SAMPLE_RE = re.compile(
+    r"(?i)^(?:warp|weft|longitudinal|transverse|sd|std\.?|standard deviation)$"
+)
 
 
 def _catalog_aliases(sample: dict) -> list[str]:
@@ -685,12 +718,25 @@ def _sample_needle_count(sample: dict) -> int | None:
     return _needle_count_from_text(sample.get("sample_id"))
 
 
+def _catalog_id_is_measurement_label(sample_id: str) -> bool:
+    normalized = re.sub(r"[_-]+", " ", str(sample_id or "")).strip()
+    if not normalized:
+        return False
+    if _TABLE_AXIS_PSEUDO_SAMPLE_RE.fullmatch(normalized):
+        return True
+    if find_metric_canonical(normalized) or find_process_parameter_canonical(normalized):
+        return True
+    return bool(_CATALOG_MEASUREMENT_LABEL_RE.search(normalized))
+
+
 def sanitize_catalog_samples(
     samples: list[dict],
     *,
     source_text: str = "",
 ) -> list[dict]:
     """Remove apparatus/characterization pseudo-samples and normalize setup variants."""
+    from app.services.extractor_v7.sample_id_rules import sanitize_sample_id
+
     cleaned: list[dict] = []
     by_id: dict[str, dict] = {}
     for raw in samples:
@@ -701,6 +747,16 @@ def sanitize_catalog_samples(
         sid_words = re.sub(r"[_/-]+", " ", sid)
         aliases = _catalog_aliases(sample)
         text = _catalog_sample_text(sample)
+        original_sid = sid
+        sid, _, _ = sanitize_sample_id(sid, text)
+        if not sid:
+            continue
+        if normalize_for_match(original_sid) != normalize_for_match(sid):
+            aliases.append(original_sid)
+        sid_words = re.sub(r"[_/-]+", " ", sid)
+
+        if _catalog_id_is_measurement_label(sid):
+            continue
 
         needle_count = re.search(r"(?i)\b(\d+)\s*[- ]?needles?\b", text)
         explicit_needle_count = _sample_needle_count(sample)
@@ -872,6 +928,8 @@ def performances_to_facts(
     facts: list[dict] = []
     counter = start_index
     for row in performances:
+        if not isinstance(row, dict):
+            continue
         sid = normalize_sample_id(row.get("sample_id") or "")
         known_ids = list(dict.fromkeys(
             normalize_sample_id(value)
@@ -937,9 +995,63 @@ def _table_row_map(table_text: str) -> tuple[str, dict[int, str]]:
     return "\n".join(context_lines), rows
 
 
+def _table_row_shards(
+    table_header: str,
+    source_rows: dict[int, str],
+    *,
+    row_numbers: list[int] | None = None,
+    max_rows: int = 6,
+    max_chars: int = 4500,
+) -> list[str]:
+    """Build compact row shards while preserving original MinerU row numbers."""
+    selected_numbers = (
+        sorted(source_rows)
+        if row_numbers is None
+        else sorted({row for row in row_numbers if row in source_rows})
+    )
+    if not selected_numbers:
+        return []
+    max_rows = max(1, int(max_rows or 1))
+    max_chars = max(500, int(max_chars or 500))
+    shards: list[str] = []
+    current: list[int] = []
+
+    def render(numbers: list[int]) -> str:
+        parts = [table_header.strip()] if table_header.strip() else []
+        parts.extend(source_rows[row] for row in numbers)
+        return "\n".join(parts)
+
+    for row_number in selected_numbers:
+        candidate = [*current, row_number]
+        if current and (
+            len(candidate) > max_rows
+            or len(render(candidate)) > max_chars
+        ):
+            shards.append(render(current))
+            current = []
+        current.append(row_number)
+    if current:
+        shards.append(render(current))
+    return shards
+
+
+def _table_value_looks_numeric(value: Any) -> bool:
+    """Require a numeric expression, not a material name containing digits."""
+    target = str(value or "").strip().replace(",", "")
+    if not target or not re.search(r"\d", target) or ":" in target:
+        return False
+    residue = re.sub(
+        r"[+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?",
+        "",
+        target,
+    )
+    residue = re.sub(r"[\s<>≤≥~≈+\-–—−±().,%×xX/]+", "", residue)
+    return not residue
+
+
 def _table_value_is_grounded(value: Any, row_text: str) -> bool:
     target = str(value or "").strip().replace(",", "")
-    if not target:
+    if not _table_value_looks_numeric(target):
         return False
     try:
         target_number = float(target)
@@ -958,6 +1070,7 @@ _TABLE_NON_RESULT_HEADER_RE = re.compile(
     r"(?i)\b(?:sample|specimen|run|cycle)\s*(?:no\.?|number|id)?\b|"
     r"\b(?:time|duration|temp(?:erature)?|solid\s+to\s+liquid\s+ratio|"
     r"catalyst|concentration|pressure|humidity|frequency|wavelength|reagent|"
+    r"mixing\s+ratio|dry\s+weight|"
     r"(?:fiber|fibre|filler|reinforcement|matrix|additive|resin)\s+"
     r"(?:content|loading|fraction|ratio|amount|dosage))\b"
 )
@@ -985,7 +1098,35 @@ _PROCESS_TABLE_CAPTION_RE = re.compile(
     r"experimental|operating)\s+(?:parameters?|conditions?|settings?)\b|"
     r"\b(?:parameters?|conditions?)\s+(?:used|required|selected|for)\b"
 )
+_CONTEXT_ONLY_TABLE_CAPTION_RE = re.compile(
+    r"(?i)\b(?:test|testing|instrument|equipment)\s+"
+    r"(?:parameters?|conditions?|settings?)\b|"
+    r"\bnorms?\s+and\s+(?:specimen\s+)?dimensions?\b|"
+    r"\bproperties\s+of\s+(?:the\s+)?(?:liquids?|solvents?|reagents?)\s+"
+    r"(?:for|used\s+in)\s+(?:the\s+)?(?:experiment|test)"
+)
 _EMPTY_TABLE_CELL_RE = re.compile(r"^(?:[-–—]+|n/?a|none|not reported|[�]+)$", re.I)
+_TABLE_IDENTITY_HEADERS = frozenset({
+    "fabric",
+    "fabric type",
+    "material",
+    "material type",
+    "polymer",
+    "polymer type",
+    "solution",
+    "solution type",
+    "yarn",
+    "yarn type",
+})
+
+
+def _table_header_is_non_result(column: str) -> bool:
+    """Return True for table columns that identify inputs or test conditions."""
+    if not column or _TABLE_NON_RESULT_HEADER_RE.search(column):
+        return True
+    base = _label_without_unit(column)
+    normalized = re.sub(r"[\s_-]+", " ", base.lower()).strip()
+    return normalized in _TABLE_IDENTITY_HEADERS
 
 
 def _table_columns_line(header_text: str) -> str:
@@ -1019,6 +1160,11 @@ def _process_metric_for_label(label: str) -> str | None:
 def _unit_from_table_label(label: str) -> str:
     matches = re.findall(r"(?:\(([^()]*)\)|\[([^\[\]]*)\])", label or "")
     raw = next((left or right for left, right in reversed(matches) if (left or right)), "")
+    if not raw:
+        suffix = re.search(r"(?i)\bin\s+(.+?)\s*$", label or "")
+        raw = suffix.group(1) if suffix else ""
+    raw = re.sub(r"\s*\$?\^\{?2\}?\$?", "²", raw)
+    raw = raw.replace("$", "").strip()
     compact = re.sub(r"\s+", "", raw).lower()
     aliases = {
         "ml/hr": "mL/h",
@@ -1044,6 +1190,8 @@ def _primary_numeric_cell_value(cell: str) -> str:
 def classify_table_role(table_text: str) -> str:
     """Classify a structured MinerU table before spending an LLM call on it."""
     header, source_rows = _table_row_map(table_text)
+    if _CONTEXT_ONLY_TABLE_CAPTION_RE.search(_table_caption_text(header)):
+        return "context"
     columns_line = _table_columns_line(header)
     columns = _table_cells(columns_line) if columns_line else []
     labels = list(columns)
@@ -1360,7 +1508,7 @@ def process_table_to_facts(
 def _table_value_matches_cell(value: Any, cell: str) -> bool:
     target = str(value or "").strip().replace(",", "")
     candidate = (cell or "").strip().replace(",", "")
-    if not target or not candidate:
+    if not _table_value_looks_numeric(target) or not candidate:
         return False
     if target.lower() == candidate.lower():
         return True
@@ -1382,7 +1530,7 @@ def _table_metric_tokens(value: str) -> set[str]:
 
 
 def _table_metric_matches_column(metric: str, column: str) -> bool:
-    if not column or _TABLE_NON_RESULT_HEADER_RE.search(column):
+    if _table_header_is_non_result(column):
         return False
     column_base = re.sub(r"\[[^\]]*\]|\([^)]*\)", "", column).strip()
     metric_canonical = _table_metric_canonical(metric, column)
@@ -1482,7 +1630,7 @@ def _table_expected_result_cells(
         for column_index, column_name in enumerate(columns):
             if (
                 not column_name
-                or _TABLE_NON_RESULT_HEADER_RE.search(column_name)
+                or _table_header_is_non_result(column_name)
                 or column_index >= len(cells)
                 or not _table_cell_has_numeric_result(cells[column_index])
             ):
@@ -1720,6 +1868,13 @@ def table_rows_to_facts(
         )
         columns = _table_cells(columns_line) if columns_line else []
         source_column_name = columns[source_column] if source_column < len(columns) else ""
+        column_metric = _table_metric_canonical(source_column_name, source_column_name)
+        if column_metric:
+            metric = column_metric
+        else:
+            grounded_label = _label_without_unit(source_column_name)
+            if grounded_label:
+                metric = grounded_label
         performances.append({
             "sample_id": sample_id,
             "performance_metric": metric,
@@ -1818,6 +1973,151 @@ def deterministic_performance_table_facts(
         fact["extraction_method"] = "rule_table_performance"
         fact["assignment_reason"] = "mineru_table_cell_grounded"
         fact["confidence"] = 0.97
+    return facts
+
+
+_TABLE_STATISTIC_HEADER_RE = re.compile(
+    r"(?i)^(?:sd|std\.?|standard deviation|standard error|se|uncertainty)$"
+)
+_TABLE_DIRECTION_HEADER_RE = re.compile(
+    r"(?i)^(?:warp|weft|longitudinal|transverse|axial|radial|machine|"
+    r"cross[- ]machine)(?:\s+direction)?$"
+)
+
+
+def _transposed_table_material_base(
+    header_text: str,
+    table_context: str,
+) -> str:
+    text = f"{_table_caption_text(header_text)}\n{table_context}"
+    if re.search(r"(?i)\bfib(?:er|re)[- ]reinforced plastics?\b|\bFRPs?\b", text):
+        return "FRP"
+    for match in re.finditer(
+        r"\b(?:of|for)\s+([A-Z][A-Z0-9/-]{1,10})(?:s)?\b",
+        text,
+    ):
+        candidate = match.group(1)
+        if candidate not in {"DIN", "ISO", "SD", "SEM", "TEM"}:
+            return candidate
+    return _table_caption_material(header_text)
+
+
+def _transposed_table_sample_id(
+    column_label: str,
+    *,
+    material_base: str,
+    known_sample_ids: list[str] | None,
+) -> str:
+    label = normalize_sample_id(column_label)
+    if not label or _TABLE_STATISTIC_HEADER_RE.fullmatch(label):
+        return ""
+    for known_id in known_sample_ids or []:
+        if normalize_for_match(known_id) == normalize_for_match(label):
+            return normalize_sample_id(known_id)
+    if material_base:
+        if normalize_for_match(material_base) in normalize_for_match(label):
+            return label
+        return normalize_sample_id(f"{material_base}_{label}")
+    if _TABLE_DIRECTION_HEADER_RE.fullmatch(label):
+        return ""
+    return label if is_material_sample_id(label) else ""
+
+
+def deterministic_transposed_performance_table_facts(
+    *,
+    table_text: str,
+    table_context: str = "",
+    source_location: str,
+    source_block_id: str | None = None,
+    source_page: int | None = None,
+    source_bbox: Any = None,
+    known_sample_ids: list[str] | None = None,
+) -> list[dict]:
+    """Extract tables whose rows are metrics and columns are samples or axes."""
+    header, source_rows = _table_row_map(table_text)
+    columns_line = _table_columns_line(header)
+    columns = _table_cells(columns_line) if columns_line else []
+    if len(columns) < 3:
+        return []
+
+    metric_rows: list[tuple[int, str, str, list[str]]] = []
+    for row_number, row_text in source_rows.items():
+        cells = _table_cells(row_text)
+        if len(cells) < 3:
+            continue
+        metric_label = cells[0]
+        canonical = _table_metric_canonical(metric_label, metric_label)
+        if not canonical:
+            continue
+        metric_rows.append((row_number, row_text, canonical, cells))
+    if len(metric_rows) < 2:
+        return []
+
+    value_columns = [
+        index
+        for index, label in enumerate(columns[1:], start=1)
+        if label and not _TABLE_STATISTIC_HEADER_RE.fullmatch(label)
+    ]
+    if not value_columns:
+        return []
+
+    material_base = _transposed_table_material_base(header, table_context)
+    facts: list[dict] = []
+    for row_number, row_text, metric, cells in metric_rows:
+        unit = _unit_from_table_label(cells[0])
+        for column_index in value_columns:
+            if column_index >= len(cells):
+                continue
+            value = _primary_numeric_cell_value(cells[column_index])
+            if not value:
+                continue
+            sample_id = _transposed_table_sample_id(
+                columns[column_index],
+                material_base=material_base,
+                known_sample_ids=known_sample_ids,
+            )
+            if not is_material_sample_id(sample_id):
+                continue
+            conditions = [f"axis={columns[column_index]}"]
+            sd_index = column_index + 1
+            if (
+                sd_index < len(columns)
+                and sd_index < len(cells)
+                and _TABLE_STATISTIC_HEADER_RE.fullmatch(columns[sd_index])
+            ):
+                standard_deviation = _primary_numeric_cell_value(cells[sd_index])
+                if standard_deviation:
+                    suffix = f" {unit}" if unit else ""
+                    conditions.append(
+                        f"standard_deviation={standard_deviation}{suffix}"
+                    )
+            performances = [{
+                "sample_id": sample_id,
+                "performance_metric": metric,
+                "performance_value": value,
+                "performance_unit": unit,
+                "performance_condition": "; ".join(conditions),
+                "source_location": source_location,
+                "evidence_text": "\n".join(
+                    part
+                    for part in (table_context.strip(), header, row_text)
+                    if part
+                ),
+            }]
+            converted = performances_to_facts(performances)
+            if not converted:
+                continue
+            fact = converted[0]
+            fact["extraction_method"] = "rule_table_performance"
+            fact["assignment_reason"] = "deterministic_transposed_performance_table"
+            fact["confidence"] = 0.99
+            fact["_source_block_id"] = source_block_id
+            fact["_source_page"] = source_page
+            fact["_source_bbox"] = source_bbox
+            fact["_source_table_row"] = row_number
+            fact["_source_table_column"] = column_index
+            fact["_source_table_column_name"] = columns[column_index]
+            facts.append(fact)
     return facts
 
 
@@ -1974,7 +2274,7 @@ async def _run_performance_sweep(
         timeout_seconds=llm_timeout,
         stage=stage,
     )
-    performances = parsed.get("performances") or parsed.get("_items") or []
+    performances = _response_rows(parsed, "performances", "_items")
     return performances_to_facts(performances, known_sample_ids=sample_ids)
 
 
@@ -2225,7 +2525,7 @@ async def run_holistic_extraction(
             )
             return [
                 sample
-                for sample in (parsed.get("samples") or parsed.get("_items") or [])
+                for sample in _response_rows(parsed, "samples", "_items")
                 if isinstance(sample, dict) and sample.get("sample_id")
             ]
 
@@ -2285,7 +2585,7 @@ async def run_holistic_extraction(
                 stage="holistic_background",
                 reasoning_effort=catalog_reasoning_effort,
             )
-        return parsed
+        return parsed if isinstance(parsed, dict) else {}
 
     if experimental.strip() and catalog_supports_shared_background(result.samples):
         tasks.append(("background", _run_background()))
@@ -2383,7 +2683,7 @@ async def run_holistic_extraction(
 
                 retry_window_chars = max(
                     1000,
-                    min(6000, max(1, int(performance_window_chars or 1)) // 2),
+                    min(3000, max(1, int(performance_window_chars or 1)) // 2),
                 )
                 retry_windows = split_context_windows(
                     window,
@@ -2435,6 +2735,14 @@ async def run_holistic_extraction(
             table_context = _nearby_table_context(chunks, chunk)
             table_header, source_rows = _table_row_map(table_text)
             table_role = classify_table_role(table_text)
+            if table_role == "context":
+                return {
+                    "facts": [],
+                    "block_id": str(chunk.get("source_block_id") or ""),
+                    "covered": True,
+                    "missing_cells": 0,
+                    "table_role": table_role,
+                }
             if table_role == "process":
                 return {
                     "facts": process_table_to_facts(
@@ -2449,6 +2757,23 @@ async def run_holistic_extraction(
                     "covered": True,
                     "missing_cells": 0,
                     "table_role": table_role,
+                }
+            transposed_facts = deterministic_transposed_performance_table_facts(
+                table_text=table_text,
+                table_context=table_context,
+                source_location=_chunk_header(chunk),
+                source_block_id=chunk.get("source_block_id"),
+                source_page=chunk.get("page_number"),
+                source_bbox=chunk.get("source_bbox"),
+                known_sample_ids=sample_ids,
+            )
+            if transposed_facts:
+                return {
+                    "facts": transposed_facts,
+                    "block_id": str(chunk.get("source_block_id") or ""),
+                    "covered": True,
+                    "missing_cells": 0,
+                    "table_role": "performance",
                 }
             expected_cells = _table_expected_result_cells(table_header, source_rows)
             deterministic_facts = deterministic_performance_table_facts(
@@ -2476,28 +2801,64 @@ async def run_holistic_extraction(
                     "missing_cells": 0,
                     "table_role": table_role,
                 }
-            row_count = len(source_rows)
-            table_tokens = min(
-                max_performance_tokens,
-                max(1800, min(6000, 600 + row_count * 180)),
+            unresolved_cells = set(expected_cells).difference(
+                deterministic_cells
             )
-            async with semaphore:
-                parsed, _ = await llm_json(
-                    TABLE_PERFORMANCE_PROMPT.format(
-                        sample_ids=", ".join(sample_ids) or "unknown",
-                    ),
-                    (
-                        f"Nearby table context:\n{table_context}\n\n"
-                        if table_context
-                        else ""
-                    ) + f"Structured table:\n{table_text}",
-                    max_tokens=table_tokens,
-                    timeout_seconds=min(llm_timeout, table_timeout),
-                    stage=f"holistic_table_{index}_of_{len(table_chunks)}",
+            llm_row_numbers = (
+                sorted({row for row, _ in unresolved_cells})
+                if expected_cells
+                else sorted(source_rows)
+            )
+            table_shards = _table_row_shards(
+                table_header,
+                source_rows,
+                row_numbers=llm_row_numbers,
+            )
+            shard_warnings: list[str] = []
+
+            async def run_table_shard(
+                shard: str,
+                shard_index: int,
+            ) -> tuple[dict, str]:
+                shard_row_count = len(_table_row_map(shard)[1])
+                table_tokens = min(
+                    max_performance_tokens,
+                    max(1200, min(3500, 500 + shard_row_count * 180)),
                 )
-            items = parsed.get("rows") or parsed.get("_items") or []
-            if isinstance(items, dict):
-                items = [items]
+                stage = f"holistic_table_{index}_of_{len(table_chunks)}"
+                if len(table_shards) > 1:
+                    stage += (
+                        f"_part_{shard_index}_of_{len(table_shards)}"
+                    )
+                async with semaphore:
+                    return await llm_json(
+                        TABLE_PERFORMANCE_PROMPT.format(
+                            sample_ids=", ".join(sample_ids) or "unknown",
+                        ),
+                        (
+                            f"Nearby table context:\n{table_context[:1600]}\n\n"
+                            if table_context
+                            else ""
+                        ) + f"Structured table rows:\n{shard}",
+                        max_tokens=table_tokens,
+                        timeout_seconds=min(llm_timeout, table_timeout),
+                        stage=stage,
+                    )
+
+            shard_outcomes = await asyncio.gather(*(
+                run_table_shard(shard, shard_index)
+                for shard_index, shard in enumerate(table_shards, start=1)
+            ), return_exceptions=True)
+            items: list[dict] = []
+            for shard_index, outcome in enumerate(shard_outcomes, start=1):
+                if isinstance(outcome, BaseException):
+                    shard_warnings.append(
+                        f"part {shard_index}/{len(table_shards)} failed: "
+                        f"{outcome}"
+                    )
+                    continue
+                parsed, _ = outcome
+                items.extend(_response_rows(parsed, "rows", "_items"))
             facts = table_rows_to_facts(
                 items,
                 table_text=table_text,
@@ -2529,33 +2890,84 @@ async def run_holistic_extraction(
             }
             missing_cells = set(expected_cells).difference(grounded_cells)
             if missing_cells:
-                missing_description = "; ".join(
-                    f'row {row}, column "{expected_cells[(row, column)][0]}", '
-                    f'cell "{expected_cells[(row, column)][1]}"'
-                    for row, column in sorted(missing_cells)
+                repair_shards = _table_row_shards(
+                    table_header,
+                    source_rows,
+                    row_numbers=sorted({row for row, _ in missing_cells}),
+                    max_rows=4,
+                    max_chars=3200,
                 )
-                repair_tokens = min(
-                    max_performance_tokens,
-                    max(900, min(3500, 400 + len(missing_cells) * 140)),
-                )
-                async with semaphore:
-                    repair_parsed, _ = await llm_json(
-                        TABLE_REPAIR_PROMPT.format(
-                            sample_ids=", ".join(sample_ids) or "unknown",
-                            missing_cells=missing_description,
-                        ),
-                        (
-                            f"Nearby table context:\n{table_context}\n\n"
-                            if table_context
-                            else ""
-                        ) + f"Structured table:\n{table_text}",
-                        max_tokens=repair_tokens,
-                        timeout_seconds=min(llm_timeout, table_timeout),
-                        stage=f"holistic_table_repair_{index}_of_{len(table_chunks)}",
+
+                async def run_repair_shard(
+                    shard: str,
+                    shard_index: int,
+                ) -> tuple[dict, str]:
+                    shard_rows = set(_table_row_map(shard)[1])
+                    shard_missing = [
+                        (row, column)
+                        for row, column in sorted(missing_cells)
+                        if row in shard_rows
+                    ]
+                    missing_description = "; ".join(
+                        f'row {row}, column '
+                        f'"{expected_cells[(row, column)][0]}", '
+                        f'cell "{expected_cells[(row, column)][1]}"'
+                        for row, column in shard_missing
                     )
-                repair_items = repair_parsed.get("rows") or repair_parsed.get("_items") or []
-                if isinstance(repair_items, dict):
-                    repair_items = [repair_items]
+                    repair_tokens = min(
+                        max_performance_tokens,
+                        max(
+                            900,
+                            min(2800, 400 + len(shard_missing) * 140),
+                        ),
+                    )
+                    stage = (
+                        f"holistic_table_repair_{index}_of_"
+                        f"{len(table_chunks)}"
+                    )
+                    if len(repair_shards) > 1:
+                        stage += (
+                            f"_part_{shard_index}_of_{len(repair_shards)}"
+                        )
+                    async with semaphore:
+                        return await llm_json(
+                            TABLE_REPAIR_PROMPT.format(
+                                sample_ids=", ".join(sample_ids) or "unknown",
+                                missing_cells=missing_description,
+                            ),
+                            (
+                                f"Nearby table context:\n"
+                                f"{table_context[:1600]}\n\n"
+                                if table_context
+                                else ""
+                            ) + f"Structured table rows:\n{shard}",
+                            max_tokens=repair_tokens,
+                            timeout_seconds=min(llm_timeout, table_timeout),
+                            stage=stage,
+                        )
+
+                repair_outcomes = await asyncio.gather(*(
+                    run_repair_shard(shard, shard_index)
+                    for shard_index, shard in enumerate(
+                        repair_shards,
+                        start=1,
+                    )
+                ), return_exceptions=True)
+                repair_items: list[dict] = []
+                for shard_index, outcome in enumerate(
+                    repair_outcomes,
+                    start=1,
+                ):
+                    if isinstance(outcome, BaseException):
+                        shard_warnings.append(
+                            f"repair part {shard_index}/"
+                            f"{len(repair_shards)} failed: {outcome}"
+                        )
+                        continue
+                    repair_parsed, _ = outcome
+                    repair_items.extend(
+                        _response_rows(repair_parsed, "rows", "_items")
+                    )
                 repair_facts = table_rows_to_facts(
                     repair_items,
                     table_text=table_text,
@@ -2596,6 +3008,7 @@ async def run_holistic_extraction(
                 "covered": bool(expected_cells) and not missing_cells,
                 "missing_cells": len(missing_cells),
                 "table_role": table_role,
+                "warnings": shard_warnings,
             }
 
         for index, chunk in enumerate(table_chunks, start=1):
@@ -2621,6 +3034,11 @@ async def run_holistic_extraction(
             elif kind == "table":
                 table_facts = outcome.get("facts") or []
                 merged_facts.extend(table_facts)
+                for warning in outcome.get("warnings") or []:
+                    result.warnings.append(
+                        f"table: {outcome.get('block_id') or 'unknown'} "
+                        f"{warning}"
+                    )
                 if outcome.get("covered") and outcome.get("block_id"):
                     result.covered_table_block_ids.append(outcome["block_id"])
                 elif outcome.get("missing_cells"):
