@@ -13,6 +13,7 @@ _GENERIC_STOPWORDS = frozenset({
     "sample", "samples", "fiber", "fibers", "film", "films", "composite",
     "composites", "material", "materials", "specimen", "specimens", "the",
     "with", "and", "based", "prepared", "fabric", "fabrics", "device",
+    "particle", "particles", "powder", "powders",
 })
 
 _LOADING_RE = re.compile(

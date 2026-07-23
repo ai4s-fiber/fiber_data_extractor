@@ -330,14 +330,29 @@ def is_formula_method_parameter_fact(fact: dict) -> bool:
     evidence = str(fact.get("evidence_text") or "").lower()
     metric = str(fact.get("metric_or_parameter") or "").strip().lower()
     if metric in {"elastic_wave_velocity", "reference_wave_velocity"}:
+        combined = " ".join([
+            evidence,
+            str(fact.get("subject_text") or "").lower(),
+            str(fact.get("method") or "").lower(),
+            str(fact.get("condition") or "").lower(),
+        ])
+        symbol_definition = bool(re.search(
+            r"\bwhere\s+c\s*_?\s*0\s*(?:is|=|denotes|represents)\b"
+            r".{0,100}\b(?:elastic|reference)?\s*wave\s+velocity\b|"
+            r"\bwhere\s+c\s*_?\s*0\s*(?:is|=)\s*(?:the\s+)?"
+            r"(?:elastic|reference)?\s*wave\s+velocity\b",
+            combined,
+        ))
+        if symbol_definition:
+            return True
         has_formula_context = bool(re.search(
             r"\b(?:normalized?\s+frequency|equation|formula|expression)\b",
-            evidence,
+            combined,
         ))
         has_definition_context = bool(re.search(
             r"\b(?:where|used\s+to\s+(?:compute|calculate|normalize)|"
             r"(?:compute|calculate|normalize)[sd]?\s+(?:the\s+)?)\b",
-            evidence,
+            combined,
         ))
         if has_formula_context and has_definition_context:
             return True

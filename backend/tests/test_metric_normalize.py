@@ -442,3 +442,25 @@ def test_explicit_dimensionless_acceleration_empty_unit_merges():
 
     assert {fact["unit"] for fact in facts} == {"dimensionless"}
     assert len(merge_duplicate_facts(facts)) == 1
+
+
+def test_fills_canonical_units_for_unitless_poisson_ratio_and_ph():
+    facts = normalize_metrics_in_facts([
+        {
+            "fact_type": "performance",
+            "metric_or_parameter": "Poissons_ratio",
+            "value": "0.42",
+            "unit": "",
+            "evidence_text": "The Poisson's ratio was 0.42.",
+        },
+        {
+            "fact_type": "performance",
+            "metric_or_parameter": "pH",
+            "value": "7.60",
+            "unit": "",
+            "evidence_text": "The pH increased to 7.60 after 14 days.",
+        },
+    ])
+
+    assert facts[0]["unit"] == "dimensionless"
+    assert facts[1]["unit"] == "pH"

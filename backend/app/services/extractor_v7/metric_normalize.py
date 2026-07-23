@@ -19,6 +19,7 @@ _GENERIC_PEAK_METRICS = frozenset({
 
 _IMPLICIT_DIMENSIONLESS_METRICS = frozenset({
     "normalized_bandgap_frequency_range",
+    "Poissons_ratio",
 })
 
 _TECHNIQUE_HINTS: list[tuple[str, tuple[str, ...]]] = [
@@ -245,6 +246,10 @@ def normalize_metrics_in_facts(facts: list[dict]) -> list[dict]:
                 )
             ):
                 fact["unit"] = "dimensionless"
+            elif canonical_metric == "pH" and raw_unit in {
+                "", "-", "ph", "unitless",
+            }:
+                fact["unit"] = "pH"
     return normalize_spectroscopy_peaks(facts)
 
 

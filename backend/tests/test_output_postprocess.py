@@ -108,6 +108,23 @@ def test_reference_wave_velocity_in_normalization_formula_not_performance():
     assert out[0]["_output_channel"] == "formula_or_method_parameter"
 
 
+def test_truncated_reference_wave_velocity_definition_not_performance():
+    fact = {
+        "fact_type": "performance",
+        "subject_text": "elastic_wave_velocity",
+        "metric_or_parameter": "elastic_wave_velocity",
+        "value": "144",
+        "unit": "m s^-1",
+        "method": "calculation",
+        "evidence_text": "where c0 is the elastic wave velocity, which is approximately 144 m s^-1",
+        "assigned_sample_id": "TPU matrix",
+    }
+
+    assert is_formula_method_parameter_fact(fact)
+    out = apply_pre_output_validation([fact], [])
+    assert out[0]["_output_channel"] == "formula_or_method_parameter"
+
+
 def test_unitless_poisson_ratio_is_repaired_from_evidence_before_output():
     fact = {
         "fact_type": "performance",

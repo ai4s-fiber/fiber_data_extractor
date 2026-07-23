@@ -697,6 +697,45 @@ def test_model_owned_treated_alias_does_not_merge_with_untreated_base():
     assert "AA-treated SBCu BG" not in base_aliases["SBCu_BG"]
 
 
+def test_treated_particle_name_order_variants_merge_without_merging_base():
+    cards = [
+        {"sample_id": "S BG particles", "sample_aliases": ["S BG"]},
+        {
+            "sample_id": "S BG particles AA-treated",
+            "sample_aliases": ["S AA-treated"],
+        },
+        {"sample_id": "AA-treated S BG", "sample_aliases": []},
+        {"sample_id": "SBCu BG particles", "sample_aliases": ["SBCu BG"]},
+        {
+            "sample_id": "SBCu BG particles AA-treated",
+            "sample_aliases": ["SBCu AA-treated"],
+        },
+        {"sample_id": "AA-treated SBCu BG", "sample_aliases": []},
+    ]
+
+    _, _, merged_cards = merge_sample_identities([], [], cards)
+    merged_ids = {card["sample_id"] for card in merged_cards}
+
+    assert len(merged_ids) == 4
+    assert any("S BG" in sample_id and "treated" not in sample_id.lower() for sample_id in merged_ids)
+    assert any("SBCu BG" in sample_id and "treated" not in sample_id.lower() for sample_id in merged_ids)
+    treated_cards = [
+        card for card in merged_cards if "treated" in card["sample_id"].lower()
+    ]
+    assert len(treated_cards) == 2
+    treated_aliases = {
+        alias
+        for card in treated_cards
+        for alias in parse_sample_aliases(card.get("sample_aliases"))
+    }
+    assert "AA-treated S BG" in treated_aliases or any(
+        card["sample_id"] == "AA-treated S BG" for card in treated_cards
+    )
+    assert "AA-treated SBCu BG" in treated_aliases or any(
+        card["sample_id"] == "AA-treated SBCu BG" for card in treated_cards
+    )
+
+
 def test_system_results_move_to_unique_metamaterial_without_fraction_id():
     cards = [
         {"sample_id": "TPU", "sample_aliases": ["TPU material"]},
