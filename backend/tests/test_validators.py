@@ -3,6 +3,7 @@
 from app.services.extractor_v7.validators import (
     determine_review_status,
     is_background_or_reference_fact,
+    is_grounded_table_performance_fact,
     is_rough_source_location,
     validate_fact,
 )
@@ -67,6 +68,45 @@ def test_grounded_results_table_is_not_background_due_to_nearby_citation():
     }
 
     assert is_background_or_reference_fact(fact) is False
+
+
+def test_persisted_structured_table_fact_is_grounded_without_private_coordinates():
+    fact = {
+        "fact_type": "performance",
+        "extraction_method": "rule_table_performance",
+        "assigned_sample_id": "PCL/AA/S",
+        "metric_or_parameter": "tensile_strength",
+        "value": "2.4 ± 0.4",
+        "source_location": "[page 10 | results | table_text | block B000157]",
+        "evidence_text": (
+            "The decrease was comparable with literature results [19,82].\n"
+            "[columns]\tSample\tUTS [MPa]\n"
+            "[row 1]\tPCL/AA\t4 ± 1\n"
+            "[row 2]\tPCL/AA/S\t2.4 ± 0.4\n"
+            "[row 3]\tPCL/AA/SBCu\t2 ± 1"
+        ),
+    }
+
+    assert is_grounded_table_performance_fact(fact) is True
+    assert is_background_or_reference_fact(fact) is False
+
+
+def test_structured_table_fact_requires_sample_and_value_in_same_row():
+    fact = {
+        "fact_type": "performance",
+        "extraction_method": "rule_table_performance",
+        "assigned_sample_id": "PCL/AA/S",
+        "metric_or_parameter": "tensile_strength",
+        "value": "2 ± 1",
+        "source_location": "[page 10 | results | table_text | block B000157]",
+        "evidence_text": (
+            "[columns]\tSample\tUTS [MPa]\n"
+            "[row 1]\tPCL/AA/S\t2.4 ± 0.4\n"
+            "[row 2]\tPCL/AA/SBCu\t2 ± 1"
+        ),
+    }
+
+    assert is_grounded_table_performance_fact(fact) is False
 
 
 def test_results_reference_curve_is_not_treated_as_literature():

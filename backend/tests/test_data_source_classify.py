@@ -1,6 +1,9 @@
 """Data-source classification regression tests."""
 
-from app.services.extractor_v7.data_source_classify import classify_data_source_type
+from app.services.extractor_v7.data_source_classify import (
+    apply_data_source_classification,
+    classify_data_source_type,
+)
 
 
 def test_grounded_table_row_has_priority_over_nearby_reference_text():
@@ -19,6 +22,28 @@ def test_grounded_table_row_has_priority_over_nearby_reference_text():
     }
 
     assert classify_data_source_type(fact) == "paper_core_result"
+
+
+def test_persisted_grounded_table_row_is_not_marked_as_external_reference():
+    fact = {
+        "fact_type": "performance",
+        "extraction_method": "rule_table_performance",
+        "assigned_sample_id": "PCL/AA/S",
+        "metric_or_parameter": "tensile_strength",
+        "value": "2.4 ± 0.4",
+        "unit": "MPa",
+        "source_location": "[page 10 | results | table_text | block B000157]",
+        "evidence_text": (
+            "The decrease was comparable with literature results [19,82].\n"
+            "[columns]\tSample\tUTS [MPa]\n"
+            "[row 2]\tPCL/AA/S\t2.4 ± 0.4"
+        ),
+    }
+
+    classified = apply_data_source_classification([fact])[0]
+
+    assert classified["_data_source_type"] == "paper_core_result"
+    assert classified["_explicit_background_reference"] is False
 
 
 def test_current_results_are_not_reclassified_by_literature_comparison_tail():

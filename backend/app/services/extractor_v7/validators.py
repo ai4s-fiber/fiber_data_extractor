@@ -123,13 +123,59 @@ def text_has_background_reference_signal(
     return _text_has_background_reference_signal(text, section)
 
 
+def is_grounded_table_performance_fact(fact: dict) -> bool:
+    """Return whether a performance fact is bound to a concrete table row.
+
+    In-memory extraction facts carry table coordinates. Persisted facts do not,
+    so the structured ``[columns]``/``[row N]`` evidence is also accepted when
+    one row contains both the exact sample identity and extracted value.
+    """
+    if fact.get("extraction_method") not in {
+        "AI_holistic_table", "rule_table_performance",
+    }:
+        return False
+    if fact.get("fact_type", "performance") != "performance":
+        return False
+    sample_id = str(fact.get("assigned_sample_id") or "").strip()
+    value = str(fact.get("value") or "").strip()
+    if not sample_id or not value:
+        return False
+    if fact.get("_source_table_row") is not None:
+        return True
+
+    evidence = str(fact.get("evidence_text") or "")
+    source = str(fact.get("source_location") or "")
+    if not re.search(r"(?i)\btable(?:_text)?\b", source):
+        return False
+    if not re.search(r"(?im)^\[columns\]\s*", evidence):
+        return False
+
+    def normalize_cell(cell: str) -> str:
+        return re.sub(
+            r"[^a-z0-9.+%±-]+",
+            "",
+            cell.lower()
+            .replace("−", "-")
+            .replace("–", "-")
+            .replace("—", "-"),
+        )
+
+    sample_key = normalize_cell(sample_id)
+    value_key = normalize_cell(value)
+    if not sample_key or not value_key:
+        return False
+    for row_match in re.finditer(r"(?im)^\[row\s+\d+\]\s*(.*)$", evidence):
+        cells = [
+            normalize_cell(cell)
+            for cell in re.split(r"\t+", row_match.group(1))
+        ]
+        if sample_key in cells and value_key in cells:
+            return True
+    return False
+
+
 def is_background_or_reference_fact(fact: dict) -> bool:
-    if (
-        fact.get("extraction_method") in {
-            "AI_holistic_table", "rule_table_performance",
-        }
-        and fact.get("_source_table_row") is not None
-    ):
+    if is_grounded_table_performance_fact(fact):
         return False
     text = " ".join([
         str(fact.get("evidence_text") or ""),

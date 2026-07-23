@@ -26,7 +26,9 @@
       "sample_aliases": {
         "P-type_TPMS_TPU_CF_metamaterial": [
           "P-type_TPMS_TPU_T300_CF_metamaterial",
-          "TPU_TPMS_fiber_reinforced_10vol%"
+          "TPU_TPMS_fiber_reinforced_10vol%",
+          "TPU_T300_CF_P_TPMS_10vol_fiber",
+          "TPU_T300_CF_TPMS_metamaterial_10vol%_fiber"
         ]
       },
       "facts": [
@@ -77,7 +79,7 @@
         {"sample_id": "PCL/AA/SBCu", "metric": "elongation_at_break", "value": "240", "unit": "%", "evidence_contains": ["PCL/AA/SBCu", "240 ± 26"]},
         {"sample_id": "PCL/AA/SBCu", "metric": "pH", "value": "7.64", "unit": "pH", "evidence_contains": ["7.60 and 7.64"]},
         {"sample_id": "PCL/AA/SBCu", "metric": "tensile_strength", "value": "2", "unit": "MPa", "evidence_contains": ["PCL/AA/SBCu", "2 ± 1"]},
-        {"sample_id": "PCL/AA/SBCu", "metric": "water_contact_angle", "value": "73.77", "unit": "°", "evidence_contains": ["73.77° for PCL/AA/SBCu"]},
+        {"sample_id": "PCL/AA/SBCu", "metric": "water_contact_angle", "value": "73.77", "unit": "°", "evidence_contains": ["73.77", "PCL/AA/SBCu"]},
         {"sample_id": "PCL/AA/SBCu", "metric": "water_contact_angle", "value": "97.5", "unit": "°", "evidence_contains": ["97.5°", "PCL/AA/SBCu"]}
       ]
     }

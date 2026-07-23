@@ -21,7 +21,10 @@ from app.services.validation import (
     is_formula_method_parameter_fact,
     normalize_unit,
 )
-from app.services.extractor_v7.validators import text_has_primary_result_signal
+from app.services.extractor_v7.validators import (
+    is_grounded_table_performance_fact,
+    text_has_primary_result_signal,
+)
 
 # ---- Signal-word lists ----
 
@@ -140,12 +143,7 @@ def classify_data_source_type(fact: dict) -> str:
         if known_canonical is None:
             return "experimental_condition"
 
-    if (
-        fact.get("extraction_method") in {
-            "AI_holistic_table", "rule_table_performance",
-        }
-        and fact.get("_source_table_row") is not None
-    ):
+    if is_grounded_table_performance_fact(fact):
         return "paper_core_result"
 
     # 4. Background reference (Introduction / prior work)
@@ -194,7 +192,8 @@ def apply_data_source_classification(facts: list[dict]) -> list[dict]:
             str(fact.get("subject_text") or ""),
         ])
         fact["_explicit_background_reference"] = (
-            _text_has_explicit_background_signal(combined)
+            not is_grounded_table_performance_fact(fact)
+            and _text_has_explicit_background_signal(combined)
             and not _text_has_this_work_signal(combined)
             and not text_has_primary_result_signal(combined)
         )

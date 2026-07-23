@@ -36,7 +36,7 @@ from app.models.sample_catalog import SampleCatalog
 from app.models.fact_candidate import FactCandidate
 
 from app.core.config import settings
-from app.services.llm_client import create_llm_client
+from app.services.llm_client import create_llm_client, llm_client_session
 from app.services.llm_budget import clamp_max_tokens
 from app.services.llm_concurrency import llm_call_slot, per_job_llm_parallel_limit
 from app.services.document_context import parse_pdf_to_document_context
@@ -1092,6 +1092,7 @@ class V7ExtractorService:
                             user_prompt,
                             max_tokens=budget.max_tokens,
                             reasoning_effort=reasoning_effort,
+                            request_timeout_seconds=max(1, timeout_seconds - 5),
                         ),
                         timeout=timeout_seconds,
                     )
@@ -1149,6 +1150,7 @@ class V7ExtractorService:
                             user_prompt,
                             images,
                             max_tokens=budget.max_tokens,
+                            request_timeout_seconds=max(1, timeout_seconds - 5),
                         ),
                         timeout=timeout_seconds,
                     )
@@ -3915,6 +3917,22 @@ class V7ExtractorService:
 
     @staticmethod
     async def run_full_pipeline_for_paper(
+        db: AsyncSession, paper_id: int,
+        progress_callback: Callable[[str, int, str], Any] | None = None,
+        model_mode: str = "auto",
+        job_id: int | None = None,
+    ) -> dict[str, Any]:
+        async with llm_client_session():
+            return await V7ExtractorService._run_full_pipeline_for_paper(
+                db,
+                paper_id,
+                progress_callback=progress_callback,
+                model_mode=model_mode,
+                job_id=job_id,
+            )
+
+    @staticmethod
+    async def _run_full_pipeline_for_paper(
         db: AsyncSession, paper_id: int,
         progress_callback: Callable[[str, int, str], Any] | None = None,
         model_mode: str = "auto",

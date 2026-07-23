@@ -15,16 +15,177 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextvars
+import inspect
 import json
+import logging
+import random
 import re
 import time
+import weakref
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 from json_repair import repair_json
 
 from app.core.config import settings
 from app.services.llm_budget import openai_compatible_extra_body
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# OpenAI-compatible gateway retry coordination
+# ---------------------------------------------------------------------------
+
+
+_RETRYABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
+
+
+@dataclass(slots=True)
+class _GatewayBackoffState:
+    cooldown_until: float = 0.0
+    consecutive_failures: int = 0
+
+
+_gateway_states: weakref.WeakKeyDictionary[
+    asyncio.AbstractEventLoop, dict[str, _GatewayBackoffState]
+] = weakref.WeakKeyDictionary()
+
+
+def _gateway_key(base_url: str) -> str:
+    normalized = (base_url or "").strip().rstrip("/").lower()
+    return normalized or "openai-default"
+
+
+def _gateway_state(base_url: str) -> _GatewayBackoffState:
+    loop = asyncio.get_running_loop()
+    states = _gateway_states.setdefault(loop, {})
+    return states.setdefault(_gateway_key(base_url), _GatewayBackoffState())
+
+
+def _exception_status_code(exc: Exception) -> int | None:
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int):
+        return status
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+    return status if isinstance(status, int) else None
+
+
+def _exception_chain(exc: BaseException) -> list[BaseException]:
+    chain: list[BaseException] = []
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        chain.append(current)
+        current = current.__cause__ or current.__context__
+    return chain
+
+
+def _is_retryable_ai_exception(exc: Exception) -> bool:
+    status = _exception_status_code(exc)
+    if status is not None:
+        return status in _RETRYABLE_STATUS_CODES
+
+    chain = _exception_chain(exc)
+    if any(isinstance(item, httpx.ReadTimeout) for item in chain):
+        # A long generation timeout should be handled by the stage's smaller-window
+        # fallback. Replaying the same paid request usually wastes time and tokens.
+        return False
+    retryable_types = (
+        httpx.ConnectError,
+        httpx.ConnectTimeout,
+        httpx.PoolTimeout,
+        httpx.RemoteProtocolError,
+    )
+    if any(isinstance(item, retryable_types) for item in chain):
+        return True
+
+    names = {item.__class__.__name__.lower() for item in chain}
+    if names & {
+        "apiconnectionerror",
+        "ratelimiterror",
+        "internalservererror",
+    }:
+        return True
+    message = " ".join(str(item).lower() for item in chain)
+    return any(
+        marker in message
+        for marker in (
+            "connection reset",
+            "connection refused",
+            "connection error",
+            "server disconnected",
+            "remote protocol error",
+            "bad gateway",
+            "service unavailable",
+            "too many requests",
+        )
+    )
+
+
+def _retry_after_seconds(exc: Exception, attempt: int) -> float:
+    configured_max = max(0.1, float(settings.LLM_RETRY_MAX_SECONDS or 20.0))
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None)
+    if headers:
+        retry_after_ms = str(headers.get("retry-after-ms", "")).strip()
+        if retry_after_ms:
+            try:
+                return min(configured_max, max(0.0, float(retry_after_ms) / 1000.0))
+            except ValueError:
+                pass
+        retry_after = str(headers.get("retry-after", "")).strip()
+        if retry_after:
+            try:
+                return min(configured_max, max(0.0, float(retry_after)))
+            except ValueError:
+                try:
+                    target = parsedate_to_datetime(retry_after)
+                    if target.tzinfo is None:
+                        target = target.replace(tzinfo=timezone.utc)
+                    seconds = (target - datetime.now(timezone.utc)).total_seconds()
+                    return min(configured_max, max(0.0, seconds))
+                except (TypeError, ValueError, OverflowError):
+                    pass
+
+    base = max(0.1, float(settings.LLM_RETRY_BASE_SECONDS or 1.0))
+    exponential = min(configured_max, base * (2 ** max(0, attempt)))
+    return min(configured_max, exponential * random.uniform(0.85, 1.25))
+
+
+async def _wait_for_gateway_cooldown(base_url: str) -> None:
+    state = _gateway_state(base_url)
+    while True:
+        remaining = state.cooldown_until - time.monotonic()
+        if remaining <= 0:
+            return
+        await asyncio.sleep(remaining + random.uniform(0.0, min(0.35, remaining * 0.1)))
+
+
+def _record_gateway_failure(base_url: str, delay: float) -> float:
+    state = _gateway_state(base_url)
+    state.consecutive_failures = min(10, state.consecutive_failures + 1)
+    configured_max = max(0.1, float(settings.LLM_RETRY_MAX_SECONDS or 20.0))
+    pressure_factor = 1.0 + min(3, state.consecutive_failures - 1) * 0.5
+    effective_delay = min(configured_max, max(0.0, delay) * pressure_factor)
+    state.cooldown_until = max(
+        state.cooldown_until,
+        time.monotonic() + effective_delay,
+    )
+    return effective_delay
+
+
+def _record_gateway_success(base_url: str) -> None:
+    state = _gateway_state(base_url)
+    state.consecutive_failures = max(0, state.consecutive_failures - 1)
+
 
 # ---------------------------------------------------------------------------
 # JSON recovery utilities
@@ -184,12 +345,14 @@ def _should_retry_without_response_format(exc: Exception) -> bool:
         for item in (
             "response_format",
             "json_object",
-            "unsupported",
-            "not support",
-            "invalid parameter",
-            "400",
+            "response format",
         )
     )
+
+
+def _should_retry_without_reasoning_effort(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return "reasoning_effort" in message or "reasoning effort" in message
 
 
 # ---------------------------------------------------------------------------
@@ -324,8 +487,10 @@ class LLMClient:
         user_prompt: str,
         max_tokens: int = 4096,
         reasoning_effort: str | None = None,
+        request_timeout_seconds: float | None = None,
     ) -> tuple[dict[str, Any], str]:
-        del reasoning_effort  # Not every provider exposes reasoning controls.
+        del reasoning_effort, request_timeout_seconds
+        # Not every provider exposes reasoning controls or per-request timeouts.
         return await asyncio.to_thread(
             self.generate_json_tolerant,
             system_prompt,
@@ -339,7 +504,9 @@ class LLMClient:
         user_prompt: str,
         images: list[bytes],
         max_tokens: int = 4096,
+        request_timeout_seconds: float | None = None,
     ) -> tuple[dict[str, Any], str]:
+        del request_timeout_seconds
         return await asyncio.to_thread(
             self.generate_vision_json_tolerant,
             system_prompt,
@@ -383,6 +550,9 @@ class LLMClient:
     ) -> str:
         raise RuntimeError("当前接口类型不支持多模态图片输入。")
 
+    async def aclose(self) -> None:
+        """Release async network resources held by this client."""
+
 
 # ---------------------------------------------------------------------------
 # OpenAI-compatible client
@@ -419,17 +589,24 @@ class OpenAICompatibleClient(LLMClient):
             kwargs["base_url"] = base_url.strip()
         self.client = OpenAI(**kwargs)
         self._async_client_factory = AsyncOpenAI
-        self._async_client_kwargs = dict(kwargs)
+        self._async_client_kwargs = {**kwargs, "max_retries": 0}
+        self._async_client: Any | None = None
+        self._async_client_loop: asyncio.AbstractEventLoop | None = None
         self.extra_body = openai_compatible_extra_body(
             model=model,
             base_url=base_url,
             disable_thinking=settings.LLM_DISABLE_THINKING,
         )
         self._response_format_supported: bool | None = None
+        self._reasoning_effort_supported: bool | None = None
 
     @staticmethod
     def _reasoning_effort(model: str, requested: str | None) -> str | None:
-        effort = str(requested or "").strip().lower()
+        effort = str(
+            requested
+            if requested is not None
+            else settings.LLM_DEFAULT_REASONING_EFFORT
+        ).strip().lower()
         if effort not in {"none", "minimal", "low", "medium", "high", "xhigh"}:
             return None
         model_name = (model or "").strip().lower()
@@ -447,6 +624,7 @@ class OpenAICompatibleClient(LLMClient):
         json_mode: bool,
         extra_body: dict[str, Any] | None,
         reasoning_effort: str | None = None,
+        request_timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
         if json_mode and "json" not in f"{system_prompt}\n{user_prompt}".lower():
             system_prompt = f"{system_prompt}\nReturn json only."
@@ -468,7 +646,89 @@ class OpenAICompatibleClient(LLMClient):
         )
         if resolved_effort:
             kwargs["reasoning_effort"] = resolved_effort
+        if request_timeout_seconds is not None:
+            kwargs["timeout"] = max(1.0, float(request_timeout_seconds))
         return kwargs
+
+    def _async_client_for_current_loop(self):
+        loop = asyncio.get_running_loop()
+        if self._async_client is not None:
+            if self._async_client_loop is not loop:
+                raise RuntimeError("同一个 LLM 客户端不能跨事件循环复用。")
+            return self._async_client
+        self._async_client = self._async_client_factory(**self._async_client_kwargs)
+        self._async_client_loop = loop
+        return self._async_client
+
+    async def _achat_completion(self, kwargs: dict[str, Any]):
+        client = self._async_client_for_current_loop()
+        max_retries = max(0, int(self.max_retries or 0))
+        gateway = _gateway_key(self.base_url)
+        for attempt in range(max_retries + 1):
+            await _wait_for_gateway_cooldown(self.base_url)
+            try:
+                response = await client.chat.completions.create(**kwargs)
+            except Exception as exc:
+                if attempt >= max_retries or not _is_retryable_ai_exception(exc):
+                    raise
+                delay = _retry_after_seconds(exc, attempt)
+                delay = _record_gateway_failure(self.base_url, delay)
+                status = _exception_status_code(exc)
+                host = urlsplit(gateway).netloc or gateway
+                logger.warning(
+                    "Transient LLM gateway failure host=%s status=%s "
+                    "attempt=%s/%s retry_in=%.2fs",
+                    host,
+                    status or exc.__class__.__name__,
+                    attempt + 1,
+                    max_retries + 1,
+                    delay,
+                )
+                await asyncio.sleep(delay)
+                continue
+            _record_gateway_success(self.base_url)
+            return response
+        raise RuntimeError("LLM retry loop exited unexpectedly")
+
+    async def _achat_completion_compatible(self, kwargs: dict[str, Any]):
+        for _ in range(3):
+            try:
+                return await self._achat_completion(kwargs)
+            except Exception as exc:
+                if (
+                    "reasoning_effort" in kwargs
+                    and _should_retry_without_reasoning_effort(exc)
+                ):
+                    kwargs.pop("reasoning_effort", None)
+                    self._reasoning_effort_supported = False
+                    continue
+                if (
+                    "response_format" in kwargs
+                    and _should_retry_without_response_format(exc)
+                ):
+                    kwargs.pop("response_format", None)
+                    self._response_format_supported = False
+                    continue
+                raise
+        raise RuntimeError("LLM parameter compatibility fallback was exhausted")
+
+    async def aclose(self) -> None:
+        client = self._async_client
+        self._async_client = None
+        self._async_client_loop = None
+        if client is not None:
+            close = getattr(client, "close", None) or getattr(client, "aclose", None)
+            if close is not None:
+                result = close()
+                if inspect.isawaitable(result):
+                    await result
+            else:
+                exit_method = getattr(client, "__aexit__", None)
+                if exit_method is not None:
+                    await exit_method(None, None, None)
+        sync_close = getattr(self.client, "close", None)
+        if sync_close is not None:
+            sync_close()
 
     async def _agenerate_text(
         self,
@@ -478,6 +738,7 @@ class OpenAICompatibleClient(LLMClient):
         *,
         json_mode: bool,
         reasoning_effort: str | None = None,
+        request_timeout_seconds: float | None = None,
     ) -> str:
         use_response_format = (
             json_mode and self._response_format_supported is not False
@@ -490,23 +751,19 @@ class OpenAICompatibleClient(LLMClient):
             json_mode=use_response_format,
             extra_body=self.extra_body,
             reasoning_effort=reasoning_effort,
+            request_timeout_seconds=request_timeout_seconds,
         )
-        async with self._async_client_factory(**self._async_client_kwargs) as client:
-            try:
-                response = await client.chat.completions.create(**kwargs)
-            except Exception as exc:
-                if use_response_format and _should_retry_without_response_format(exc):
-                    self._response_format_supported = False
-                    kwargs.pop("response_format", None)
-                    try:
-                        response = await client.chat.completions.create(**kwargs)
-                    except Exception as retry_exc:
-                        raise RuntimeError(_format_ai_exception(retry_exc)) from retry_exc
-                else:
-                    raise RuntimeError(_format_ai_exception(exc)) from exc
-            else:
-                if use_response_format:
-                    self._response_format_supported = True
+        if self._reasoning_effort_supported is False:
+            kwargs.pop("reasoning_effort", None)
+        try:
+            response = await self._achat_completion_compatible(kwargs)
+        except Exception as exc:
+            raise RuntimeError(_format_ai_exception(exc)) from exc
+        else:
+            if use_response_format and "response_format" in kwargs:
+                self._response_format_supported = True
+            if "reasoning_effort" in kwargs:
+                self._reasoning_effort_supported = True
         self.last_usage = _usage_to_dict(getattr(response, "usage", None))
         return response.choices[0].message.content or ""
 
@@ -516,6 +773,7 @@ class OpenAICompatibleClient(LLMClient):
         user_prompt: str,
         max_tokens: int = 4096,
         reasoning_effort: str | None = None,
+        request_timeout_seconds: float | None = None,
     ) -> tuple[dict[str, Any], str]:
         raw = await self._agenerate_text(
             system_prompt,
@@ -523,6 +781,7 @@ class OpenAICompatibleClient(LLMClient):
             max_tokens,
             json_mode=True,
             reasoning_effort=reasoning_effort,
+            request_timeout_seconds=request_timeout_seconds,
         )
         return _tolerant_parse_json(raw), raw
 
@@ -532,6 +791,7 @@ class OpenAICompatibleClient(LLMClient):
         user_prompt: str,
         images: list[bytes],
         max_tokens: int = 4096,
+        request_timeout_seconds: float | None = None,
     ) -> tuple[dict[str, Any], str]:
         content: list[dict[str, Any]] = [{"type": "text", "text": user_prompt}]
         for image in images:
@@ -551,11 +811,12 @@ class OpenAICompatibleClient(LLMClient):
         }
         if self.extra_body:
             kwargs["extra_body"] = self.extra_body
-        async with self._async_client_factory(**self._async_client_kwargs) as client:
-            try:
-                response = await client.chat.completions.create(**kwargs)
-            except Exception as exc:
-                raise RuntimeError(_format_ai_exception(exc)) from exc
+        if request_timeout_seconds is not None:
+            kwargs["timeout"] = max(1.0, float(request_timeout_seconds))
+        try:
+            response = await self._achat_completion(kwargs)
+        except Exception as exc:
+            raise RuntimeError(_format_ai_exception(exc)) from exc
         self.last_usage = _usage_to_dict(getattr(response, "usage", None))
         raw = response.choices[0].message.content or ""
         return _tolerant_parse_json(raw), raw
@@ -745,6 +1006,34 @@ class AnthropicMessagesClient(LLMClient):
 # ---------------------------------------------------------------------------
 
 
+_active_llm_clients: contextvars.ContextVar[list[LLMClient] | None] = (
+    contextvars.ContextVar("active_llm_clients", default=None)
+)
+
+
+@asynccontextmanager
+async def llm_client_session():
+    """Close all LLM clients created during one extraction pipeline."""
+    existing = _active_llm_clients.get()
+    if existing is not None:
+        yield
+        return
+
+    clients: list[LLMClient] = []
+    token = _active_llm_clients.set(clients)
+    try:
+        yield
+    finally:
+        results = await asyncio.gather(
+            *(client.aclose() for client in reversed(clients)),
+            return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, Exception):
+                logger.warning("Failed to close LLM client cleanly: %s", result)
+        _active_llm_clients.reset(token)
+
+
 def create_llm_client(
     provider: str,
     api_key: str,
@@ -756,17 +1045,22 @@ def create_llm_client(
     """Factory: returns the correct LLM client based on provider type."""
     provider_lower = provider.strip().lower()
     if provider_lower == "anthropic messages" or provider_lower.startswith("anthropic"):
-        return AnthropicMessagesClient(
+        client: LLMClient = AnthropicMessagesClient(
             api_key=api_key,
             model=model,
             base_url=base_url,
             timeout_seconds=timeout_seconds,
             max_retries=max_retries,
         )
-    return OpenAICompatibleClient(
-        api_key=api_key,
-        model=model,
-        base_url=base_url,
-        timeout_seconds=timeout_seconds,
-        max_retries=max_retries,
-    )
+    else:
+        client = OpenAICompatibleClient(
+            api_key=api_key,
+            model=model,
+            base_url=base_url,
+            timeout_seconds=timeout_seconds,
+            max_retries=max_retries,
+        )
+    active = _active_llm_clients.get()
+    if active is not None:
+        active.append(client)
+    return client

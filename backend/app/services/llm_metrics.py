@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from pathlib import Path
@@ -145,8 +146,12 @@ async def track_llm_call(
     try:
         yield metric
         metric.success = True
-    except Exception as exc:
-        metric.error = str(exc)[:500]
+    except BaseException as exc:
+        metric.error = (
+            "request cancelled or timed out"
+            if isinstance(exc, asyncio.CancelledError)
+            else str(exc)[:500]
+        )
         raise
     finally:
         metric.latency_ms = round((time.monotonic() - started) * 1000, 1)

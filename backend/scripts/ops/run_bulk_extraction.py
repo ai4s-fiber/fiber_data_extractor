@@ -827,26 +827,28 @@ async def _preflight_remote_services(
     """Validate both paid upstreams before submitting any extraction work."""
     import httpx
 
-    from app.services.llm_client import create_llm_client
+    from app.services.llm_client import create_llm_client, llm_client_session
     from app.services.mineru_client import MINERU_CLOUD_BATCH_RESULTS_URL
 
-    client = create_llm_client(
-        provider=args.provider,
-        api_key=api_key,
-        model=args.model,
-        base_url=args.base_url,
-        timeout_seconds=60,
-        max_retries=1,
-    )
-    parsed, _ = await asyncio.wait_for(
-        client.agenerate_json_tolerant(
-            "Return one JSON object only.",
-            'Connectivity check. Return exactly {"status":"ok"}.',
-            max_tokens=64,
-            reasoning_effort="low",
-        ),
-        timeout=90,
-    )
+    async with llm_client_session():
+        client = create_llm_client(
+            provider=args.provider,
+            api_key=api_key,
+            model=args.model,
+            base_url=args.base_url,
+            timeout_seconds=60,
+            max_retries=1,
+        )
+        parsed, _ = await asyncio.wait_for(
+            client.agenerate_json_tolerant(
+                "Return one JSON object only.",
+                'Connectivity check. Return exactly {"status":"ok"}.',
+                max_tokens=64,
+                reasoning_effort="low",
+                request_timeout_seconds=55,
+            ),
+            timeout=60,
+        )
     if str(parsed.get("status") or "").strip().lower() != "ok":
         raise RuntimeError(
             "LLM preflight returned an unexpected response; no jobs were submitted"

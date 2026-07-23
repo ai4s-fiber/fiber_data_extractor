@@ -142,6 +142,20 @@ def _composition_chains_conflict(a: str, b: str) -> bool:
     return bool(chain_a and chain_b and chain_a != chain_b)
 
 
+def _is_contextual_composition_subset(source: str, target: str) -> bool:
+    """Allow one unique modified-system target to absorb a shorter reference."""
+    source_chain = _explicit_composition_chain(source)
+    target_chain = _explicit_composition_chain(target)
+    return bool(
+        source_chain
+        and target_chain
+        and source_chain != target_chain
+        and source_chain[0] == target_chain[0]
+        and set(source_chain).issubset(target_chain)
+        and _MODIFIED_MATERIAL_RE.search(normalize_for_match(source))
+    )
+
+
 def _loading_signature(text: str) -> str | None:
     fraction = _COMPOSITION_FRACTION_RE.search(text or "")
     if fraction:
@@ -410,7 +424,10 @@ def _augment_contextual_aliases(
     updated = dict(alias_map)
     for alias, canonical in list(updated.items()):
         target = contextual_targets.get(canonical) or contextual_targets.get(alias)
-        if target and not _composition_chains_conflict(alias, target):
+        if target and (
+            not _composition_chains_conflict(alias, target)
+            or _is_contextual_composition_subset(alias, target)
+        ):
             updated[alias] = target
     return updated
 

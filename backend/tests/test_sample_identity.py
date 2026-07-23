@@ -342,6 +342,60 @@ def test_unique_active_fraction_variant_absorbs_unsuffixed_structure_id():
     assert {card["sample_id"] for card in merged_cards} == {target}
 
 
+def test_unique_tpms_variant_absorbs_shorter_contextual_composition_reference():
+    base = {
+        "sample_id": "TPU_T300_CF_TPMS",
+        "aliases": ["P-type TPMS mechanical metamaterial structure"],
+        "material_system": "TPU/T300 carbon fiber composite",
+    }
+    variant = {
+        "sample_id": "TPU_T300_CF_TPMS_10vol%",
+        "aliases": ["fiber-reinforced structure material"],
+        "variable_name": "loading",
+        "variable_value": "10",
+        "variable_unit": "vol%",
+    }
+    generic = "TPU_TPMS_mechanical_metamaterial"
+    cards = [
+        {**base, "sample_aliases": base["aliases"]},
+        {**variant, "sample_aliases": variant["aliases"]},
+        {"sample_id": generic, "sample_aliases": []},
+    ]
+    facts = [
+        {
+            "fact_type": "performance",
+            "assigned_sample_id": variant["sample_id"],
+            "candidate_sample_ids": [variant["sample_id"]],
+            "metric_or_parameter": "density",
+            "value": "1257",
+            "unit": "kg m^-3",
+            "evidence_text": "At 10vol% the TPMS density was 1257 kg m^-3.",
+            "_source_block_id": "B43",
+        },
+        {
+            "fact_type": "performance",
+            "assigned_sample_id": generic,
+            "candidate_sample_ids": [generic],
+            "metric_or_parameter": "bandgap_frequency_range",
+            "value": "1050-1400",
+            "unit": "Hz",
+            "evidence_text": "The TPMS structure has a bandgap from 1050 to 1400 Hz.",
+            "_source_block_id": "B76",
+        },
+    ]
+
+    _, merged_facts, merged_cards = merge_sample_identities(
+        [],
+        facts,
+        cards,
+        holistic_samples=[base],
+    )
+
+    target = variant["sample_id"]
+    assert {fact["assigned_sample_id"] for fact in merged_facts} == {target}
+    assert generic not in {card["sample_id"] for card in merged_cards}
+
+
 def test_multiple_active_fraction_variants_remain_distinct():
     base = "TPU_T300_CF_P-type_TPMS"
     five = f"{base}_5vol%"

@@ -58,7 +58,10 @@ def test_default_llm_uses_gpt55_gateway_with_batch_budget():
     assert settings.STRONG_HOLISTIC_BACKGROUND_MAX_TOKENS == 1400
     assert settings.STRONG_TABLE_LLM_TIMEOUT_SECONDS == 75
     assert settings.STRONG_STAGE2_PARTIAL_FAILURE_MIN_FACTS == 3
+    assert settings.LLM_DEFAULT_REASONING_EFFORT == "low"
     assert settings.LLM_REQUEST_MAX_RETRIES == 3
+    assert settings.LLM_RETRY_BASE_SECONDS == 1.0
+    assert settings.LLM_RETRY_MAX_SECONDS == 20.0
     assert settings.LLM_GLOBAL_MAX_CONCURRENT_CALLS == 16
     assert settings.LLM_BATCH_MAX_CONCURRENT_CALLS == 12
     assert settings.LLM_INTERACTIVE_RESERVED_CALLS == 4

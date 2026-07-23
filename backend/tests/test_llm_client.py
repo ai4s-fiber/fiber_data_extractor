@@ -3,6 +3,7 @@
 import asyncio
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from app.services.llm_client import (
@@ -43,7 +44,7 @@ def test_tolerant_json_does_not_hide_upstream_request_failure():
 
 
 @pytest.mark.asyncio
-async def test_openai_async_request_is_actually_cancelled_on_timeout():
+async def test_openai_async_request_is_cancelled_and_client_closes_at_session_end():
     state = {"request_cancelled": False, "client_closed": False}
 
     class Completions:
@@ -77,6 +78,8 @@ async def test_openai_async_request_is_actually_cancelled_on_timeout():
             timeout=0.01,
         )
 
+    assert state == {"request_cancelled": True, "client_closed": False}
+    await client.aclose()
     assert state == {"request_cancelled": True, "client_closed": True}
 
 
@@ -187,3 +190,155 @@ async def test_openai_response_format_failure_is_cached():
     assert "response_format" in requests[0]
     assert "response_format" not in requests[1]
     assert "response_format" not in requests[2]
+
+
+@pytest.mark.asyncio
+async def test_openai_async_client_reuses_connection_within_pipeline():
+    created = 0
+    closed = 0
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content='{"ok": true}'))],
+        usage={},
+    )
+
+    class Completions:
+        async def create(self, **_kwargs):
+            return response
+
+    class FakeAsyncClient:
+        def __init__(self, **_kwargs):
+            nonlocal created
+            created += 1
+            self.chat = SimpleNamespace(completions=Completions())
+
+        async def close(self):
+            nonlocal closed
+            closed += 1
+
+    client = OpenAICompatibleClient(api_key="test", model="gpt-5.5")
+    client._async_client_factory = FakeAsyncClient
+
+    await client.agenerate_json_tolerant("return json", "first")
+    await client.agenerate_json_tolerant("return json", "second")
+
+    assert created == 1
+    assert closed == 0
+    await client.aclose()
+    assert closed == 1
+
+
+@pytest.mark.asyncio
+async def test_openai_retries_transient_502(monkeypatch):
+    requests = 0
+    sleeps = []
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content='{"ok": true}'))],
+        usage={},
+    )
+
+    class GatewayError(RuntimeError):
+        status_code = 502
+
+    class Completions:
+        async def create(self, **_kwargs):
+            nonlocal requests
+            requests += 1
+            if requests == 1:
+                raise GatewayError("bad gateway")
+            return response
+
+    class FakeAsyncClient:
+        def __init__(self, **_kwargs):
+            self.chat = SimpleNamespace(completions=Completions())
+
+        async def close(self):
+            return None
+
+    async def no_wait(delay):
+        sleeps.append(delay)
+
+    async def no_cooldown(_base_url):
+        return None
+
+    monkeypatch.setattr("app.services.llm_client.asyncio.sleep", no_wait)
+    monkeypatch.setattr(
+        "app.services.llm_client._wait_for_gateway_cooldown",
+        no_cooldown,
+    )
+    monkeypatch.setattr("app.services.llm_client._retry_after_seconds", lambda *_: 0.25)
+    client = OpenAICompatibleClient(
+        api_key="test",
+        model="gpt-5.5",
+        max_retries=2,
+    )
+    client._async_client_factory = FakeAsyncClient
+
+    parsed, _ = await client.agenerate_json_tolerant("return json", "payload")
+
+    assert parsed == {"ok": True}
+    assert requests == 2
+    assert sleeps
+
+
+@pytest.mark.asyncio
+async def test_openai_does_not_replay_long_read_timeout():
+    requests = 0
+
+    class Completions:
+        async def create(self, **_kwargs):
+            nonlocal requests
+            requests += 1
+            raise httpx.ReadTimeout("generation timed out")
+
+    class FakeAsyncClient:
+        def __init__(self, **_kwargs):
+            self.chat = SimpleNamespace(completions=Completions())
+
+        async def close(self):
+            return None
+
+    client = OpenAICompatibleClient(
+        api_key="test",
+        model="gpt-5.5",
+        max_retries=3,
+    )
+    client._async_client_factory = FakeAsyncClient
+
+    with pytest.raises(RuntimeError, match="请求超时"):
+        await client.agenerate_json_tolerant("return json", "payload")
+
+    assert requests == 1
+
+
+@pytest.mark.asyncio
+async def test_openai_reasoning_effort_failure_is_cached():
+    requests = []
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content='{"ok": true}'))],
+        usage={},
+    )
+
+    class Completions:
+        async def create(self, **kwargs):
+            requests.append(dict(kwargs))
+            if len(requests) == 1:
+                raise RuntimeError("400 unsupported reasoning_effort")
+            return response
+
+    class FakeAsyncClient:
+        def __init__(self, **_kwargs):
+            self.chat = SimpleNamespace(completions=Completions())
+
+        async def close(self):
+            return None
+
+    client = OpenAICompatibleClient(api_key="test", model="gpt-5.5")
+    client._async_client_factory = FakeAsyncClient
+
+    await client.agenerate_json_tolerant("return json", "first")
+    await client.agenerate_json_tolerant("return json", "second")
+
+    assert len(requests) == 3
+    assert requests[0]["reasoning_effort"] == "low"
+    assert "reasoning_effort" not in requests[1]
+    assert "reasoning_effort" not in requests[2]

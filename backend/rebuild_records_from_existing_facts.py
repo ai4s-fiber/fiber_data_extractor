@@ -15,7 +15,7 @@ import app.models  # noqa: F401
 from sqlalchemy import delete as sa_delete, select
 
 from app.core.config import settings
-from app.core.database import async_session_factory
+from app.core.database import async_session_factory, close_database
 from app.models.candidate_record import CandidateRecord
 from app.models.evidence_item import EvidenceItem
 from app.models.fact_candidate import FactCandidate
@@ -236,9 +236,12 @@ async def rebuild(paper_id: int) -> dict:
 
 
 async def main() -> None:
-    paper_id = int(sys.argv[1]) if len(sys.argv) > 1 else 1
-    result = await rebuild(paper_id)
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    try:
+        paper_id = int(sys.argv[1]) if len(sys.argv) > 1 else 1
+        result = await rebuild(paper_id)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    finally:
+        await close_database()
 
 
 if __name__ == "__main__":

@@ -217,6 +217,9 @@ python scripts\ops\run_bulk_extraction.py `
 - `LLM_GLOBAL_MAX_CONCURRENT_CALLS=16`：进程内所有 LLM 请求共享总并发闸门。
 - `LLM_BATCH_MAX_CONCURRENT_CALLS=12`：批量文献抽取的并发上限；实际预算还会受全局上限和预留通道约束。
 - `LLM_INTERACTIVE_RESERVED_CALLS=4`：从全局 LLM 并发中显式预留日常调用通道；系统会在保证已启动任务至少可前进的前提下压缩批量预算。
+- `LLM_DEFAULT_REASONING_EFFORT=low`：GPT-5.5 强抽取默认使用低思考档；保留多阶段证据校验，同时减少长思考造成的延迟和 Token 消耗。
+- `LLM_REQUEST_MAX_RETRIES=3`：只重试 429、可恢复的 5xx 和连接故障；长生成读超时交给更小窗口的阶段回退，避免重复支付同一大请求。
+- `LLM_RETRY_BASE_SECONDS=1.0` / `LLM_RETRY_MAX_SECONDS=20.0`：所有并发调用共享网关冷却窗口，并采用尊重 `Retry-After` 的带抖动指数退避。
 - `STRONG_HOLISTIC_PERFORMANCE_WINDOW_CHARS=6000`：按 MinerU 块边界切分 Results，并行调用 `gpt-5.5`，降低大窗口长尾超时。
 - `STRONG_HOLISTIC_PERFORMANCE_TIMEOUT_SECONDS=180`：单个窗口超时后按 MinerU 块缩小重试；仍失败时继续走定向 Stage 2 补抽，最终证据与质量门禁仍不通过时才把论文标记为需处理。
 - `STRONG_HOLISTIC_PARALLEL_CALLS=3`：强模式 Holistic 分支最多并行 3 路；样品目录完成后，背景与性能窗口并行执行。
