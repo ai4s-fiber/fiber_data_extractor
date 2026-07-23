@@ -1,6 +1,10 @@
 """Tests for pre-output validation rules."""
 
-from app.services.extractor_v7.output_postprocess import apply_pre_output_validation
+from app.services.extractor_v7.output_postprocess import (
+    apply_pre_output_validation,
+    infer_characterization_method,
+    merge_characterization_features,
+)
 from app.services.validation import (
     is_characterization_peak_metric,
     is_formula_method_parameter_fact,
@@ -14,6 +18,16 @@ def test_surface_roughness_incompatible_with_density_unit():
 
 def test_density_compatible_with_g_cm3():
     assert metric_unit_compatible("density", "g/cm3")
+
+
+def test_table_header_brackets_do_not_break_unit_compatibility():
+    assert metric_unit_compatible("Youngs_modulus", "[GPa]")
+    assert metric_unit_compatible("tensile_strength", "[MPa]")
+    assert metric_unit_compatible("elongation_at_break", "[%]")
+
+
+def test_spaced_inverse_cubic_density_unit_is_normalized():
+    assert metric_unit_compatible("density", "kg m^-3")
 
 
 def test_ftir_peak_routed_to_characterization():
@@ -30,6 +44,40 @@ def test_ftir_peak_routed_to_characterization():
     assert out[0]["_output_channel"] == "characterization_feature"
 
 
+def test_serialized_characterization_features_are_merged_as_entries():
+    merged = merge_characterization_features(
+        "fiber_diameter=250nm",
+        "FTIR_band_1=1240cm^-1; FTIR_band_2=1165cm^-1",
+    )
+
+    assert merged == (
+        "fiber_diameter=250nm; FTIR_band_1=1240cm^-1; "
+        "FTIR_band_2=1165cm^-1"
+    )
+
+
+def test_characterization_method_is_inferred_from_metric_when_missing():
+    assert infer_characterization_method({"canonical_metric": "FTIR_band_3"}) == "FTIR"
+    assert infer_characterization_method({"raw_metric": "Raman_peak_1"}) == "Raman"
+    assert infer_characterization_method({"canonical_metric": "porosity"}) == ""
+
+
+def test_registered_fiber_diameter_stays_in_main_performance_output():
+    facts = [{
+        "fact_type": "performance",
+        "metric_or_parameter": "fiber_diameter",
+        "value": "74",
+        "unit": "nm",
+        "method": "SEM",
+        "evidence_text": "The average fiber diameter was 74 nm.",
+        "assigned_sample_id": "PAN_nanofiber_17_needles",
+    }]
+
+    out = apply_pre_output_validation(facts, [])
+
+    assert out[0]["_output_channel"] == "performance"
+
+
 def test_imidization_formula_peak_not_performance():
     fact = {
         "fact_type": "performance",
@@ -41,6 +89,39 @@ def test_imidization_formula_peak_not_performance():
     assert is_formula_method_parameter_fact(fact)
     out = apply_pre_output_validation([fact], [])
     assert out[0]["_output_channel"] == "formula_or_method_parameter"
+
+
+def test_reference_wave_velocity_in_normalization_formula_not_performance():
+    fact = {
+        "fact_type": "performance",
+        "metric_or_parameter": "elastic_wave_velocity",
+        "value": "144",
+        "unit": "m/s",
+        "evidence_text": (
+            "The normalized frequency is calculated using the expression "
+            "Omega=fa/c0, where c0=144 m/s is the reference wave velocity."
+        ),
+    }
+
+    assert is_formula_method_parameter_fact(fact)
+    out = apply_pre_output_validation([fact], [])
+    assert out[0]["_output_channel"] == "formula_or_method_parameter"
+
+
+def test_unitless_poisson_ratio_is_repaired_from_evidence_before_output():
+    fact = {
+        "fact_type": "performance",
+        "metric_or_parameter": "surface_roughness",
+        "value": "0.43",
+        "unit": "",
+        "evidence_text": "The matrix material has a Poisson's ratio of 0.43.",
+        "assigned_sample_id": "TPU_matrix",
+    }
+
+    out = apply_pre_output_validation([fact], [])
+
+    assert out[0]["metric_or_parameter"] == "Poissons_ratio"
+    assert out[0]["_output_channel"] == "performance"
 
 
 def test_pi1_not_collapsed_to_pi():

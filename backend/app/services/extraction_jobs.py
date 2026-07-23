@@ -19,6 +19,7 @@ from app.models.extraction_job import ExtractionJob
 from app.models.paper import Paper
 from app.models.project import Project
 from app.services.extractor_v7 import V7ExtractorService, ExtractionCancelled
+from app.services.extraction_results import restore_paper_status_after_interruption
 from app.services.progress_bus import progress_bus
 from app.services import extraction_queue
 from app.services.redis_cache import bump_project_cache
@@ -26,6 +27,14 @@ from app.services.redis_cache import bump_project_cache
 
 ACTIVE_JOB_STATUSES = ("queued", "running")
 VALID_MODEL_MODES = ("auto", "weak", "strong")
+RETRYABLE_ERROR_CODES = frozenset({
+    "llm_timeout",
+    "llm_rate_limited",
+    "llm_non_json_response",
+    "upstream_unavailable",
+    "mineru_unavailable",
+    "mineru_timeout",
+})
 
 
 def utcnow() -> datetime:
@@ -89,19 +98,29 @@ def classify_extraction_error(error: BaseException | str) -> str:
         return "llm_model_not_found"
     if "base url" in message or "invalid url" in message or "unsupported protocol" in message:
         return "llm_invalid_base_url"
-    if "timeout" in message or "timed out" in message:
-        return "llm_timeout"
-    if "json" in message or "expecting value" in message:
-        return "llm_non_json_response"
     if "mineru" in message and ("unavailable" in message or "connect" in message):
         return "mineru_unavailable"
-    if "mineru" in message and "timeout" in message:
+    if "mineru" in message and ("timeout" in message or "timed out" in message):
         return "mineru_timeout"
     if "mineru" in message:
         return "mineru_task_failed"
+    if "429" in message or "rate limit" in message or "too many requests" in message:
+        return "llm_rate_limited"
+    if "timeout" in message or "timed out" in message or "超时" in message:
+        return "llm_timeout"
+    if "json" in message or "expecting value" in message:
+        return "llm_non_json_response"
+    if any(code in message for code in ("502", "503", "504")) or any(
+        hint in message for hint in ("connection reset", "connection refused", "service unavailable")
+    ):
+        return "upstream_unavailable"
     if "pdf" in message or "未提取到可用文本" in message:
         return "pdf_parse_failed"
     return "unknown_error"
+
+
+def is_retryable_extraction_error(error: BaseException | str) -> bool:
+    return classify_extraction_error(error) in RETRYABLE_ERROR_CODES
 
 
 class ExtractionJobBackend:
@@ -117,6 +136,7 @@ class ExtractionJobBackend:
         self._lock = asyncio.Lock()
         self._tasks: set[asyncio.Task[None]] = set()
         self._last_db_write: dict[int, tuple[float, str, int]] = {}
+        self._shutting_down = False
 
     async def _persist_progress(
         self,
@@ -173,7 +193,11 @@ class ExtractionJobBackend:
         return job
 
     async def try_start_next(self) -> None:
+        if self._shutting_down:
+            return
         async with self._lock:
+            if self._shutting_down:
+                return
             slots = await extraction_queue.available_slots(self.max_concurrent_jobs)
             if slots <= 0:
                 local_running = await self._local_running_count()
@@ -226,6 +250,17 @@ class ExtractionJobBackend:
                 self._tasks.add(task)
                 task.add_done_callback(self._tasks.discard)
 
+    async def shutdown(self) -> None:
+        """Stop accepting work and wait for local workers to release resources."""
+        self._shutting_down = True
+        tasks = tuple(self._tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._tasks.clear()
+        self._last_db_write.clear()
+
     async def _local_running_count(self) -> int:
         async with self.session_factory() as db:
             result = await db.execute(
@@ -237,7 +272,9 @@ class ExtractionJobBackend:
         """Push progress to SSE and persist throttled snapshots for refresh/reconnect."""
         from app.services.job_cancellation import is_job_cancel_requested
 
-        if await is_job_cancel_requested(job_id):
+        # Completion is the commit point: a cancellation arriving afterwards must
+        # not relabel successfully persisted output as cancelled.
+        if step != "completed" and await is_job_cancel_requested(job_id):
             raise ExtractionCancelled("用户取消了抽取任务")
 
         pct = max(0, min(100, int(percent)))
@@ -263,11 +300,6 @@ class ExtractionJobBackend:
             await self._persist_progress(job_id, step, pct, msg)
 
     async def mark_completed(self, job_id: int) -> None:
-        from app.services.job_cancellation import is_job_cancel_requested
-
-        if await is_job_cancel_requested(job_id):
-            raise ExtractionCancelled("用户取消了抽取任务")
-
         project_id = None
         candidate_count = 0
         async with self.session_factory() as db:
@@ -336,7 +368,9 @@ class ExtractionJobBackend:
             job.updated_at = utcnow()
             paper = await db.get(Paper, job.paper_id)
             if paper:
-                paper.status = "failed"
+                await restore_paper_status_after_interruption(
+                    db, paper, empty_status="failed"
+                )
                 paper.updated_at = utcnow()
             await db.commit()
 
@@ -364,7 +398,9 @@ class ExtractionJobBackend:
                 job.updated_at = utcnow()
                 paper = await db.get(Paper, job.paper_id)
                 if paper:
-                    paper.status = "uploaded"
+                    await restore_paper_status_after_interruption(
+                        db, paper, empty_status="uploaded"
+                    )
                     paper.updated_at = utcnow()
                 await db.commit()
                 await self._push_event(job_id, "cancelled", {
@@ -418,61 +454,103 @@ class ExtractionJobBackend:
 
     async def _run_job(self, job_id: int) -> None:
         try:
-            async with self.session_factory() as db:
-                job = await db.get(ExtractionJob, job_id)
-                if job is None:
-                    return
-                paper = await db.get(Paper, job.paper_id)
-                project = await db.get(Project, job.project_id)
-                if paper is None or project is None:
-                    raise RuntimeError("文献或项目不存在，无法执行抽取")
+            max_attempts = max(1, int(settings.EXTRACTION_MAX_ATTEMPTS or 1))
+            for attempt in range(1, max_attempts + 1):
+                failure: BaseException | str | None = None
+                error_detail = ""
+                try:
+                    async with self.session_factory() as db:
+                        job = await db.get(ExtractionJob, job_id)
+                        if job is None:
+                            return
+                        paper = await db.get(Paper, job.paper_id)
+                        project = await db.get(Project, job.project_id)
+                        if paper is None or project is None:
+                            raise RuntimeError("文献或项目不存在，无法执行抽取")
 
-                resolved_mode = resolve_model_mode(project, job.requested_mode)
-                job.resolved_mode = resolved_mode
-                job.model_provider = project.llm_provider
-                job.model_name = project.llm_model
-                job.updated_at = utcnow()
-                paper.status = "extracting"
-                paper.updated_at = utcnow()
-                await db.commit()
+                        resolved_mode = resolve_model_mode(project, job.requested_mode)
+                        job.resolved_mode = resolved_mode
+                        job.model_provider = project.llm_provider
+                        job.model_name = project.llm_model
+                        job.updated_at = utcnow()
+                        paper.status = "extracting"
+                        paper.updated_at = utcnow()
+                        await db.commit()
 
-                await self.mark_progress(
-                    job_id,
-                    "starting",
-                    1,
-                    f"准备开始抽取 (模式: {resolved_mode}, 模型: {project.llm_model or '未配置'})",
-                )
+                        attempt_text = f", 第 {attempt}/{max_attempts} 次" if max_attempts > 1 else ""
+                        await self.mark_progress(
+                            job_id,
+                            "starting",
+                            1,
+                            (
+                                f"准备开始抽取 (模式: {resolved_mode}, "
+                                f"模型: {project.llm_model or '未配置'}{attempt_text})"
+                            ),
+                        )
 
-                async def progress_callback(step: str, percent: int, message: str = "") -> None:
-                    await self.mark_progress(job_id, step, percent, message)
+                        async def progress_callback(
+                            step: str, percent: int, message: str = "",
+                        ) -> None:
+                            await self.mark_progress(job_id, step, percent, message)
 
-                # Pipeline watchdog: 30 minute hard limit
-                result = await asyncio.wait_for(
-                    V7ExtractorService.run_full_pipeline_for_paper(
-                        db,
-                        paper.id,
-                        progress_callback=progress_callback,
-                        model_mode=resolved_mode,
-                        job_id=job_id,
-                    ),
-                    timeout=1800,
-                )
-                if result.get("error"):
-                    await self.mark_failed(
-                        job_id,
-                        result["error"],
-                        error_code=classify_extraction_error(result["error"]),
-                        error_detail=json.dumps(result, ensure_ascii=False),
+                        result = await asyncio.wait_for(
+                            V7ExtractorService.run_full_pipeline_for_paper(
+                                db,
+                                paper.id,
+                                progress_callback=progress_callback,
+                                model_mode=resolved_mode,
+                                job_id=job_id,
+                            ),
+                            timeout=max(
+                                60,
+                                int(settings.EXTRACTION_PIPELINE_TIMEOUT_SECONDS or 1800),
+                            ),
+                        )
+                        if result.get("error"):
+                            failure = str(result["error"])
+                            error_detail = json.dumps(result, ensure_ascii=False)
+                        else:
+                            await self.mark_completed(job_id)
+                            return
+                except asyncio.TimeoutError:
+                    timeout_seconds = max(
+                        60,
+                        int(settings.EXTRACTION_PIPELINE_TIMEOUT_SECONDS or 1800),
                     )
-                else:
-                    await self.mark_completed(job_id)
-        except asyncio.TimeoutError:
-            await self.mark_failed(
-                job_id,
-                "抽取超时（超过 30 分钟）",
-                error_code="unknown_error",
-                error_detail="Pipeline watchdog timeout after 1800s",
-            )
+                    failure = RuntimeError(f"抽取超时（超过 {timeout_seconds} 秒）")
+                    error_detail = f"Pipeline watchdog timeout after {timeout_seconds}s"
+                except ExtractionCancelled:
+                    raise
+                except Exception as exc:
+                    failure = exc
+                    error_detail = traceback.format_exc()
+
+                if failure is None:
+                    return
+                error_code = classify_extraction_error(failure)
+                if attempt < max_attempts and is_retryable_extraction_error(failure):
+                    delay = min(
+                        60.0,
+                        max(0.0, float(settings.EXTRACTION_RETRY_BASE_SECONDS or 0))
+                        * (2 ** (attempt - 1)),
+                    )
+                    await self.mark_progress(
+                        job_id,
+                        "retrying",
+                        1,
+                        f"上游暂时失败 ({error_code})，{delay:g} 秒后重试 {attempt + 1}/{max_attempts}",
+                    )
+                    if delay:
+                        await asyncio.sleep(delay)
+                    continue
+
+                await self.mark_failed(
+                    job_id,
+                    failure,
+                    error_code=error_code,
+                    error_detail=error_detail,
+                )
+                return
         except ExtractionCancelled:
             async with self.session_factory() as db:
                 job = await db.get(ExtractionJob, job_id)
@@ -485,7 +563,9 @@ class ExtractionJobBackend:
                     job.updated_at = utcnow()
                     paper = await db.get(Paper, job.paper_id)
                     if paper:
-                        paper.status = "uploaded"
+                        await restore_paper_status_after_interruption(
+                            db, paper, empty_status="uploaded"
+                        )
                         paper.updated_at = utcnow()
                     await db.commit()
             await self._push_event(job_id, "cancelled", {

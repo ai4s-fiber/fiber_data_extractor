@@ -54,6 +54,28 @@ def test_strip_inferred_temperature():
     assert "200" not in sid or "removed_inferred_temperature" in str(notes)
 
 
+def test_contextual_semicolon_suffix_moves_out_of_sample_id():
+    sid, condition, notes = sanitize_sample_id(
+        "acetylated jute; optimum WPG sample",
+        "The sample which showed optimum WPG was acetylated jute.",
+    )
+
+    assert sid == "acetylated jute"
+    assert condition == "optimum WPG sample"
+    assert "moved_contextual_sample_suffix_to_condition" in notes
+
+
+def test_semicolon_run_suffix_becomes_numbered_sample_id():
+    sid, condition, notes = sanitize_sample_id(
+        "acetylated jute; sample 12",
+        "Sample 12 had the highest WPG.",
+    )
+
+    assert sid == "acetylated jute sample 12"
+    assert condition == ""
+    assert "normalized_semicolon_run_sample_id" in notes
+
+
 def test_imidization_not_crystallinity():
     facts = [{
         "fact_id": "F001",

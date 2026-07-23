@@ -43,7 +43,110 @@ _COMPRESSIVE_FROM_TO_RE = re.compile(
 )
 _CYCLE_RE = re.compile(r"(?is)(\d+)\s*(?:compression\s+)?cycles?")
 _STRAIN_RE = re.compile(r"(?is)(\d+(?:\.\d+)?)\s*%\s*strain")
-_TEMP_COND_RE = re.compile(r"(?is)(?:at|@)\s*(\d+(?:\.\d+)?)\s*°?\s*c")
+_TEMP_COND_RE = re.compile(
+    r"(?is)(?:at|@)\s*(\d+(?:\.\d+)?)\s*(?:°\s*c|°c|degrees?\s+c|c)(?![A-Za-z])"
+)
+_TRANSITION_VALUE_PATTERN = r"\d+(?:\.\d+)?(?:\s*[-–]\s*\d+(?:\.\d+)?)?"
+_EXPLICIT_TRANSITION_PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
+    (
+        "knee_strain",
+        "%",
+        re.compile(
+            rf"(?is)\bknee\b.{{0,40}}?\b(?:at|near|around|about|of)\b\s*"
+            rf"(?:about|approximately|roughly|ca\.?|~)?\s*"
+            rf"(?:(?:a|the)\s+)?(?:strain\s+(?:of|=)\s*)?"
+            rf"(?P<value>{_TRANSITION_VALUE_PATTERN})\s*%"
+        ),
+    ),
+    (
+        "damage_transition_strain",
+        "%",
+        re.compile(
+            rf"(?is)\bdamage\s+index\b.{{0,260}}?"
+            rf"\b(?:decreas\w*|chang\w*|transition\w*)\b.{{0,140}}?"
+            rf"\b(?:the\s+)?strain\s+(?:exceeds?|reaches?|passes?|above|beyond)\s*"
+            rf"(?P<value>{_TRANSITION_VALUE_PATTERN})\s*%"
+        ),
+    ),
+    (
+        "stiffness_recovery_strain",
+        "%",
+        re.compile(
+            rf"(?is)\b(?:beyond|above|after)\s+"
+            rf"(?P<value>{_TRANSITION_VALUE_PATTERN})\s*%\s*"
+            rf"(?:of\s+)?(?:applied\s+)?strain\b.{{0,180}}?"
+            rf"\bstiffness\s+recover\w*\b"
+        ),
+    ),
+    (
+        "stiffness_recovery_strain",
+        "%",
+        re.compile(
+            rf"(?is)\bstiffness\s+recover\w*\b.{{0,180}}?"
+            rf"\b(?:at|beyond|above|after)\s+"
+            rf"(?P<value>{_TRANSITION_VALUE_PATTERN})\s*%\s*"
+            rf"(?:of\s+)?(?:applied\s+)?strain\b"
+        ),
+    ),
+    (
+        "compressive_displacement",
+        "mm",
+        re.compile(
+            rf"(?is)\b(?:stiff|compliant)\w*\b.{{0,100}}?\b(?:up\s+to|at|around|near)\b"
+            rf".{{0,35}}?\bdisplacement\s*(?:of|=)?\s*"
+            rf"(?:about|approximately|roughly|ca\.?|[≈~])?\s*"
+            rf"(?P<value>{_TRANSITION_VALUE_PATTERN})\s*mm\b"
+        ),
+    ),
+)
+_TRANSITION_METRICS = frozenset({
+    "knee_strain",
+    "damage_transition_strain",
+    "stiffness_recovery_strain",
+})
+
+
+def _transition_value_key(value: Any) -> tuple[str, ...]:
+    return tuple(
+        f"{float(number):g}"
+        for number in re.findall(r"\d+(?:\.\d+)?", str(value or ""))
+    )
+
+
+def find_explicit_transition_matches(evidence: str) -> list[dict[str, Any]]:
+    """Return strictly worded material-transition measurements from source text."""
+    matches: list[dict[str, Any]] = []
+    seen: set[tuple[str, tuple[str, ...], int]] = set()
+    for metric, unit, pattern in _EXPLICIT_TRANSITION_PATTERNS:
+        for match in pattern.finditer(evidence or ""):
+            value = re.sub(r"\s*[-–]\s*", "-", match.group("value").strip())
+            key = (metric, _transition_value_key(value), match.start())
+            if key in seen:
+                continue
+            seen.add(key)
+            matches.append({
+                "metric": metric,
+                "value": value,
+                "unit": unit,
+                "start": match.start(),
+                "end": match.end(),
+            })
+    return matches
+
+
+def transition_fact_supported(fact: dict) -> bool:
+    """Require the stated transition phenomenon to bind directly to the value."""
+    metric = find_metric_canonical(str(fact.get("metric_or_parameter") or "")) or ""
+    if metric not in _TRANSITION_METRICS:
+        return True
+    value_key = _transition_value_key(fact.get("value"))
+    return any(
+        match["metric"] == metric
+        and _transition_value_key(match["value"]) == value_key
+        for match in find_explicit_transition_matches(
+            str(fact.get("evidence_text") or "")
+        )
+    )
 
 
 def _append_reason(existing: Any, suffix: str) -> str:
@@ -92,6 +195,31 @@ def infer_metric_from_evidence(
     lower = ev.lower()
     unit_norm = normalize_unit(unit)
     current = find_metric_canonical(current_metric) or current_metric
+
+    if unit_norm == "ph" and re.search(r"(?i)\bpH\b", ev):
+        return "pH"
+
+    if (
+        unit_norm in {"mpa", "gpa", "kpa", "pa"}
+        and re.search(
+            r"(?i)\b(?:threshold\s+(?:load|stress)|inelastic\s+strain\s+threshold|"
+            r"knee\s+(?:load|stress))\b",
+            ev,
+        )
+    ):
+        return "inelastic_threshold_stress"
+
+    if (
+        unit_norm in {"%", "percent"}
+        and current in {"surface_roughness", "surface roughness"}
+        and re.search(r"(?i)\b(?:applied\s+)?strain\b", ev)
+    ):
+        if re.search(r"(?i)\bknee\b", ev):
+            return "knee_strain"
+        if re.search(r"(?i)\bdamage\s+index\b", ev):
+            return "damage_transition_strain"
+        if re.search(r"(?i)\bstiffness\s+recover(?:y|s|ed|ing)\b", ev):
+            return "stiffness_recovery_strain"
 
     for pattern, metric in (
         (_FIBER_LENGTH_RE, "fiber_length"),
@@ -201,8 +329,10 @@ def fix_condition_as_performance_value(fact: dict) -> dict:
     value = str(fact.get("value") or "").strip()
     unit = str(fact.get("unit") or "").strip().lower()
 
-    cond_bits = _extract_test_conditions(evidence)
     existing = str(fact.get("condition") or "").strip()
+    # Existing conditions are scoped by the extractor to this value. Appending
+    # every condition from a multi-result paragraph corrupts that association.
+    cond_bits = [] if existing else _extract_test_conditions(evidence)
 
     if re.fullmatch(r"\d+", value) and ("cycle" in unit or "cycles" in evidence.lower()):
         if metric in ("cyclic_compression_stability", "compression_stability"):
@@ -549,10 +679,22 @@ def apply_hard_validation(facts: list[dict]) -> list[dict]:
             fact["assignment_reason"] = _append_reason(
                 fact.get("assignment_reason"), "metric_inferred_from_evidence"
             )
+        if not transition_fact_supported(fact):
+            fact["_hard_reject"] = True
+            fact["_hard_reject_reason"] = "transition_value_not_bound_to_phenomenon"
+            fact["assignment_reason"] = _append_reason(
+                fact.get("assignment_reason"),
+                "transition_value_not_bound_to_phenomenon",
+            )
+            facts[i] = fact
+            continue
         fact = enforce_sample_value_from_parens(fact)
         fact = enforce_pi1_aerogel_not_generic(fact)
         fact = enrich_fiber_sample_id(fact)
         fact = enforce_imidization_sample(fact)
-        fact = fix_condition_as_performance_value(fact)
+        if fact.get("extraction_method") not in {
+            "AI_holistic_table", "rule_table_performance",
+        }:
+            fact = fix_condition_as_performance_value(fact)
         facts[i] = fact
     return facts

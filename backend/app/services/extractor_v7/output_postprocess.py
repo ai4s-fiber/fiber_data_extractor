@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from app.services.extractor_v7.metric_normalize import _infer_technique, canonicalize_metric_name
+from app.services.extractor_v7.metric_normalize import canonicalize_metric_name
 from app.services.extractor_v7.sample_id_rules import sanitize_sample_id
 from app.services.grouping import normalize_for_match, normalize_sample_id
 from app.services.metrics_dictionary import find_metric_canonical
@@ -16,7 +16,6 @@ from app.services.validation import (
     is_characterization_peak_metric,
     is_formula_method_parameter_fact,
     metric_unit_compatible,
-    normalize_unit,
 )
 
 _IMIDIZATION_RE = re.compile(r"(?is)imidization|imidisation|imide|酰亚胺")
@@ -49,8 +48,12 @@ def _classify_output_channel(fact: dict) -> str:
     evidence = str(fact.get("evidence_text") or "")
     if is_characterization_peak_metric(metric, method=method, evidence=evidence):
         return "characterization_feature"
-    # Check if metric is a structural feature
-    canonical = find_metric_canonical(metric) or metric
+    # Registered numeric material properties stay as result rows even when they
+    # also describe morphology (for example fiber diameter or porosity).
+    performance_canonical = find_metric_canonical(metric)
+    if performance_canonical:
+        return "performance"
+    canonical = metric
     if canonical in _STRUCTURE_FEATURE_METRICS:
         return "structure_feature"
     return "performance"
@@ -77,12 +80,21 @@ def _resolve_metric_unit(fact: dict) -> dict:
     unit = str(fact.get("unit") or "")
     evidence = str(fact.get("evidence_text") or "")
     method = str(fact.get("method") or "")
-    if not metric or not unit:
+    if not metric:
         return fact
 
-    canonical = find_metric_canonical(metric) or canonicalize_metric_name(
-        metric, method=method, evidence=evidence
+    canonical = canonicalize_metric_name(
+        metric,
+        method=method,
+        evidence=evidence,
+        unit=unit,
     )
+    if canonical:
+        fact["metric_or_parameter"] = canonical
+        metric = canonical
+    if not unit:
+        return fact
+    canonical = canonical or find_metric_canonical(metric) or metric
     inferred_ev = infer_metric_from_evidence(
         evidence, unit=unit, current_metric=metric
     )
@@ -215,7 +227,33 @@ def format_characterization_entry(result_fact: dict) -> str:
     return "".join(parts)
 
 
-def merge_characterization_features(existing: str, entries: list[str]) -> str:
+def infer_characterization_method(result_fact: dict) -> str:
+    """Return an explicit or metric-derived characterization method."""
+    method = str(result_fact.get("performance_method") or "").strip()
+    if method:
+        return method
+    metric = str(
+        result_fact.get("canonical_metric")
+        or result_fact.get("raw_metric")
+        or ""
+    ).upper()
+    for prefix, name in (
+        ("FTIR", "FTIR"),
+        ("RAMAN", "Raman"),
+        ("XRD", "XRD"),
+        ("XPS", "XPS"),
+        ("NMR", "NMR"),
+    ):
+        if prefix in metric:
+            return name
+    return ""
+
+
+def merge_characterization_features(
+    existing: str,
+    entries: list[str] | tuple[str, ...] | str,
+) -> str:
+    """Merge feature entries without iterating serialized text character by character."""
     merged: list[str] = []
     seen: set[str] = set()
     for chunk in (existing or "").split(";"):
@@ -223,7 +261,8 @@ def merge_characterization_features(existing: str, entries: list[str]) -> str:
         if chunk and chunk not in seen:
             seen.add(chunk)
             merged.append(chunk)
-    for entry in entries:
+    incoming = entries.split(";") if isinstance(entries, str) else entries
+    for entry in incoming:
         entry = entry.strip()
         if entry and entry not in seen:
             seen.add(entry)

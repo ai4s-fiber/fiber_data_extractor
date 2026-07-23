@@ -6,9 +6,6 @@ Production databases created via ensure_runtime_schema() should stamp this revis
 
 from typing import Sequence, Union
 
-from alembic import op
-import sqlalchemy as sa
-
 revision: str = "0001_baseline"
 down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None

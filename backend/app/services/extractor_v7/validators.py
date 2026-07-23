@@ -81,15 +81,31 @@ def _looks_like_journal_name(line: str) -> bool:
     return False
 
 
+_PRIMARY_RESULT_PATTERNS = (
+    re.compile(r"(?i)\b(?:fig(?:ure)?\.?|table)\s*\d+[a-z]?(?:\([^)]*\))?\s+(?:shows?|reports?|presents?|summarizes?)\b"),
+    re.compile(r"(?i)\bresults?\s+(?:show|shows|showed|indicate|indicates|demonstrate|reveal)\b"),
+    re.compile(r"(?i)\b(?:these|the|our)\s+(?:results?|values?)\s+(?:are|were)\s+(?:shown|presented|reported|summarized)\b"),
+    re.compile(r"(?i)\b(?:the\s+)?plot\s+(?:shows?|indicates?|reveals?)\b"),
+    re.compile(r"(?i)\b(?:was|were|is|are)\s+(?:measured|obtained|found|observed)\b"),
+)
+
+
+def text_has_primary_result_signal(text: str) -> bool:
+    """Whether text explicitly presents a measurement from the current paper."""
+    return any(pattern.search(text or "") for pattern in _PRIMARY_RESULT_PATTERNS)
+
+
 def _text_has_background_reference_signal(text: str, section: str | None = None) -> bool:
     lower = (text or "").lower()
     section_lower = (section or "").lower()
-    if section_lower in {"introduction", "background", "references"}:
+    if section_lower in {"introduction", "background", "references", "back_matter"}:
         return True
+    if section_lower in {"results", "conclusion", "experimental"} and text_has_primary_result_signal(text):
+        return False
     reference_hints = (
         "previously reported", "has been reported", "were reported",
         "reported by", "reported in", "literature", "prior work",
-        "previous work", "other studies", "other reports", "reference",
+        "previous work", "other studies", "other reports",
         "ref.", "compared with literature", "compared to literature",
     )
     has_hint = any(hint in lower for hint in reference_hints)
@@ -99,13 +115,35 @@ def _text_has_background_reference_signal(text: str, section: str | None = None)
     ))
 
 
+def text_has_background_reference_signal(
+    text: str,
+    section: str | None = None,
+) -> bool:
+    """Public predicate used by extraction stages before accepting a fact."""
+    return _text_has_background_reference_signal(text, section)
+
+
 def is_background_or_reference_fact(fact: dict) -> bool:
+    if (
+        fact.get("extraction_method") in {
+            "AI_holistic_table", "rule_table_performance",
+        }
+        and fact.get("_source_table_row") is not None
+    ):
+        return False
     text = " ".join([
         str(fact.get("evidence_text") or ""),
         str(fact.get("subject_text") or ""),
         str(fact.get("source_location") or ""),
     ])
-    return _text_has_background_reference_signal(text, fact.get("_chunk_section"))
+    section = str(fact.get("_chunk_section") or "").lower()
+    if not section:
+        source = str(fact.get("source_location") or "").lower()
+        for candidate in ("results", "conclusion", "experimental", "introduction", "references"):
+            if candidate in source:
+                section = candidate
+                break
+    return _text_has_background_reference_signal(text, section)
 
 
 _COMPARISON_HINTS = (
@@ -185,7 +223,9 @@ def determine_review_status(
         return "缺失"
     method = (fact.get("extraction_method") or "").strip()
     evidence = (fact.get("evidence_text") or "").strip()
-    holistic = method == "AI_holistic"
+    holistic = method in {
+        "AI_holistic", "AI_holistic_table", "rule_table_performance",
+    }
     substantial_evidence = len(evidence) >= 60 and re.search(r"\d", evidence)
 
     hard_issues = {

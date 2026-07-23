@@ -1,6 +1,7 @@
 from app.services.llm_budget import (
     clamp_max_tokens,
     dashscope_extra_body,
+    openai_compatible_extra_body,
     should_disable_thinking,
 )
 
@@ -29,6 +30,14 @@ def test_disable_thinking_can_be_turned_off():
         "https://dashscope.aliyuncs.com/compatible-mode/v1",
         False,
     ) is None
+
+
+def test_bigmodel_glm_uses_official_thinking_control():
+    assert openai_compatible_extra_body(
+        "glm-5.2",
+        "https://open.bigmodel.cn/api/paas/v4",
+        True,
+    ) == {"thinking": {"type": "disabled"}}
 
 
 def test_clamp_max_tokens_records_effective_budget():

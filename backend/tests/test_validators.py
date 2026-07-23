@@ -2,6 +2,7 @@
 
 from app.services.extractor_v7.validators import (
     determine_review_status,
+    is_background_or_reference_fact,
     is_rough_source_location,
     validate_fact,
 )
@@ -50,3 +51,49 @@ def test_holistic_with_substantial_evidence_not_uncertain_for_rough_source_only(
     }
     status = determine_review_status(fact, 0.9, issues)
     assert status == "待审核"
+
+
+def test_grounded_results_table_is_not_background_due_to_nearby_citation():
+    fact = {
+        "fact_type": "performance",
+        "extraction_method": "AI_holistic_table",
+        "_source_table_row": 1,
+        "metric_or_parameter": "oil_absorption_capacity",
+        "value": "21.08",
+        "evidence_text": (
+            "The oil absorption capacity was greater than synthetic sorbents [22,23].\n"
+            "[columns]\tCycle\tOil sorbed (g/g)\n[row 1]\tFirst\t21.08"
+        ),
+    }
+
+    assert is_background_or_reference_fact(fact) is False
+
+
+def test_results_reference_curve_is_not_treated_as_literature():
+    fact = {
+        "fact_type": "performance",
+        "_chunk_section": "results",
+        "metric_or_parameter": "Youngs_modulus",
+        "value": "21",
+        "evidence_text": (
+            "Fig. 6 reports the results: the raw derivative is shown as reference, "
+            "while the smoothed stiffness is E1 = 21 GPa."
+        ),
+    }
+
+    assert is_background_or_reference_fact(fact) is False
+
+
+def test_figure_result_keeps_own_value_despite_literature_tail():
+    fact = {
+        "fact_type": "performance",
+        "_chunk_section": "results",
+        "metric_or_parameter": "knee_strain",
+        "value": "0.2",
+        "evidence_text": (
+            "Fig. 5 reports a knee centered at 0.2% strain, a response commonly "
+            "reported in the literature."
+        ),
+    }
+
+    assert is_background_or_reference_fact(fact) is False

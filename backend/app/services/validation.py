@@ -10,7 +10,6 @@ Provides:
 from __future__ import annotations
 
 import re
-from typing import Any
 
 from app.services.metrics_dictionary import find_metric_canonical
 
@@ -37,6 +36,10 @@ METRIC_MAP: dict[str, str] = {
     "断裂伸长率": "elongation_at_break",
     "断裂伸长": "elongation_at_break",
     "strain at break": "elongation_at_break",
+    "knee strain": "knee_strain",
+    "strain at knee": "knee_strain",
+    "damage transition strain": "damage_transition_strain",
+    "stiffness recovery strain": "stiffness_recovery_strain",
     # Modulus
     "young''s modulus": "Youngs_modulus",
     "young's modulus": "Youngs_modulus",
@@ -58,6 +61,7 @@ METRIC_MAP: dict[str, str] = {
     "contact angle": "water_contact_angle",
     "wca": "water_contact_angle",
     "接触角": "water_contact_angle",
+    "ph": "pH",
     # LOI
     "limiting oxygen index": "limiting_oxygen_index",
     "loi": "limiting_oxygen_index",
@@ -115,6 +119,9 @@ def normalize_metric_name(metric: str) -> str:
 def normalize_unit(unit: str) -> str:
     """Normalize unit strings to canonical forms for comparison."""
     text = str(unit or "").strip()
+    bracketed = re.fullmatch(r"\[\s*([^\[\]]+?)\s*\]", text)
+    if bracketed:
+        text = bracketed.group(1)
     lower = text.lower().replace(" ", "")
     lower = lower.replace("·", "").replace("−", "-").replace("–", "-")
     mapping = {
@@ -123,6 +130,9 @@ def normalize_unit(unit: str) -> str:
         "kpa": "kpa",
         "pa": "pa",
         "%": "%",
+        "%strain": "%",
+        "strain%": "%",
+        "percentstrain": "%",
         "s/m": "s/m",
         "sm-1": "s/m",
         "s/cm": "s/cm",
@@ -137,11 +147,17 @@ def normalize_unit(unit: str) -> str:
         "degrees": "degree",
         "deg": "degree",
         "°": "degree",
+        "ph": "ph",
         "mgcm-3": "mg/cm3",
         "mg/cm3": "mg/cm3",
         "g/cm3": "g/cm3",
         "g/cm³": "g/cm3",
         "kg/m3": "kg/m3",
+        "kg/m^3": "kg/m3",
+        "kg/m³": "kg/m3",
+        "kgm^-3": "kg/m3",
+        "kgm-3": "kg/m3",
+        "kgm⁻³": "kg/m3",
         "°c": "°c",
         "℃": "°c",
         "cn/dtex": "cn/dtex",
@@ -161,11 +177,17 @@ UNIT_RULES: dict[str, set[str]] = {
     "compressive_stress": {"mpa", "gpa", "kpa", "pa"},
     "breaking_strength": {"mpa", "gpa", "kpa", "pa", "cn/dtex"},
     "Youngs_modulus": {"mpa", "gpa", "kpa", "pa"},
+    "Poissons_ratio": {"-", "dimensionless"},
+    "inelastic_threshold_stress": {"mpa", "gpa", "kpa", "pa"},
     "compressive_modulus": {"mpa", "gpa", "kpa", "pa"},
     "elongation_at_break": {"%"},
+    "knee_strain": {"%"},
+    "damage_transition_strain": {"%"},
+    "stiffness_recovery_strain": {"%"},
     "electrical_conductivity": {"s/m", "s/cm", "ms/m"},
     "thermal_conductivity": {"w/mk", "mw/mk"},
     "water_contact_angle": {"degree"},
+    "pH": {"ph", "-", "dimensionless"},
     "density": {"mg/cm3", "g/cm3", "kg/m3"},
     "limiting_oxygen_index": {"%"},
     "porosity": {"%"},
@@ -180,6 +202,16 @@ UNIT_RULES: dict[str, set[str]] = {
     "surface_temperature": {"°c", "k"},
     "glass_transition_temperature": {"°c", "k"},
     "imidization_degree": {"%"},
+    "orientation_factor": {"-", "dimensionless"},
+    "compressive_displacement": {"mm", "cm", "m", "μm", "um", "µm"},
+    "softening_load": {"n", "kn", "mn"},
+    "load_bearing_stability_improvement": {"%"},
+    "bandgap_frequency_range": {"hz", "khz", "mhz"},
+    "normalized_bandgap_frequency_range": {"-", "dimensionless"},
+    "transmission_attenuation_frequency_range": {"hz", "khz", "mhz"},
+    "eigenfrequency": {"hz", "khz", "mhz"},
+    "maximum_acceleration": {"-", "dimensionless", "m/s2", "m/s²"},
+    "acceleration_reduction": {"%"},
 }
 
 _DENSITY_UNITS = {"mg/cm3", "g/cm3", "kg/m3", "mg cm^-3", "g cm^-3", "kg m^-3"}
@@ -296,6 +328,19 @@ _IMIDIZATION_FORMULA_WAVENUMBERS = {1377.0, 1489.0, 1515.0, 1780.0}
 def is_formula_method_parameter_fact(fact: dict) -> bool:
     """Reference peaks used in formulas (e.g. imidization ID), not performance values."""
     evidence = str(fact.get("evidence_text") or "").lower()
+    metric = str(fact.get("metric_or_parameter") or "").strip().lower()
+    if metric in {"elastic_wave_velocity", "reference_wave_velocity"}:
+        has_formula_context = bool(re.search(
+            r"\b(?:normalized?\s+frequency|equation|formula|expression)\b",
+            evidence,
+        ))
+        has_definition_context = bool(re.search(
+            r"\b(?:where|used\s+to\s+(?:compute|calculate|normalize)|"
+            r"(?:compute|calculate|normalize)[sd]?\s+(?:the\s+)?)\b",
+            evidence,
+        ))
+        if has_formula_context and has_definition_context:
+            return True
     unit = normalize_unit(str(fact.get("unit") or ""))
     value_text = str(fact.get("value") or "").replace(",", "")
     if unit not in _WAVENUMBER_UNITS:

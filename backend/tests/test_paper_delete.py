@@ -14,6 +14,6 @@ def test_purge_paper_callable():
 @pytest.mark.asyncio
 async def test_delete_paper_route_registered():
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://test"):
         routes = {route.path for route in app.routes if hasattr(route, "path")}
         assert "/api/projects/{project_id}/papers/{paper_id}" in routes

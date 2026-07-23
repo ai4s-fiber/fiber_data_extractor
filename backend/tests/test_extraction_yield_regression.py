@@ -8,10 +8,8 @@ import openpyxl
 import pytest
 
 from app.services.extractor_v7.fact_postprocess import postprocess_extracted_facts
-from app.services.extractor_v7.holistic_extract import performances_to_facts
 from app.services.extractor_v7.sample_identity import merge_sample_identities
 from app.services.extractor_v7.service import V7ExtractorService
-from app.services.grouping import build_sample_cards, group_samples
 
 FIXTURE_XLSX = Path(__file__).resolve().parents[2] / "PVDF_recycled_cellulose_fiber_dataset_40fields.xlsx"
 

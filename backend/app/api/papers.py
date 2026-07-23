@@ -1,6 +1,7 @@
 """Paper (literature) routes: upload, list, update, delete, extraction status."""
 
 import asyncio
+import hashlib
 import json as _json_module
 import uuid
 from pathlib import Path
@@ -275,6 +276,7 @@ async def upload_paper(
         project_id=project_id,
         original_filename=file.filename,
         file_object_key=file_key,
+        content_sha256=hashlib.sha256(contents).hexdigest(),
         paper_title=Path(file.filename).stem,  # Use filename stem as initial title
         status="uploaded",
     )
@@ -570,7 +572,7 @@ async def extraction_progress_stream(
                     if snapshot != last_snapshot:
                         last_snapshot = snapshot
                         yield f"event: progress\ndata: {_json_module.dumps({'step': live_job.step or 'starting', 'percent': live_job.percent or 0, 'message': live_job.progress_message or live_job.step, 'timestamp': live_job.updated_at.isoformat() if live_job.updated_at else ''})}\n\n"
-                yield f": heartbeat\n\n"
+                yield ": heartbeat\n\n"
         except asyncio.CancelledError:
             pass
         finally:

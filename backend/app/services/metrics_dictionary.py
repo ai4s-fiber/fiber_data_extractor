@@ -24,18 +24,52 @@ PERFORMANCE_CATEGORIES: dict[str, dict] = {
         "metrics": {
             "tensile_strength": {
                 "synonyms": ["拉伸强度", "breaking strength", "ultimate tensile strength",
-                             "断裂强度", "抗拉强度"],
+                             "UTS",
+                             "断裂强度", "抗拉强度", "sigma_r", "sigma_u",
+                             "sigma r", "sigma u", "sigma_R (sigma_u)",
+                             "σr", "σu", "σ_R", "σ_u"],
                 "common_units": ["MPa", "GPa", "cN/dtex"],
             },
             "elongation_at_break": {
                 "synonyms": ["断裂伸长率", "断裂伸长", "elongation", "strain at break",
-                             "断裂延伸率", "extension at break"],
+                             "断裂延伸率", "extension at break", "epsilon_r", "epsilon_u",
+                             "epsilon r", "epsilon u", "epsilon_R (epsilon_u)",
+                             "varepsilon_r", "varepsilon_u", "varepsilon_r_varepsilon_u",
+                             "\\varepsilon_R (\\varepsilon_u)",
+                             "εr", "εu", "ε_R", "ε_u"],
                 "common_units": ["%"],
             },
             "Youngs_modulus": {
                 "synonyms": ["杨氏模量", "young's modulus", "youngs modulus", "elastic modulus",
-                             "弹性模量", "tensile modulus"],
+                             "弹性模量", "tensile modulus", "E1", "E2", "E_1", "E_2",
+                             "modulus E1", "modulus E2", "E2*", "Eγ*", "E_gamma_star",
+                             "modulus E gamma star", "modulus_e_gamma_star",
+                             "modulus_Egamma_star", "modulus_egamma_star",
+                             "E_1_GPa", "E1_GPa", "e_1_gpa", "e1_gpa"],
                 "common_units": ["MPa", "GPa"],
+            },
+            "Poissons_ratio": {
+                "synonyms": ["Poisson's ratio", "Poisson ratio", "Poissons ratio", "泊松比"],
+                "common_units": ["-", "dimensionless"],
+            },
+            "inelastic_threshold_stress": {
+                "synonyms": [
+                    "inelastic threshold stress", "inelastic strain threshold",
+                    "threshold stress", "threshold load", "knee stress",
+                ],
+                "common_units": ["MPa", "GPa", "kPa"],
+            },
+            "knee_strain": {
+                "synonyms": ["knee strain", "strain at knee", "knee-point strain"],
+                "common_units": ["%"],
+            },
+            "damage_transition_strain": {
+                "synonyms": ["damage transition strain", "damage-index transition strain"],
+                "common_units": ["%"],
+            },
+            "stiffness_recovery_strain": {
+                "synonyms": ["stiffness recovery strain", "strain at stiffness recovery"],
+                "common_units": ["%"],
             },
             "compressive_strength": {
                 "synonyms": ["压缩强度", "compression strength", "抗压强度"],
@@ -69,6 +103,50 @@ PERFORMANCE_CATEGORIES: dict[str, dict] = {
             "tear_strength": {
                 "synonyms": ["撕裂强度", "tear strength"],
                 "common_units": ["MPa", "N/mm"],
+            },
+            "compressive_displacement": {
+                "synonyms": [
+                    "compressive displacement", "compression displacement",
+                    "displacement deformation", "displacement at compressive load",
+                    "displacement_at_compressive_load",
+                ],
+                "common_units": ["mm", "cm", "m"],
+            },
+            "softening_load": {
+                "synonyms": ["softening load", "load at softening", "force at softening", "softening occurred"],
+                "common_units": ["N", "kN"],
+            },
+            "load_bearing_stability_improvement": {
+                "synonyms": ["load-bearing stability improvement", "load bearing stability increase"],
+                "common_units": ["%"],
+            },
+            "bandgap_frequency_range": {
+                "synonyms": ["bandgap frequency range", "directional bandgap", "frequency bandgap"],
+                "common_units": ["Hz", "kHz", "MHz"],
+            },
+            "normalized_bandgap_frequency_range": {
+                "synonyms": ["normalized bandgap frequency range", "normalized frequency range"],
+                "common_units": ["-", "dimensionless"],
+            },
+            "eigenfrequency": {
+                "synonyms": ["eigenfrequency", "eigen frequency", "natural frequency"],
+                "common_units": ["Hz", "kHz", "MHz"],
+            },
+            "transmission_attenuation_frequency_range": {
+                "synonyms": ["transmission attenuation frequency range", "transmission decay range", "transmission efficiency decay range"],
+                "common_units": ["Hz", "kHz", "MHz"],
+            },
+            "maximum_acceleration": {
+                "synonyms": ["maximum acceleration", "peak acceleration"],
+                "common_units": ["-", "dimensionless", "m/s²"],
+            },
+            "acceleration_reduction": {
+                "synonyms": ["acceleration reduction", "decrease in maximum acceleration"],
+                "common_units": ["%"],
+            },
+            "specific_energy_absorption": {
+                "synonyms": ["specific energy absorption", "SEA"],
+                "common_units": ["J/kg", "kJ/kg", "J/g"],
             },
         },
     },
@@ -110,6 +188,10 @@ PERFORMANCE_CATEGORIES: dict[str, dict] = {
                              "thermal decomposition temperature", "Td5%", "Td10%",
                              "Td5", "Td10", "T_d5%", "T_d10%"],
                 "common_units": ["°C"],
+            },
+            "weight_loss": {
+                "synonyms": ["失重率", "weight loss", "mass loss", "TGA weight loss"],
+                "common_units": ["%"],
             },
             "thermal_shrinkage": {
                 "synonyms": ["热收缩率", "thermal shrinkage", "heat shrinkage", "收缩率"],
@@ -307,6 +389,22 @@ PERFORMANCE_CATEGORIES: dict[str, dict] = {
                 "synonyms": ["吸水率", "water absorption", "water uptake", "吸湿率"],
                 "common_units": ["%"],
             },
+            "oil_absorption_capacity": {
+                "synonyms": [
+                    "吸油量", "吸油容量", "oil absorption capacity",
+                    "oil sorption capacity", "oil uptake capacity",
+                    "oil absorbency", "oil sorption capacity per sorbent",
+                    "oil_sorption_capacity", "oil sorbed", "oil_sorbed",
+                ],
+                "common_units": ["g/g", "g g⁻¹", "g/g sorbent"],
+            },
+            "oil_remaining_in_fiber": {
+                "synonyms": [
+                    "oil remaining in fiber", "residual oil in fiber",
+                    "oil retained after squeezing", "remaining oil",
+                ],
+                "common_units": ["g/g", "g g⁻¹", "g/g sorbent"],
+            },
             "moisture_regain": {
                 "synonyms": ["回潮率", "moisture regain", "吸湿率"],
                 "common_units": ["%"],
@@ -316,6 +414,10 @@ PERFORMANCE_CATEGORIES: dict[str, dict] = {
     "physical": {
         "label_zh": "物理性能",
         "metrics": {
+            "pH": {
+                "synonyms": ["pH value", "solution pH", "medium pH"],
+                "common_units": ["pH", "-", "dimensionless"],
+            },
             "density": {
                 "synonyms": ["密度", "density", "apparent density", "表观密度"],
                 "common_units": ["g/cm³", "mg/cm³", "kg/m³"],
@@ -348,6 +450,22 @@ PERFORMANCE_CATEGORIES: dict[str, dict] = {
             "fiber_length": {
                 "synonyms": ["纤维长度", "fiber length", "nanofiber length", "长度"],
                 "common_units": ["nm", "μm", "mm"],
+            },
+            "weight_percent_gain": {
+                "synonyms": [
+                    "增重率", "weight percent gain", "weight percentage gain", "WPG",
+                ],
+                "common_units": ["%"],
+            },
+            "degree_of_acetylation": {
+                "synonyms": [
+                    "乙酰化度", "degree of acetylation", "acetylation degree", "acetyl %",
+                ],
+                "common_units": ["%"],
+            },
+            "degree_of_substitution": {
+                "synonyms": ["取代度", "degree of substitution", "DS"],
+                "common_units": ["-", "dimensionless"],
             },
         },
     },
@@ -473,6 +591,10 @@ STRUCTURE_FEATURES: dict[str, dict] = {
                      "Herman's factor", "fc", "fa"],
         "common_units": ["-"],
     },
+    "fiber_volume_fraction": {
+        "synonyms": ["fiber volume fraction", "fibre volume fraction", "fiber content", "fibre content"],
+        "common_units": ["%", "vol%"],
+    },
     "beta_phase_content": {
         "synonyms": ["β相含量", "beta phase content", "β-phase content", "F(β)",
                      "beta phase fraction"],
@@ -529,15 +651,47 @@ PROCESS_PARAMETERS: dict[str, dict] = {
         "synonyms": ["电压", "voltage", "applied voltage", "纺丝电压", "静电纺丝电压"],
         "common_units": ["kV", "V"],
     },
+    "electric_field_strength": {
+        "synonyms": ["电场强度", "electric field strength", "electric field intensity",
+                     "average field intensity", "field intensity"],
+        "common_units": ["kV/cm", "V/m", "kV/mm"],
+    },
     "tip_to_collector_distance": {
         "synonyms": ["接收距离", "tip-to-collector distance", "working distance",
-                     "纺丝距离", "collector distance", "针头到接收器距离"],
+                     "纺丝距离", "collector distance", "针头到接收器距离",
+                     "distance from needle to collector", "needle to collector distance"],
         "common_units": ["cm", "mm"],
     },
     "flow_rate": {
         "synonyms": ["流速", "flow rate", "feed rate", "进料速率", "供液速率",
-                     "推注速度", "injection rate"],
+                     "推注速度", "injection rate", "flowrate"],
         "common_units": ["mL/h", "μL/min", "mL/min"],
+    },
+    "total_flow_rate": {
+        "synonyms": ["总流量", "total flow rate", "total flowrate", "total feed rate"],
+        "common_units": ["mL/h", "μL/min", "mL/min"],
+    },
+    "flow_rate_per_needle": {
+        "synonyms": ["单针流量", "flow rate per needle", "flowrate per needle",
+                     "per-needle flow rate", "natural flow rate per needle"],
+        "common_units": ["mL/h", "μL/min", "mL/min"],
+    },
+    "spinning_time": {
+        "synonyms": ["纺丝时间", "spinning time", "electrospinning time", "ES time"],
+        "common_units": ["h", "min", "s"],
+    },
+    "needle_gauge": {
+        "synonyms": ["针规", "needle gauge", "needle size", "needle gauge size"],
+        "common_units": ["G", "mm"],
+    },
+    "number_of_needles": {
+        "synonyms": ["针数", "number of needles", "no. of needles", "needle count"],
+        "common_units": ["-"],
+    },
+    "needle_spacing": {
+        "synonyms": ["针间距", "needle spacing", "distance between needles",
+                     "needle-to-needle distance", "needle center-to-center distance"],
+        "common_units": ["mm", "cm"],
     },
     "take_up_speed": {
         "synonyms": ["卷绕速度", "take-up speed", "take up speed", "winding speed",
@@ -620,11 +774,13 @@ CORE_METRICS: set[str] = {
     "tensile_strength",
     "elongation_at_break",
     "Youngs_modulus",
+    "inelastic_threshold_stress",
     "compressive_strength",
     "compressive_stress",
     "flexural_strength",
     "flexural_modulus",
     "water_contact_angle",
+    "pH",
     "oil_contact_angle",
     "dielectric_constant",
     "dielectric_loss",
@@ -725,8 +881,6 @@ CONDITION_PARAMETER_TARGETS: tuple[str, ...] = (
 def find_metric_canonical(name: str) -> str | None:
     """Given a metric name (possibly a synonym), return the canonical name."""
     lower = name.strip().lower()
-    if is_condition_parameter_name(lower):
-        return None
     phrase_candidates: list[tuple[str, str]] = []
     # Pass 1: exact match on canonical name or synonym
     for cat in PERFORMANCE_CATEGORIES.values():
@@ -738,6 +892,13 @@ def find_metric_canonical(name: str) -> str | None:
                 if syn.lower() == lower:
                     return canonical
                 phrase_candidates.append((syn.lower(), canonical))
+    if is_condition_parameter_name(lower):
+        return None
+    # Substring lookup is unsafe for short symbols: "E" previously matched
+    # the first metric containing that letter. Short scientific symbols must
+    # be registered as exact synonyms or resolved with table context.
+    if len(re.sub(r"[^a-z0-9]", "", lower)) < 3:
+        return None
     # Pass 2: substring match — require canonical/synonym to CONTAIN the input
     # (avoids "density" matching "power density" → "output_power_density")
     for cat in PERFORMANCE_CATEGORIES.values():
@@ -759,6 +920,7 @@ def find_metric_canonical(name: str) -> str | None:
         if re_search_word_phrase(phrase, lower):
             return canonical
     return None
+
 
 def re_search_word_phrase(phrase: str, text: str) -> bool:
     """Match a phrase inside text with loose separators but word boundaries."""
@@ -785,9 +947,9 @@ def classify_metric_priority(metric: str) -> str:
     """
     raw = (metric or "").strip()
     lower = raw.lower()
-    if is_condition_parameter_name(raw):
-        return "Secondary"
     canonical = find_metric_canonical(raw) or find_structure_feature_canonical(raw) or raw
+    if canonical == raw and is_condition_parameter_name(raw):
+        return "Secondary"
 
     if any(keyword in lower for keyword in NARRATIVE_KEYWORDS):
         return "Narrative"
@@ -816,6 +978,14 @@ def is_condition_parameter_name(metric: str) -> bool:
     lower = (metric or "").strip().lower().replace("_", " ")
     if not lower:
         return False
+    # Exact registered performance metrics win over generic condition phrases.
+    # For example, a bandgap_frequency_range is a result, not a test frequency.
+    for category in PERFORMANCE_CATEGORIES.values():
+        for canonical, info in category["metrics"].items():
+            if lower == canonical.lower().replace("_", " "):
+                return False
+            if any(lower == synonym.lower().replace("_", " ") for synonym in info["synonyms"]):
+                return False
     if any(name in lower for name in CONDITION_PARAMETER_NAMES):
         return True
     return (
@@ -845,14 +1015,25 @@ def find_structure_feature_canonical(name: str) -> str | None:
     return None
 
 def find_process_parameter_canonical(name: str) -> str | None:
-    """Given a process parameter name, return the canonical name."""
-    lower = name.strip().lower()
+    """Return a process canonical name without drifting into performance metrics."""
+    lower = (name or "").strip().lower().replace("_", " ")
+    if not lower:
+        return None
+
+    candidates: list[tuple[str, str]] = []
     for canonical, info in PROCESS_PARAMETERS.items():
-        if lower == canonical.lower():
-            return canonical
-        for syn in info["synonyms"]:
-            if syn.lower() == lower or syn.lower() in lower or lower in syn.lower():
+        phrases = [canonical.replace("_", " "), *(info.get("synonyms") or [])]
+        for phrase in phrases:
+            normalized = str(phrase).strip().lower().replace("_", " ")
+            if not normalized:
+                continue
+            if lower == normalized:
                 return canonical
+            candidates.append((normalized, canonical))
+
+    for phrase, canonical in sorted(candidates, key=lambda item: len(item[0]), reverse=True):
+        if len(phrase) >= 4 and re_search_word_phrase(phrase, lower):
+            return canonical
     return None
 
 def all_metric_names() -> list[str]:

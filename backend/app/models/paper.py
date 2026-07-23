@@ -1,7 +1,7 @@
 """Paper (literature) model."""
 
 from datetime import datetime, timezone
-from sqlalchemy import String, Text, Integer, DateTime, ForeignKey
+from sqlalchemy import String, Text, Integer, DateTime, ForeignKey, Index
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
@@ -9,11 +9,15 @@ from app.models.base import Base
 
 class Paper(Base):
     __tablename__ = "papers"
+    __table_args__ = (
+        Index("ix_papers_project_sha256", "project_id", "content_sha256"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     project_id: Mapped[int] = mapped_column(Integer, ForeignKey("projects.id"), nullable=False)
     original_filename: Mapped[str] = mapped_column(String(500), nullable=False)
     file_object_key: Mapped[str] = mapped_column(String(500), nullable=False)
+    content_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     paper_title: Mapped[str | None] = mapped_column(Text, nullable=True)
     doi_or_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     year: Mapped[int | None] = mapped_column(Integer, nullable=True)

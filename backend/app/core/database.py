@@ -96,3 +96,8 @@ async def get_db() -> AsyncSession:
             raise
         finally:
             await session.close()
+
+
+async def close_database() -> None:
+    """Release pooled connections and SQLite worker threads on shutdown."""
+    await engine.dispose()

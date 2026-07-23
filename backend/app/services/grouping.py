@@ -9,9 +9,11 @@ from __future__ import annotations
 import json
 import re
 from collections import Counter, defaultdict
-from typing import Any
 
-from app.services.metrics_dictionary import find_metric_canonical
+from app.services.metrics_dictionary import (
+    find_metric_canonical,
+    find_process_parameter_canonical,
+)
 
 
 SAMPLE_CARD_FIELDS = [
@@ -44,7 +46,9 @@ _EMBEDDED_WT_RE = re.compile(
     r"(?i)(?:^|[_\-\s])(\d+(?:\.\d+)?)\s*wt\s*([a-z0-9]*)"
 )
 _VOL_LOADING_RE = re.compile(r"(?i)(\d+(?:\.\d+)?)\s*vol\.?%")
-_DRAW_RATIO_RE = re.compile(r"(?i)r[_\s=]?(\d+(?:\.\d+)?)")
+_DRAW_RATIO_RE = re.compile(
+    r"(?i)(?:^|[\s_-])r(?:atio)?[_\s=]?(\d+(?:\.\d+)?)"
+)
 _ZERO_CNC_RE = re.compile(r"(?i)(?:^|[_\-\s])(?:0|0\.0)\s*(?:wt)?%?\s*cnc|0cnc")
 _DISPERSION_WT_RE = re.compile(r"(?i)dispersion[_\s]*(\d+(?:\.\d+)?)\s*wt")
 _DEVICE_RE = re.compile(r"(?i)fabric|peng|sensor|device")
@@ -90,6 +94,77 @@ def _is_generic_sample_name(sample_id: str) -> bool:
     return False
 
 
+_PROPERTY_ONLY_SAMPLE_RE = re.compile(
+    r"(?i)^(?:hydrophilicity|hydrophobicity|wettability|conductivity|"
+    r"resistivity|strength|modulus|elongation|crystallinity|porosity|density|"
+    r"roughness|hardness|toughness|permittivity|dielectric(?:\s+loss)?|"
+    r"(?:water\s+)?contact\s+angle|pH|band\s*gap|transmittance|reflectance|"
+    r"absorbance|absorption|sensitivity)(?:\s+(?:value|result|property))?$"
+)
+
+
+def _is_joined_sample_list(sample_id: str) -> bool:
+    """Identify model-created ``full_id/full_id`` aggregate labels."""
+    parts = [part.strip() for part in sample_id.split("/") if part.strip()]
+    if len(parts) != 2:
+        return False
+    token_lists = [
+        [token.lower() for token in re.split(r"[_-]+", part) if token]
+        for part in parts
+    ]
+    if any(len(tokens) < 3 for tokens in token_lists):
+        return False
+    common_prefix = 0
+    for left, right in zip(*token_lists):
+        if left != right:
+            break
+        common_prefix += 1
+    return common_prefix >= 2
+
+
+def is_material_sample_id(sample_id: str) -> bool:
+    """Reject property, characterization, and aggregate phrases as samples."""
+    sid = normalize_sample_id(sample_id)
+    normalized = normalize_for_match(sid)
+    if not normalized or len(normalized) < 2 or len(sid) > 80:
+        return False
+    if not re.search(r"[A-Za-z]", sid):
+        return False
+    if len(sid.split()) > 8 or re.search(r"[.!?]\s", sid):
+        return False
+    if _is_generic_sample_name(sid) or _PROPERTY_ONLY_SAMPLE_RE.fullmatch(sid):
+        return False
+    if _is_joined_sample_list(sid):
+        return False
+    if re.fullmatch(
+        r"(?i)(?:this|that|the)\s+(?:particular\s+)?(?:material|sample|specimen)|"
+        r"(?:both|all|these|those)\s+(?:materials|samples|specimens)",
+        sid,
+    ):
+        return False
+    if re.search(
+        r"(?i)\b(?:obtained\s+with|resulted\s+in|shown\s+in\s+table|"
+        r"weight\s+loss|oil\s+absorption(?:\s+capacity)?|initial\s+stage|"
+        r"using\s+(?:its|various|the)|raw\s+and\s+\w+|"
+        r"when\s+(?:the\s+)?(?:compression|load|loading|strain|stress|test))\b",
+        sid,
+    ):
+        return False
+    if re.search(
+        r"(?i)\b(?:stretching|bending|vibrational?|absorption|diffraction)\s*"
+        r"(?:peaks?|bands?|modes?)?$|\b(?:peaks?|bands?|modes?)$",
+        sid,
+    ):
+        return False
+    return not bool(re.search(
+        r"(?i)\b(?:volume|weight|mass)\s+fraction\b|"
+        r"\b(?:mean|average)\s*\(?(?:dev|std)\)?\b|"
+        r"\bstandard\s+deviation\b|"
+        r"^(?:modified|treated|untreated|optimized)\s+.+\s+samples?$",
+        sid,
+    ))
+
+
 def _source_bucket(source_location: str | None) -> str:
     source = (source_location or "").strip()
     lower = source.lower()
@@ -122,7 +197,7 @@ def _sample_ids_from_mentions(sample_mentions: list[dict]) -> list[str]:
         sid = normalize_sample_id(
             mention.get("normalized_sample_id") or mention.get("mention_text")
         )
-        if _is_generic_sample_name(sid):
+        if not is_material_sample_id(sid):
             continue
         ids.setdefault(normalize_for_match(sid), sid)
     return list(ids.values())
@@ -339,6 +414,12 @@ def fill_sample_card_variables(
             if inferred_unit and not card.get("variable_unit"):
                 card["variable_unit"] = inferred_unit
 
+        # A variable name without a sample-specific value is usually group
+        # context leaked onto a constituent/control card and is not actionable.
+        if card.get("variable_name") and not card.get("variable_value"):
+            card["variable_name"] = ""
+            card["variable_unit"] = ""
+
     # Propagate variable_name (not value) within groups for device/fabric rows.
     donor_by_group: dict[str, dict] = {}
     for card in sample_cards:
@@ -350,16 +431,36 @@ def fill_sample_card_variables(
         donor = donor_by_group.get(card.get("sample_group_id") or "")
         if not donor:
             continue
-        card["variable_name"] = donor.get("variable_name")
         inferred_name, inferred_value, inferred_unit = infer_variable_from_sample_id(card.get("sample_id") or "")
-        if inferred_value:
-            card["variable_value"] = inferred_value
-        elif not card.get("variable_value"):
-            card["variable_value"] = donor.get("variable_value")
-        if inferred_unit:
-            card["variable_unit"] = inferred_unit
-        elif not card.get("variable_unit"):
-            card["variable_unit"] = donor.get("variable_unit")
+        if not inferred_value:
+            continue
+        card["variable_name"] = inferred_name or donor.get("variable_name")
+        card["variable_value"] = inferred_value
+        card["variable_unit"] = inferred_unit or donor.get("variable_unit")
+
+    control_re = re.compile(
+        r"(?i)\b(?:raw|untreated|unmodified|pristine|control|reference|blank)\b"
+    )
+    process_variable_re = re.compile(
+        r"(?i)\b(?:time|duration|temperature|catalyst|ratio|concentration|loading)\b"
+    )
+    for card in sample_cards:
+        sid = str(card.get("sample_id") or "")
+        variable_name = str(card.get("variable_name") or "")
+        variable_value = str(card.get("variable_value") or "").strip()
+        if not (control_re.search(sid) and process_variable_re.search(variable_name)):
+            continue
+        support_text = " ".join((sid, str(card.get("evidence_text") or "")))
+        value_supported = bool(
+            variable_value
+            and re.search(rf"(?<!\d){re.escape(variable_value)}(?!\d)", support_text)
+        )
+        name_supported = normalize_for_match(variable_name) in normalize_for_match(support_text)
+        if value_supported and name_supported:
+            continue
+        card["variable_name"] = ""
+        card["variable_value"] = ""
+        card["variable_unit"] = ""
 
     return sample_cards
 
@@ -470,8 +571,10 @@ def build_sample_cards(
     """Build sample cards from deterministic intermediate artifacts."""
     sample_ids = _sample_ids_from_mentions(sample_mentions)
     for fact in fact_candidates:
+        if fact.get("_background_only"):
+            continue
         sid = normalize_sample_id(fact.get("assigned_sample_id") or fact.get("sample_id"))
-        if sid and sid not in sample_ids and not _is_generic_sample_name(sid):
+        if sid and sid not in sample_ids and is_material_sample_id(sid):
             sample_ids.append(sid)
 
     group_by_sample: dict[str, dict] = {}
@@ -527,6 +630,8 @@ def build_sample_cards(
         cards[sid]["variable_unit"] = candidate.get("variable_unit_raw", "") or ""
 
     for fact in fact_candidates:
+        if fact.get("_background_only"):
+            continue
         if fact.get("fact_type") == "performance":
             continue
         sid = normalize_sample_id(fact.get("assigned_sample_id") or fact.get("sample_id"))
@@ -536,7 +641,7 @@ def build_sample_cards(
 
     global_background_facts = [
         fact for fact in fact_candidates
-        if _is_global_background_fact(fact)
+        if not fact.get("_background_only") and _is_global_background_fact(fact)
     ]
     if global_background_facts and cards:
         for card in cards.values():
@@ -611,11 +716,27 @@ def _merge_background_fact(card: dict, fact: dict) -> None:
         card["composition_evidence"] = _append_unique(card.get("composition_evidence"), evidence)
     elif ftype == "process":
         card["process_parameters"] = _append_unique(card.get("process_parameters"), text_value)
-        if any(term in lower for term in ("spinning", "electrospinning", "wet spinning", "dry spinning")):
-            card["spinning_method"] = card.get("spinning_method") or metric
+        canonical = find_process_parameter_canonical(metric) or re.sub(
+            r"[^a-z0-9]+", "_", normalize_for_match(metric)
+        ).strip("_")
+        if canonical == "spinning_method" or re.search(
+            r"(?i)\b(?:electro|wet|dry|melt)?\s*spinning\s+method\b", metric
+        ):
+            method = value or metric
+            card["spinning_method"] = card.get("spinning_method") or method
+            card["process_route"] = _append_unique(card.get("process_route"), method)
+        elif canonical in {"fabrication_method", "preparation_method", "poling_method"}:
+            card["process_route"] = _append_unique(
+                card.get("process_route"), value or metric
+            )
+        elif canonical.startswith("annealing_"):
+            card["process_route"] = _append_unique(card.get("process_route"), "annealing")
+        elif canonical.startswith("drying_"):
+            card["process_route"] = _append_unique(card.get("process_route"), "drying")
+        elif canonical.startswith("carbonization_"):
+            card["process_route"] = _append_unique(card.get("process_route"), "carbonization")
         if any(term in lower for term in ("dry", "anneal", "heat", "freeze", "imidization", "carbonization")):
             card["post_treatment"] = _append_unique(card.get("post_treatment"), text_value)
-        card["process_route"] = _append_unique(card.get("process_route"), metric)
         card["process_evidence"] = _append_unique(card.get("process_evidence"), evidence)
     elif ftype == "structure":
         if fact.get("method"):

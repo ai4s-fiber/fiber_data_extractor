@@ -10,7 +10,7 @@ from app.core.database import async_session_factory
 from app.core.schema_repair import ensure_runtime_schema
 from app.models.extraction_job import ExtractionJob
 from app.services.extractor_v7 import V7ExtractorService
-from sqlalchemy import text, select
+from sqlalchemy import text
 
 async def run_e2e_extraction():
     print("==================================================")

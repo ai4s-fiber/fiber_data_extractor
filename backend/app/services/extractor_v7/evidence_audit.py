@@ -317,6 +317,13 @@ def audit_fact_against_evidence(fact: dict) -> dict | None:
     """
     if fact.get("fact_type") != "performance":
         return fact
+    if (
+        fact.get("extraction_method") in {
+            "AI_holistic_table", "rule_table_performance",
+        }
+        and fact.get("_source_table_row") is not None
+    ):
+        return fact
 
     evidence = str(fact.get("evidence_text") or "")
     if not evidence:

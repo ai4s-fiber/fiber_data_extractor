@@ -4,14 +4,18 @@ from __future__ import annotations
 
 import asyncio
 import io
+import inspect
 import json
+import random
 import time
 import uuid
 import zipfile
+from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import aiofiles
 import httpx
 
 from app.core.config import settings
@@ -51,6 +55,28 @@ class MinerUParseResult:
     middle_json: dict[str, Any]
     raw_result: dict[str, Any]
     elapsed_seconds: float
+
+
+@dataclass(slots=True)
+class MinerUCloudBatchOutcome:
+    """One terminal item from a MinerU Cloud batch."""
+
+    path: Path
+    data_id: str
+    batch_id: str
+    result: MinerUParseResult | None = None
+    error: MinerUError | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.result is not None and self.error is None
+
+
+MINERU_CLOUD_BATCH_UPLOAD_URL = "https://mineru.net/api/v4/file-urls/batch"
+MINERU_CLOUD_BATCH_RESULTS_URL = "https://mineru.net/api/v4/extract-results/batch"
+MINERU_CLOUD_MAX_FILES_PER_BATCH = 200
+_RETRYABLE_CLOUD_CODES = {-10001, -60007, -60009}
+_RETRYABLE_HTTP_STATUSES = {408, 425, 429, 500, 502, 503, 504}
 
 
 def _base_url() -> str:
@@ -111,23 +137,63 @@ def extract_mineru_zip(zip_bytes: bytes) -> tuple[str, list[dict[str, Any]], lis
     return md_content, content_list, content_list_v2, middle_json
 
 
-def build_cloud_upload_payload(path: str | Path, data_id: str) -> dict[str, Any]:
-    file_payload: dict[str, Any] = {
-        "name": Path(path).name,
-        "data_id": data_id,
-    }
-    if settings.MINERU_CLOUD_PAGE_RANGES.strip():
-        file_payload["page_ranges"] = settings.MINERU_CLOUD_PAGE_RANGES.strip()
-    if settings.MINERU_CLOUD_IS_OCR:
-        file_payload["is_ocr"] = True
+def build_cloud_batch_upload_payload(
+    paths: Sequence[str | Path],
+    data_ids: Sequence[str],
+) -> dict[str, Any]:
+    if len(paths) != len(data_ids):
+        raise ValueError("MinerU Cloud paths and data_ids must have the same length")
+    if not paths:
+        raise ValueError("MinerU Cloud batch cannot be empty")
+    if len(paths) > MINERU_CLOUD_MAX_FILES_PER_BATCH:
+        raise ValueError(
+            f"MinerU Cloud accepts at most {MINERU_CLOUD_MAX_FILES_PER_BATCH} files per batch"
+        )
+
+    files: list[dict[str, Any]] = []
+    for raw_path, data_id in zip(paths, data_ids, strict=True):
+        file_payload: dict[str, Any] = {
+            "name": Path(raw_path).name,
+            "data_id": data_id,
+        }
+        if settings.MINERU_CLOUD_PAGE_RANGES.strip():
+            file_payload["page_ranges"] = settings.MINERU_CLOUD_PAGE_RANGES.strip()
+        if settings.MINERU_CLOUD_IS_OCR:
+            file_payload["is_ocr"] = True
+        files.append(file_payload)
 
     return {
-        "files": [file_payload],
+        "files": files,
         "model_version": settings.MINERU_CLOUD_MODEL_VERSION,
         "language": settings.MINERU_LANG,
         "enable_formula": settings.MINERU_CLOUD_ENABLE_FORMULA,
         "enable_table": settings.MINERU_CLOUD_ENABLE_TABLE,
     }
+
+
+def build_cloud_upload_payload(path: str | Path, data_id: str) -> dict[str, Any]:
+    return build_cloud_batch_upload_payload([path], [data_id])
+
+
+async def _iter_file_bytes(path: Path, chunk_size: int = 1024 * 1024) -> AsyncIterator[bytes]:
+    async with aiofiles.open(path, "rb") as source:
+        while True:
+            chunk = await source.read(chunk_size)
+            if not chunk:
+                return
+            yield chunk
+
+
+def _retry_after_seconds(response: httpx.Response | None, attempt: int) -> float:
+    if response is not None:
+        raw = response.headers.get("retry-after", "").strip()
+        try:
+            if raw:
+                return min(60.0, max(0.0, float(raw)))
+        except ValueError:
+            pass
+    base = max(0.1, float(settings.MINERU_CLOUD_RETRY_BASE_SECONDS or 0.1))
+    return min(60.0, base * (2**attempt) + random.uniform(0.0, base * 0.25))
 
 
 def _bool_form(value: bool) -> str:
@@ -211,9 +277,16 @@ def _normalise_local_result_payload(
 class MinerUClient:
     """Client for MinerU APIs (supports local /tasks and mineru.net cloud API)."""
 
-    def __init__(self, api_url: str | None = None, token: str | None = None) -> None:
+    def __init__(
+        self,
+        api_url: str | None = None,
+        token: str | None = None,
+        *,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
         self.api_url = (api_url or _base_url()).rstrip("/")
         self.token = token if token is not None else settings.MINERU_CLOUD_TOKEN
+        self._transport = transport
 
     async def parse_pdf(
         self, pdf_path: str | Path, strategy: str = "mineru_local"
@@ -446,184 +519,473 @@ class MinerUClient:
         return payload
 
     async def parse_pdf_cloud(self, pdf_path: str | Path) -> MinerUParseResult:
-        path = Path(pdf_path)
-        if not path.exists():
-            raise FileNotFoundError(f"PDF file not found: {path}")
+        outcome = None
+        async for item in self.iter_parse_pdfs_cloud_batch([pdf_path]):
+            outcome = item
+        if outcome is None:
+            raise MinerUInvalidResult("MinerU Cloud batch returned no outcome")
+        if outcome.error is not None:
+            raise outcome.error
+        if outcome.result is None:
+            raise MinerUInvalidResult("MinerU Cloud batch returned no parse result")
+        return outcome.result
+
+    async def _request_cloud_json(
+        self,
+        client: httpx.AsyncClient,
+        method: str,
+        url: str,
+        *,
+        operation: str,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        retries = max(0, int(settings.MINERU_CLOUD_MAX_RETRIES or 0))
+        last_error: BaseException | None = None
+        for attempt in range(retries + 1):
+            response = None
+            try:
+                response = await client.request(method, url, **kwargs)
+            except httpx.HTTPError as exc:
+                last_error = exc
+            else:
+                if response.status_code == 200:
+                    try:
+                        payload = response.json()
+                    except ValueError as exc:
+                        raise MinerUInvalidResult(
+                            f"MinerU Cloud {operation} returned invalid JSON"
+                        ) from exc
+                    if not isinstance(payload, dict):
+                        raise MinerUInvalidResult(
+                            f"MinerU Cloud {operation} response is not an object"
+                        )
+                    code = payload.get("code")
+                    if code == 0:
+                        return payload
+                    message = str(payload.get("msg") or "unknown API error")
+                    try:
+                        numeric_code = int(code)
+                    except (TypeError, ValueError):
+                        numeric_code = None
+                    if numeric_code not in _RETRYABLE_CLOUD_CODES:
+                        raise MinerUTaskFailed(
+                            f"MinerU Cloud {operation} failed ({code}): {message}"
+                        )
+                    last_error = MinerUUnavailable(
+                        f"MinerU Cloud {operation} temporarily unavailable ({code}): {message}"
+                    )
+                elif response.status_code not in _RETRYABLE_HTTP_STATUSES:
+                    raise MinerUTaskFailed(
+                        f"MinerU Cloud {operation} failed with HTTP "
+                        f"{response.status_code}: {response.text[:500]}"
+                    )
+                else:
+                    last_error = MinerUUnavailable(
+                        f"MinerU Cloud {operation} failed with HTTP {response.status_code}"
+                    )
+
+            if attempt >= retries:
+                break
+            await asyncio.sleep(_retry_after_seconds(response, attempt))
+
+        if isinstance(last_error, MinerUError):
+            raise last_error
+        raise MinerUUnavailable(f"MinerU Cloud {operation} failed: {last_error}") from last_error
+
+    async def _request_cloud_binary(
+        self,
+        client: httpx.AsyncClient,
+        url: str,
+        *,
+        operation: str,
+    ) -> bytes:
+        retries = max(0, int(settings.MINERU_CLOUD_MAX_RETRIES or 0))
+        last_error: BaseException | None = None
+        for attempt in range(retries + 1):
+            response = None
+            try:
+                response = await client.get(url)
+            except httpx.HTTPError as exc:
+                last_error = exc
+            else:
+                if response.status_code == 200:
+                    return response.content
+                if response.status_code not in _RETRYABLE_HTTP_STATUSES:
+                    raise MinerUTaskFailed(
+                        f"MinerU Cloud {operation} failed with HTTP {response.status_code}"
+                    )
+                last_error = MinerUUnavailable(
+                    f"MinerU Cloud {operation} failed with HTTP {response.status_code}"
+                )
+
+            if attempt >= retries:
+                break
+            await asyncio.sleep(_retry_after_seconds(response, attempt))
+
+        if isinstance(last_error, MinerUError):
+            raise last_error
+        raise MinerUUnavailable(f"MinerU Cloud {operation} failed: {last_error}") from last_error
+
+    async def _upload_cloud_file(
+        self,
+        client: httpx.AsyncClient,
+        path: Path,
+        upload_url: str,
+    ) -> None:
+        retries = max(0, int(settings.MINERU_CLOUD_MAX_RETRIES or 0))
+        last_error: BaseException | None = None
+        for attempt in range(retries + 1):
+            response = None
+            try:
+                response = await client.put(
+                    upload_url,
+                    content=_iter_file_bytes(path),
+                    headers={"Content-Length": str(path.stat().st_size)},
+                )
+            except (httpx.HTTPError, OSError) as exc:
+                last_error = exc
+            else:
+                if response.status_code in {200, 201, 204}:
+                    return
+                if response.status_code not in _RETRYABLE_HTTP_STATUSES:
+                    raise MinerUTaskFailed(
+                        f"MinerU Cloud file upload failed with HTTP {response.status_code}"
+                    )
+                last_error = MinerUUnavailable(
+                    f"MinerU Cloud file upload failed with HTTP {response.status_code}"
+                )
+
+            if attempt >= retries:
+                break
+            await asyncio.sleep(_retry_after_seconds(response, attempt))
+
+        if isinstance(last_error, MinerUError):
+            raise last_error
+        raise MinerUUnavailable(f"MinerU Cloud file upload failed: {last_error}") from last_error
+
+    async def _download_cloud_parse_result(
+        self,
+        client: httpx.AsyncClient,
+        *,
+        path: Path,
+        batch_id: str,
+        file_result: dict[str, Any],
+        started: float,
+    ) -> MinerUParseResult:
+        zip_url = str(file_result.get("full_zip_url") or "").strip()
+        if not zip_url:
+            raise MinerUInvalidResult(
+                f"MinerU Cloud returned no ZIP URL for {path.name}"
+            )
+        zip_bytes = await self._request_cloud_binary(
+            client,
+            zip_url,
+            operation=f"result download for {path.name}",
+        )
+        try:
+            md_content, content_list, content_list_v2, middle_json = extract_mineru_zip(
+                zip_bytes
+            )
+        except (OSError, zipfile.BadZipFile) as exc:
+            raise MinerUInvalidResult(
+                f"MinerU Cloud returned an invalid ZIP for {path.name}"
+            ) from exc
+        if not md_content.strip() and not content_list and not content_list_v2:
+            raise MinerUInvalidResult(
+                f"MinerU Cloud returned no usable content for {path.name}"
+            )
+        return MinerUParseResult(
+            task_id=batch_id,
+            backend=settings.MINERU_CLOUD_MODEL_VERSION,
+            version="cloud_v4",
+            document_name=str(file_result.get("file_name") or path.name),
+            md_content=md_content,
+            content_list=content_list,
+            content_list_v2=content_list_v2,
+            middle_json=middle_json,
+            raw_result={
+                "batch_id": batch_id,
+                "extract_result": [file_result],
+            },
+            elapsed_seconds=time.monotonic() - started,
+        )
+
+    async def _iter_cloud_batch_results(
+        self,
+        client: httpx.AsyncClient,
+        *,
+        batch_id: str,
+        path_by_data_id: dict[str, Path],
+        started: float,
+    ) -> AsyncIterator[MinerUCloudBatchOutcome]:
+        pending = set(path_by_data_id)
+        result_url = f"{MINERU_CLOUD_BATCH_RESULTS_URL}/{batch_id}"
+        poll_headers = {"Authorization": f"Bearer {self.token}"}
+        while pending:
+            if time.monotonic() - started > settings.MINERU_TASK_TIMEOUT_SECONDS:
+                for data_id in sorted(pending):
+                    yield MinerUCloudBatchOutcome(
+                        path=path_by_data_id[data_id],
+                        data_id=data_id,
+                        batch_id=batch_id,
+                        error=MinerUTimeout(
+                            "MinerU Cloud batch timed out after "
+                            f"{settings.MINERU_TASK_TIMEOUT_SECONDS}s"
+                        ),
+                    )
+                return
+
+            status_payload = await self._request_cloud_json(
+                client,
+                "GET",
+                result_url,
+                operation="batch status polling",
+                headers=poll_headers,
+            )
+            status_data = status_payload.get("data")
+            items = (
+                status_data.get("extract_result", [])
+                if isinstance(status_data, dict)
+                else []
+            )
+            if not isinstance(items, list):
+                raise MinerUInvalidResult(
+                    "MinerU Cloud batch status has no extract_result list"
+                )
+            by_data_id = {
+                str(item.get("data_id")): item
+                for item in items
+                if isinstance(item, dict) and item.get("data_id")
+            }
+            filename_counts: dict[str, int] = {}
+            by_filename: dict[str, dict[str, Any]] = {}
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                filename = str(item.get("file_name") or "")
+                if not filename:
+                    continue
+                filename_counts[filename] = filename_counts.get(filename, 0) + 1
+                by_filename[filename] = item
+
+            terminal: list[tuple[str, dict[str, Any]]] = []
+            for data_id in tuple(pending):
+                path = path_by_data_id[data_id]
+                item = by_data_id.get(data_id)
+                if item is None and filename_counts.get(path.name) == 1:
+                    item = by_filename.get(path.name)
+                if item is None:
+                    continue
+                state = str(item.get("state") or "").lower()
+                if state in {"done", "failed"}:
+                    terminal.append((data_id, item))
+
+            async def finish_one(
+                data_id: str,
+                item: dict[str, Any],
+            ) -> MinerUCloudBatchOutcome:
+                path = path_by_data_id[data_id]
+                if str(item.get("state") or "").lower() == "failed":
+                    return MinerUCloudBatchOutcome(
+                        path=path,
+                        data_id=data_id,
+                        batch_id=batch_id,
+                        error=MinerUTaskFailed(
+                            str(item.get("err_msg") or "MinerU Cloud task failed")
+                        ),
+                    )
+                try:
+                    result = await self._download_cloud_parse_result(
+                        client,
+                        path=path,
+                        batch_id=batch_id,
+                        file_result=item,
+                        started=started,
+                    )
+                except MinerUError as exc:
+                    return MinerUCloudBatchOutcome(
+                        path=path,
+                        data_id=data_id,
+                        batch_id=batch_id,
+                        error=exc,
+                    )
+                return MinerUCloudBatchOutcome(
+                    path=path,
+                    data_id=data_id,
+                    batch_id=batch_id,
+                    result=result,
+                )
+
+            if terminal:
+                outcomes = await asyncio.gather(
+                    *(finish_one(data_id, item) for data_id, item in terminal)
+                )
+                for outcome in outcomes:
+                    pending.discard(outcome.data_id)
+                    yield outcome
+                continue
+
+            await asyncio.sleep(
+                max(1.0, float(settings.MINERU_POLL_INTERVAL_SECONDS))
+            )
+
+    async def iter_existing_cloud_batch(
+        self,
+        batch_id: str,
+        path_by_data_id: dict[str, str | Path],
+    ) -> AsyncIterator[MinerUCloudBatchOutcome]:
+        """Resume polling a previously uploaded MinerU Cloud batch."""
+        if not batch_id.strip() or not path_by_data_id:
+            raise ValueError("batch_id and path_by_data_id are required")
+        if not (self.token or "").strip():
+            raise MinerUUnavailable(
+                "MINERU_CLOUD_TOKEN is required when parser_strategy=mineru_cloud"
+            )
+        resolved = {
+            str(data_id): Path(path).resolve()
+            for data_id, path in path_by_data_id.items()
+        }
+        timeout = httpx.Timeout(
+            connect=30.0,
+            read=max(30.0, float(settings.MINERU_TASK_TIMEOUT_SECONDS)),
+            write=max(30.0, float(settings.MINERU_TASK_TIMEOUT_SECONDS)),
+            pool=30.0,
+        )
+        client_kwargs: dict[str, Any] = {
+            "timeout": timeout,
+            "trust_env": settings.MINERU_CLOUD_TRUST_ENV,
+        }
+        if self._transport is not None:
+            client_kwargs["transport"] = self._transport
+        async with httpx.AsyncClient(**client_kwargs) as client:
+            async for outcome in self._iter_cloud_batch_results(
+                client,
+                batch_id=batch_id.strip(),
+                path_by_data_id=resolved,
+                started=time.monotonic(),
+            ):
+                yield outcome
+
+    async def iter_parse_pdfs_cloud_batch(
+        self,
+        pdf_paths: Sequence[str | Path],
+        *,
+        upload_concurrency: int | None = None,
+        on_submitted: Callable[[str, dict[str, Path]], Any] | None = None,
+    ) -> AsyncIterator[MinerUCloudBatchOutcome]:
+        """Submit one official MinerU Cloud batch and yield terminal file outcomes."""
+        paths = [Path(path).resolve() for path in pdf_paths]
+        if not paths:
+            return
+        if len(paths) > MINERU_CLOUD_MAX_FILES_PER_BATCH:
+            raise ValueError(
+                f"MinerU Cloud accepts at most {MINERU_CLOUD_MAX_FILES_PER_BATCH} files per batch"
+            )
+        for path in paths:
+            if not path.is_file():
+                raise FileNotFoundError(f"PDF file not found: {path}")
         if not (self.token or "").strip():
             raise MinerUUnavailable(
                 "MINERU_CLOUD_TOKEN is required when parser_strategy=mineru_cloud"
             )
 
+        data_ids = [uuid.uuid4().hex for _ in paths]
+        path_by_data_id = dict(zip(data_ids, paths, strict=True))
         started = time.monotonic()
         timeout = httpx.Timeout(
             connect=30.0,
             read=max(30.0, float(settings.MINERU_TASK_TIMEOUT_SECONDS)),
-            write=30.0,
+            write=max(30.0, float(settings.MINERU_TASK_TIMEOUT_SECONDS)),
             pool=30.0,
         )
-
-        headers = {
+        auth_headers = {
             "Authorization": f"Bearer {self.token}",
             "Content-Type": "application/json",
         }
+        client_kwargs: dict[str, Any] = {
+            "timeout": timeout,
+            "trust_env": settings.MINERU_CLOUD_TRUST_ENV,
+        }
+        if self._transport is not None:
+            client_kwargs["transport"] = self._transport
 
-        async with httpx.AsyncClient(
-            timeout=timeout,
-            trust_env=settings.MINERU_CLOUD_TRUST_ENV,
-        ) as client:
-            # 1. Apply for upload URL
-            data_id = uuid.uuid4().hex
-            payload = build_cloud_upload_payload(path, data_id)
-
-            try:
-                response = await client.post(
-                    "https://mineru.net/api/v4/file-urls/batch",
-                    headers=headers,
-                    json=payload
-                )
-            except httpx.HTTPError as exc:
-                raise MinerUUnavailable(f"Failed to apply for MinerU Cloud upload URL: {exc}") from exc
-
-            if response.status_code != 200:
-                raise MinerUTaskFailed(
-                    f"MinerU Cloud URL application failed with HTTP {response.status_code}: {response.text[:500]}"
-                )
-
-            res_json = response.json()
-            if res_json.get("code") != 0:
-                raise MinerUTaskFailed(f"MinerU Cloud API error: {res_json.get('msg')}")
-
-            batch_id = res_json["data"]["batch_id"]
-            upload_url = res_json["data"]["file_urls"][0]
-
-            # 2. PUT upload file
-            try:
-                upload_response = await client.put(upload_url, content=path.read_bytes())
-            except httpx.HTTPError as exc:
-                raise MinerUUnavailable(f"Failed to upload file to MinerU Cloud OSS: {exc}") from exc
-
-            if upload_response.status_code not in (200, 201):
-                raise MinerUTaskFailed(f"File upload failed with HTTP {upload_response.status_code}")
-
-            # 3. Poll for completion
-            await self._wait_for_cloud_task(client, batch_id, path.name, started)
-
-            # 4. Fetch results
-            result_payload = await self._fetch_cloud_result(client, batch_id)
-
-            file_result = None
-            for item in result_payload.get("extract_result", []):
-                if item.get("file_name") == path.name:
-                    file_result = item
-                    break
-
-            if not file_result:
-                raise MinerUInvalidResult(f"Could not find result for file {path.name} in batch")
-
-            zip_url = file_result.get("full_zip_url")
-            if not zip_url:
-                raise MinerUInvalidResult("MinerU Cloud returned no zip download URL")
-
-            # 5. Download ZIP
-            try:
-                zip_response = await client.get(zip_url)
-            except httpx.HTTPError as exc:
-                raise MinerUUnavailable(f"Failed to download MinerU Cloud ZIP output: {exc}") from exc
-
-            if zip_response.status_code != 200:
-                raise MinerUTaskFailed(f"Failed to download ZIP: HTTP {zip_response.status_code}")
-
-            # 6. Extract Zip Contents
-            md_content, content_list, content_list_v2, middle_json = extract_mineru_zip(zip_response.content)
-
-            if not md_content.strip() and not content_list and not content_list_v2:
-                raise MinerUInvalidResult("MinerU Cloud returned no usable markdown or content list")
-
-            return MinerUParseResult(
-                task_id=batch_id,
-                backend=settings.MINERU_CLOUD_MODEL_VERSION,
-                version="cloud_v4",
-                document_name=path.name,
-                md_content=md_content,
-                content_list=content_list,
-                content_list_v2=content_list_v2,
-                middle_json=middle_json,
-                raw_result=result_payload,
-                elapsed_seconds=time.monotonic() - started,
+        async with httpx.AsyncClient(**client_kwargs) as client:
+            payload = build_cloud_batch_upload_payload(paths, data_ids)
+            submission = await self._request_cloud_json(
+                client,
+                "POST",
+                MINERU_CLOUD_BATCH_UPLOAD_URL,
+                operation="batch upload URL request",
+                headers=auth_headers,
+                json=payload,
             )
-
-    async def _wait_for_cloud_task(
-        self,
-        client: httpx.AsyncClient,
-        batch_id: str,
-        filename: str,
-        started: float,
-    ) -> None:
-        headers = {"Authorization": f"Bearer {self.token}"}
-        while True:
-            if time.monotonic() - started > settings.MINERU_TASK_TIMEOUT_SECONDS:
-                raise MinerUTimeout(
-                    f"MinerU Cloud task timed out after {settings.MINERU_TASK_TIMEOUT_SECONDS}s"
+            data = submission.get("data")
+            if not isinstance(data, dict):
+                raise MinerUInvalidResult("MinerU Cloud batch response has no data object")
+            batch_id = str(data.get("batch_id") or "").strip()
+            upload_urls = data.get("file_urls")
+            if not batch_id or not isinstance(upload_urls, list):
+                raise MinerUInvalidResult(
+                    "MinerU Cloud batch response has no batch_id or upload URLs"
+                )
+            if len(upload_urls) != len(paths):
+                raise MinerUInvalidResult(
+                    "MinerU Cloud returned a different number of upload URLs"
                 )
 
-            try:
-                response = await client.get(
-                    f"https://mineru.net/api/v4/extract-results/batch/{batch_id}",
-                    headers=headers
-                )
-            except httpx.HTTPError as exc:
-                raise MinerUUnavailable(f"Failed to poll MinerU Cloud task: {exc}") from exc
-
-            if response.status_code != 200:
-                raise MinerUUnavailable(
-                    f"MinerU Cloud status polling failed with HTTP {response.status_code}"
-                )
-
-            payload = response.json()
-            if payload.get("code") != 0:
-                raise MinerUTaskFailed(f"MinerU Cloud API error during status poll: {payload.get('msg')}")
-
-            extract_result = payload.get("data", {}).get("extract_result", [])
-            file_result = None
-            for item in extract_result:
-                if item.get("file_name") == filename:
-                    file_result = item
-                    break
-
-            if not file_result:
-                await asyncio.sleep(max(1.0, float(settings.MINERU_POLL_INTERVAL_SECONDS)))
-                continue
-
-            state = str(file_result.get("state") or "").lower()
-            if state == "done":
-                return
-            if state == "failed":
-                err_msg = file_result.get("err_msg") or "MinerU Cloud task failed"
-                raise MinerUTaskFailed(str(err_msg))
-
-            await asyncio.sleep(max(1.0, float(settings.MINERU_POLL_INTERVAL_SECONDS)))
-
-    async def _fetch_cloud_result(
-        self,
-        client: httpx.AsyncClient,
-        batch_id: str,
-    ) -> dict[str, Any]:
-        headers = {"Authorization": f"Bearer {self.token}"}
-        try:
-            response = await client.get(
-                f"https://mineru.net/api/v4/extract-results/batch/{batch_id}",
-                headers=headers
+            limit = max(
+                1,
+                int(
+                    upload_concurrency
+                    or settings.MINERU_CLOUD_UPLOAD_CONCURRENCY
+                    or 1
+                ),
             )
-        except httpx.HTTPError as exc:
-            raise MinerUUnavailable(f"Failed to fetch MinerU Cloud result: {exc}") from exc
+            semaphore = asyncio.Semaphore(min(limit, len(paths)))
 
-        if response.status_code != 200:
-            raise MinerUUnavailable(
-                f"MinerU Cloud result fetch failed with HTTP {response.status_code}"
+            async def upload_one(
+                path: Path,
+                data_id: str,
+                upload_url: str,
+            ) -> MinerUCloudBatchOutcome | None:
+                try:
+                    async with semaphore:
+                        await self._upload_cloud_file(client, path, upload_url)
+                except MinerUError as exc:
+                    return MinerUCloudBatchOutcome(
+                        path=path,
+                        data_id=data_id,
+                        batch_id=batch_id,
+                        error=exc,
+                    )
+                return None
+
+            upload_outcomes = await asyncio.gather(
+                *(
+                    upload_one(path, data_id, str(upload_url))
+                    for path, data_id, upload_url in zip(
+                        paths, data_ids, upload_urls, strict=True
+                    )
+                )
             )
+            pending = set(data_ids)
+            for outcome in upload_outcomes:
+                if outcome is not None:
+                    pending.discard(outcome.data_id)
+                    yield outcome
+            resumable = {
+                data_id: path_by_data_id[data_id]
+                for data_id in pending
+            }
+            if resumable and on_submitted is not None:
+                callback_result = on_submitted(batch_id, dict(resumable))
+                if inspect.isawaitable(callback_result):
+                    await callback_result
 
-        payload = response.json()
-        if payload.get("code") != 0:
-            raise MinerUTaskFailed(f"MinerU Cloud API error fetching result: {payload.get('msg')}")
-
-        return payload.get("data", {})
+            async for outcome in self._iter_cloud_batch_results(
+                client,
+                batch_id=batch_id,
+                path_by_data_id=resumable,
+                started=started,
+            ):
+                yield outcome

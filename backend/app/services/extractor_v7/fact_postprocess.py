@@ -3,15 +3,22 @@
 from __future__ import annotations
 
 import copy
+import json
 import re
+from collections import defaultdict
 from typing import Any
 
 from app.services.extractor_v7.metric_normalize import (
     merge_duplicate_facts,
     normalize_metrics_in_facts,
 )
-from app.services.extractor_v7.sample_value_alignment import expand_multi_entity_facts
-from app.services.grouping import normalize_sample_id
+from app.services.extractor_v7.sample_value_alignment import (
+    expand_multi_entity_facts,
+    sanitize_fact_sample_labels,
+)
+from app.services.extractor_v7.sample_identity import parse_sample_aliases
+from app.services.grouping import normalize_for_match, normalize_sample_id
+from app.services.metrics_dictionary import find_process_parameter_canonical
 
 _PLACEHOLDER_VALUES = {
     "various", "varied", "different", "several", "multiple",
@@ -19,6 +26,21 @@ _PLACEHOLDER_VALUES = {
     "see figure", "see fig", "see table", "as shown", "as shown in",
     "increased", "decreased", "higher", "lower", "similar", "comparable",
 }
+
+_NUMBERED_CARD_SUFFIX_RE = re.compile(
+    r"(?i)^(?P<base>.+?)(?:\s+(?:sample|specimen|run|no\.?)\s*[-#:]?\s*|"
+    r"[\s_/-]+)(?P<number>\d+(?:\.\d+)?)\s*$"
+)
+_EXPLICIT_RUN_REFERENCE_RE = re.compile(
+    r"(?i)\b(?:sample|specimen|run|no\.?)\s*[-#:]?\s*(\d+(?:\.\d+)?)\b"
+)
+
+
+def _normalized_run_number(value: str) -> str:
+    try:
+        return f"{float(value):g}"
+    except ValueError:
+        return value.strip().lower()
 
 _COUPLED_LIST_RE = re.compile(
     r"(?is)\b(?:values?|coefficients?|constants?|results?|properties?)\s+of\s+"
@@ -59,6 +81,33 @@ def _extract_numeric_values(text: str) -> list[str]:
 def _is_numeric_value(value: Any) -> bool:
     text = "" if value is None else str(value).strip()
     return bool(_NUMBER_RE.fullmatch(text))
+
+
+def restore_unique_uncertainty_from_evidence(facts: list[dict]) -> list[dict]:
+    """Restore an explicitly paired uncertainty omitted from a numeric fact value."""
+    for fact in facts:
+        if fact.get("fact_type") != "performance":
+            continue
+        value = str(fact.get("value") or "").strip()
+        unit = str(fact.get("unit") or "").strip().strip("[]")
+        evidence = str(fact.get("evidence_text") or "")
+        if not _NUMBER_RE.fullmatch(value) or not unit or not evidence:
+            continue
+        unit_pattern = r"\s*".join(
+            re.escape(part) for part in re.split(r"\s+", unit) if part
+        )
+        if not unit_pattern:
+            continue
+        pattern = re.compile(
+            rf"(?<![\d.]){re.escape(value)}(?![\d.])\s*"
+            rf"(?:±|\+/-)\s*(?P<std>{_NUMBER_RE.pattern})\s*"
+            rf"{unit_pattern}(?=$|[\s,;:.)\]])",
+            flags=re.IGNORECASE,
+        )
+        matches = list(pattern.finditer(evidence))
+        if len(matches) == 1:
+            fact["value"] = f"{value} ± {matches[0].group('std')}"
+    return facts
 
 
 def _next_fact_id(facts: list[dict], start: int) -> tuple[str, int]:
@@ -294,6 +343,10 @@ def promote_measurable_facts(facts: list[dict]) -> list[dict]:
         metric = str(fact.get("metric_or_parameter") or "")
         if not metric:
             continue
+        process_metric = find_process_parameter_canonical(metric)
+        if fact.get("fact_type") == "process" and process_metric:
+            fact["metric_or_parameter"] = process_metric
+            continue
         if not _is_numeric_value(fact.get("value")):
             continue
         if _MEASURABLE_PROPERTY_RE.search(metric):
@@ -306,36 +359,96 @@ def sanitize_assigned_sample_ids(
     sample_cards: list[dict],
     sample_mentions: list[dict] | None = None,
 ) -> list[dict]:
-    """Drop invalid assigned_sample_id values (e.g. full-sentence aliases)."""
-    valid_ids: set[str] = set()
+    """Canonicalize known aliases and drop invalid assigned sample IDs."""
+    canonical_ids: dict[str, set[str]] = defaultdict(set)
+    alias_targets: dict[str, set[str]] = defaultdict(set)
+    numbered_targets: dict[tuple[str, str], set[str]] = defaultdict(set)
     for card in sample_cards:
         sid = normalize_sample_id(card.get("sample_id") or "")
         if sid:
-            valid_ids.add(sid)
-        for alias in card.get("sample_aliases") or []:
+            canonical_ids[normalize_for_match(sid)].add(sid)
+            numbered = _NUMBERED_CARD_SUFFIX_RE.match(sid)
+            if numbered:
+                numbered_targets[
+                    (
+                        normalize_for_match(numbered.group("base")),
+                        _normalized_run_number(numbered.group("number")),
+                    )
+                ].add(sid)
+        for alias in parse_sample_aliases(card.get("sample_aliases")):
             alias_id = normalize_sample_id(str(alias))
-            if alias_id:
-                valid_ids.add(alias_id)
+            if alias_id and sid:
+                alias_targets[normalize_for_match(alias_id)].add(sid)
+
+    mention_ids: dict[str, str] = {}
     for mention in sample_mentions or []:
         sid = normalize_sample_id(
             mention.get("normalized_sample_id") or mention.get("mention_text") or ""
         )
         if sid:
-            valid_ids.add(sid)
+            mention_ids[normalize_for_match(sid)] = sid
 
     for fact in facts:
+        candidates = fact.get("candidate_sample_ids") or []
+        if isinstance(candidates, str):
+            try:
+                candidates = json.loads(candidates)
+            except json.JSONDecodeError:
+                candidates = [candidates]
+        resolved_candidates: list[str] = []
+        for candidate in candidates if isinstance(candidates, list) else []:
+            candidate_id = normalize_sample_id(str(candidate))
+            candidate_key = normalize_for_match(candidate_id)
+            targets = canonical_ids.get(candidate_key, set()) or alias_targets.get(
+                candidate_key, set()
+            )
+            if len(targets) == 1:
+                resolved_candidates.append(next(iter(targets)))
+            elif candidate_key in mention_ids:
+                resolved_candidates.append(mention_ids[candidate_key])
+        fact["candidate_sample_ids"] = list(dict.fromkeys(resolved_candidates))
+
         assigned = fact.get("assigned_sample_id")
         if not assigned:
             continue
         normalized = normalize_sample_id(str(assigned))
-        if normalized in valid_ids:
-            if normalized != assigned:
-                fact["assigned_sample_id"] = normalized
+        match_key = normalize_for_match(normalized)
+        exact_matches = canonical_ids.get(match_key, set())
+        alias_matches = alias_targets.get(match_key, set())
+        targets = exact_matches or alias_matches
+        if len(targets) == 1:
+            target = next(iter(targets))
+            if not _NUMBERED_CARD_SUFFIX_RE.match(target):
+                run_numbers = {
+                    _normalized_run_number(match.group(1))
+                    for match in _EXPLICIT_RUN_REFERENCE_RE.finditer(
+                        " ".join([
+                            str(fact.get("evidence_text") or ""),
+                            str(fact.get("condition") or ""),
+                        ])
+                    )
+                }
+                if len(run_numbers) == 1:
+                    run_number = next(iter(run_numbers))
+                    variants = numbered_targets.get(
+                        (normalize_for_match(target), run_number), set()
+                    )
+                    if len(variants) == 1:
+                        target = next(iter(variants))
+                        fact["assignment_reason"] = (
+                            f"{fact.get('assignment_reason') or ''}; explicit_run_catalog_match"
+                        ).strip("; ")
+            fact["assigned_sample_id"] = target
+            continue
+        if match_key in mention_ids:
+            fact["assigned_sample_id"] = mention_ids[match_key]
             continue
         fact["assigned_sample_id"] = None
         if fact.get("assignment_status") == "assigned":
             fact["assignment_status"] = "unassigned"
             fact["assignment_confidence"] = None
+        if len(targets) > 1:
+            fact["_alignment_review_required"] = True
     return facts
 
 
@@ -346,11 +459,14 @@ def postprocess_extracted_facts(
     """Run generic fact post-processing before sample assignment."""
     mentions = list(sample_mentions or [])
     facts = promote_measurable_facts(facts)
+    facts = sanitize_fact_sample_labels(facts)
     facts = expand_coupled_list_facts(facts)
     facts = expand_multi_entity_facts(facts)
+    facts = sanitize_fact_sample_labels(facts)
     mentions = enrich_sample_mentions_from_facts(facts, mentions)
     facts = assign_positional_fact_groups(facts)
     facts = expand_multi_entity_facts(facts)
+    facts = restore_unique_uncertainty_from_evidence(facts)
     facts = normalize_metrics_in_facts(facts)
     facts = merge_duplicate_facts(facts)
     return facts, mentions

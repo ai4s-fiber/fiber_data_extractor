@@ -60,6 +60,14 @@ EVIDENCE_ITEM_COLUMNS_POSTGRES = {
     "mineru_block_type": "VARCHAR(50)",
 }
 
+PAPER_COLUMNS_SQLITE = {
+    "content_sha256": "VARCHAR(64)",
+}
+
+PAPER_COLUMNS_POSTGRES = {
+    "content_sha256": "VARCHAR(64)",
+}
+
 
 async def _add_missing_sqlite_columns(conn, table_name: str, columns: dict[str, str]) -> None:
     rows = await conn.execute(text(f"PRAGMA table_info({table_name})"))
@@ -89,6 +97,9 @@ async def ensure_runtime_schema() -> None:
         dialect = conn.dialect.name
         if dialect == "sqlite":
             await _add_missing_sqlite_columns(
+                conn, "papers", PAPER_COLUMNS_SQLITE
+            )
+            await _add_missing_sqlite_columns(
                 conn, "extraction_jobs", EXTRACTION_JOB_COLUMNS_SQLITE
             )
             await _add_missing_sqlite_columns(
@@ -98,6 +109,9 @@ async def ensure_runtime_schema() -> None:
                 conn, "evidence_items", EVIDENCE_ITEM_COLUMNS_SQLITE
             )
         elif dialect == "postgresql":
+            await _add_missing_postgres_columns(
+                conn, "papers", PAPER_COLUMNS_POSTGRES
+            )
             await _add_missing_postgres_columns(
                 conn, "extraction_jobs", EXTRACTION_JOB_COLUMNS_POSTGRES
             )
@@ -127,12 +141,13 @@ async def ensure_runtime_schema() -> None:
             )
         )
 
-        if dialect == "postgresql":
-            await _ensure_postgres_indexes(conn)
+        if dialect in {"sqlite", "postgresql"}:
+            await _ensure_runtime_indexes(conn)
 
 
-POSTGRES_INDEXES = [
+RUNTIME_INDEXES = [
     "CREATE INDEX IF NOT EXISTS ix_papers_project_id ON papers (project_id)",
+    "CREATE INDEX IF NOT EXISTS ix_papers_project_sha256 ON papers (project_id, content_sha256)",
     "CREATE INDEX IF NOT EXISTS ix_candidate_records_project_paper ON candidate_records (project_id, source_paper_id)",
     "CREATE INDEX IF NOT EXISTS ix_candidate_records_review ON candidate_records (project_id, review_status)",
     "CREATE INDEX IF NOT EXISTS ix_extraction_jobs_status ON extraction_jobs (status, created_at)",
@@ -141,6 +156,6 @@ POSTGRES_INDEXES = [
 ]
 
 
-async def _ensure_postgres_indexes(conn) -> None:
-    for stmt in POSTGRES_INDEXES:
+async def _ensure_runtime_indexes(conn) -> None:
+    for stmt in RUNTIME_INDEXES:
         await conn.execute(text(stmt))

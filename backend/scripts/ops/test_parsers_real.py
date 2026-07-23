@@ -64,10 +64,18 @@ async def run_cloud_parse(pdf_path: Path) -> None:
     print("=========================================")
     client = MinerUClient()
     result = await client.parse_pdf(pdf_path, strategy="mineru_cloud")
+    page_indexes = {
+        item.get("page_idx", item.get("page_index", item.get("page_number")))
+        for item in [*result.content_list, *result.content_list_v2]
+        if isinstance(item, dict)
+    }
+    page_indexes.discard(None)
     print(f"[OK] Cloud parse completed: task_id={result.task_id}")
-    print(f"Pages: {len(result.pages)}")
-    print(f"Blocks: {len(result.blocks)}")
-    print(f"Markdown chars: {len(result.markdown)}")
+    print(f"Pages represented: {len(page_indexes)}")
+    print(f"Content list items: {len(result.content_list)}")
+    print(f"Content list v2 items: {len(result.content_list_v2)}")
+    print(f"Markdown chars: {len(result.md_content)}")
+    print(f"Elapsed seconds: {result.elapsed_seconds:.1f}")
 
 
 async def main() -> None:

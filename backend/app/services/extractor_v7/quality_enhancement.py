@@ -3,15 +3,11 @@
 from __future__ import annotations
 
 import re
-from typing import Any
 
 from app.services.extractor_v7.validators import is_background_or_reference_fact
 from app.services.grouping import normalize_for_match, normalize_sample_id
 from app.services.metrics_dictionary import find_metric_canonical
-from app.services.extractor_v7.data_source_classify import (
-    apply_data_source_classification,
-    _text_has_comparison_signal,
-)
+from app.services.extractor_v7.data_source_classify import apply_data_source_classification
 
 TRANSPARENT_THEME_HINTS = (
     "electromagnetic wave-transparent",

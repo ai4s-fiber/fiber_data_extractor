@@ -1,8 +1,11 @@
 """Config validation tests."""
 
 import asyncio
+import io
 import json
+import zipfile
 
+import httpx
 import pytest
 
 from app.core.config import Settings
@@ -12,6 +15,7 @@ from app.services.mineru_client import (
     MinerUClient,
     MinerUParseResult,
     MinerUUnavailable,
+    build_cloud_batch_upload_payload,
     build_cloud_upload_payload,
     build_local_parse_form_data,
 )
@@ -39,11 +43,28 @@ def test_default_llm_uses_gpt55_gateway_with_batch_budget():
     assert settings.DEFAULT_LLM_PROVIDER == "openai"
     assert settings.DEFAULT_LLM_BASE_URL == "https://aigw.sotatts.online/v1"
     assert settings.DEFAULT_LLM_MODEL == "gpt-5.5"
-    assert settings.EXTRACTION_MAX_CONCURRENT_JOBS == 2
+    assert settings.EXTRACTION_MAX_CONCURRENT_JOBS == 3
+    assert settings.EXTRACTION_MAX_ATTEMPTS == 2
+    assert settings.EXTRACTION_PIPELINE_TIMEOUT_SECONDS == 1800
     assert settings.STRONG_LLM_PARALLEL_CALLS == 4
-    assert settings.LLM_GLOBAL_MAX_CONCURRENT_CALLS == 12
-    assert settings.LLM_BATCH_MAX_CONCURRENT_CALLS == 8
+    assert settings.STRONG_HOLISTIC_SAMPLE_MAX_CHARS == 16000
+    assert settings.STRONG_HOLISTIC_CATALOG_REASONING_EFFORT == "low"
+    assert settings.STRONG_HOLISTIC_PERFORMANCE_TIMEOUT_SECONDS == 180
+    assert settings.STRONG_HOLISTIC_PERFORMANCE_WINDOW_CHARS == 9000
+    assert settings.STRONG_HOLISTIC_WINDOW_OVERLAP_BLOCKS == 1
+    assert settings.STRONG_HOLISTIC_PARALLEL_CALLS == 3
+    assert settings.STRONG_HOLISTIC_BACKGROUND_TIMEOUT_SECONDS == 60
+    assert settings.STRONG_HOLISTIC_BACKGROUND_MAX_CHARS == 9000
+    assert settings.STRONG_HOLISTIC_BACKGROUND_MAX_TOKENS == 1400
+    assert settings.STRONG_TABLE_LLM_TIMEOUT_SECONDS == 75
+    assert settings.STRONG_STAGE2_PARTIAL_FAILURE_MIN_FACTS == 3
+    assert settings.LLM_REQUEST_MAX_RETRIES == 3
+    assert settings.LLM_GLOBAL_MAX_CONCURRENT_CALLS == 16
+    assert settings.LLM_BATCH_MAX_CONCURRENT_CALLS == 12
     assert settings.LLM_INTERACTIVE_RESERVED_CALLS == 4
+    assert settings.MINERU_CLOUD_BATCH_SIZE == 20
+    assert settings.MINERU_CLOUD_UPLOAD_CONCURRENCY == 8
+    assert settings.MINERU_CLOUD_MAX_RETRIES == 4
 
 
 def test_strong_chunk_limits_sane():
@@ -86,6 +107,18 @@ def test_mineru_payload_builders_follow_runtime_settings(monkeypatch):
     assert payload["enable_formula"] is False
     assert payload["files"][0]["page_ranges"] == "1-5"
     assert payload["files"][0]["is_ocr"] is True
+    batch_payload = build_cloud_batch_upload_payload(
+        ["first.pdf", "second.pdf"],
+        ["data-1", "data-2"],
+    )
+    assert [item["name"] for item in batch_payload["files"]] == [
+        "first.pdf",
+        "second.pdf",
+    ]
+    assert [item["data_id"] for item in batch_payload["files"]] == [
+        "data-1",
+        "data-2",
+    ]
 
     monkeypatch.setattr(mineru_client.settings, "MINERU_BACKEND", "hybrid-engine")
     monkeypatch.setattr(mineru_client.settings, "MINERU_HYBRID_EFFORT", "medium")
@@ -137,11 +170,19 @@ def test_mineru_artifact_cache_round_trip(tmp_path, monkeypatch):
 async def test_llm_concurrency_guard_and_per_job_budget(monkeypatch):
     import app.services.llm_concurrency as llm_concurrency
 
-    monkeypatch.setattr(llm_concurrency.settings, "LLM_GLOBAL_MAX_CONCURRENT_CALLS", 2)
+    monkeypatch.setattr(llm_concurrency.settings, "LLM_GLOBAL_MAX_CONCURRENT_CALLS", 12)
     monkeypatch.setattr(llm_concurrency.settings, "LLM_BATCH_MAX_CONCURRENT_CALLS", 8)
+    monkeypatch.setattr(llm_concurrency.settings, "LLM_INTERACTIVE_RESERVED_CALLS", 4)
     monkeypatch.setattr(llm_concurrency.settings, "EXTRACTION_MAX_CONCURRENT_JOBS", 2)
+    assert llm_concurrency.configured_batch_llm_limit() == 8
     assert llm_concurrency.per_job_llm_parallel_limit(10) == 4
     assert llm_concurrency.per_job_llm_parallel_limit(3) == 3
+
+    monkeypatch.setattr(llm_concurrency.settings, "LLM_GLOBAL_MAX_CONCURRENT_CALLS", 6)
+    assert llm_concurrency.configured_batch_llm_limit() == 2
+    assert llm_concurrency.per_job_llm_parallel_limit(10) == 1
+
+    monkeypatch.setattr(llm_concurrency.settings, "LLM_GLOBAL_MAX_CONCURRENT_CALLS", 2)
 
     active = 0
     max_active = 0
@@ -168,6 +209,156 @@ async def test_mineru_cloud_requires_token_before_network(tmp_path):
 
     with pytest.raises(MinerUUnavailable, match="MINERU_CLOUD_TOKEN"):
         await MinerUClient(token="").parse_pdf_cloud(pdf_path)
+
+
+def _mineru_result_zip(markdown: str) -> bytes:
+    target = io.BytesIO()
+    with zipfile.ZipFile(target, "w") as archive:
+        archive.writestr("full.md", markdown)
+        archive.writestr(
+            "content_list.json",
+            json.dumps([{"type": "text", "text": markdown}]),
+        )
+    return target.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_mineru_cloud_batch_yields_success_and_isolated_failure(
+    tmp_path,
+    monkeypatch,
+):
+    first = tmp_path / "first.pdf"
+    second = tmp_path / "second.pdf"
+    first.write_bytes(b"%PDF-1.4 first")
+    second.write_bytes(b"%PDF-1.4 second")
+    submitted_files = []
+    submitted_checkpoint = {}
+    uploaded = set()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal submitted_files
+        if request.method == "POST":
+            submitted_files = json.loads((await request.aread()).decode("utf-8"))["files"]
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "msg": "ok",
+                    "data": {
+                        "batch_id": "batch-1",
+                        "file_urls": [
+                            "https://upload.test/0",
+                            "https://upload.test/1",
+                        ],
+                    },
+                },
+            )
+        if request.method == "PUT":
+            uploaded.add(request.url.path)
+            await request.aread()
+            return httpx.Response(200)
+        if request.url.host == "mineru.net":
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "msg": "ok",
+                    "data": {
+                        "batch_id": "batch-1",
+                        "extract_result": [
+                            {
+                                "file_name": submitted_files[0]["name"],
+                                "data_id": submitted_files[0]["data_id"],
+                                "state": "done",
+                                "full_zip_url": "https://download.test/0.zip",
+                            },
+                            {
+                                "file_name": submitted_files[1]["name"],
+                                "data_id": submitted_files[1]["data_id"],
+                                "state": "failed",
+                                "err_msg": "bad PDF",
+                            },
+                        ],
+                    },
+                },
+            )
+        if request.url.host == "download.test":
+            return httpx.Response(200, content=_mineru_result_zip("# Parsed first"))
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    monkeypatch.setattr("app.services.mineru_client.settings.MINERU_CLOUD_MAX_RETRIES", 0)
+    transport = httpx.MockTransport(handler)
+    client = MinerUClient(token="test-token", transport=transport)
+
+    async def remember_batch(batch_id, path_by_data_id):
+        submitted_checkpoint["batch_id"] = batch_id
+        submitted_checkpoint["paths"] = path_by_data_id
+
+    outcomes = [
+        outcome
+        async for outcome in client.iter_parse_pdfs_cloud_batch(
+            [first, second],
+            upload_concurrency=2,
+            on_submitted=remember_batch,
+        )
+    ]
+
+    by_name = {outcome.path.name: outcome for outcome in outcomes}
+    assert uploaded == {"/0", "/1"}
+    assert submitted_checkpoint["batch_id"] == "batch-1"
+    assert len(submitted_checkpoint["paths"]) == 2
+    assert by_name["first.pdf"].ok is True
+    assert by_name["first.pdf"].result.md_content == "# Parsed first"
+    assert by_name["second.pdf"].ok is False
+    assert "bad PDF" in str(by_name["second.pdf"].error)
+
+
+@pytest.mark.asyncio
+async def test_mineru_cloud_can_resume_existing_batch(tmp_path, monkeypatch):
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(b"%PDF-1.4 resumable")
+    methods = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        methods.append(request.method)
+        if request.url.host == "mineru.net":
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "msg": "ok",
+                    "data": {
+                        "batch_id": "batch-resume",
+                        "extract_result": [{
+                            "file_name": pdf.name,
+                            "data_id": "data-resume",
+                            "state": "done",
+                            "full_zip_url": "https://download.test/resume.zip",
+                        }],
+                    },
+                },
+            )
+        if request.url.host == "download.test":
+            return httpx.Response(200, content=_mineru_result_zip("# Resumed"))
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    monkeypatch.setattr("app.services.mineru_client.settings.MINERU_CLOUD_MAX_RETRIES", 0)
+    client = MinerUClient(
+        token="test-token",
+        transport=httpx.MockTransport(handler),
+    )
+    outcomes = [
+        outcome
+        async for outcome in client.iter_existing_cloud_batch(
+            "batch-resume",
+            {"data-resume": pdf},
+        )
+    ]
+
+    assert methods == ["GET", "GET"]
+    assert len(outcomes) == 1
+    assert outcomes[0].ok is True
+    assert outcomes[0].result.md_content == "# Resumed"
 
 
 @pytest.mark.asyncio

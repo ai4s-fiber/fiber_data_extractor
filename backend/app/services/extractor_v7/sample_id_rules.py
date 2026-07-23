@@ -40,6 +40,14 @@ _INFERRED_LOADING_RE = re.compile(
 _INFERRED_PLAIN_PERCENT_RE = re.compile(
     r"(?i)[-\s](\d+(?:\.\d+)?)\s*%(?!\s*strain)"
 )
+_SEMICOLON_RUN_SUFFIX_RE = re.compile(
+    r"(?i)^(?:sample|specimen|run|no\.?)\s*[-#:]?\s*\d+(?:\.\d+)?$"
+)
+_SEMICOLON_CONTEXT_SUFFIX_RE = re.compile(
+    r"(?i)^(?:(?:optimum|optimal|optimized|optimised|best|selected|"
+    r"representative|average|mean)\b.*\b(?:sample|specimen|material|fibers?)s?|"
+    r"sample\s+(?:showing|with|at|under)\b.+)$"
+)
 
 
 def is_condition_only_label(text: str) -> bool:
@@ -138,6 +146,17 @@ def sanitize_sample_id(sample_id: str, evidence: str = "") -> tuple[str, str, li
         notes.append("sample_id_was_condition_only")
         return "", sid, notes
 
+    condition_appendix = ""
+    if ";" in sid and not is_explicit_sample_name_in_evidence(sid, evidence):
+        base, suffix = (part.strip() for part in sid.split(";", 1))
+        if base and _SEMICOLON_RUN_SUFFIX_RE.fullmatch(suffix):
+            sid = normalize_sample_id(f"{base} {suffix}")
+            notes.append("normalized_semicolon_run_sample_id")
+        elif base and _SEMICOLON_CONTEXT_SUFFIX_RE.fullmatch(suffix):
+            sid = normalize_sample_id(base)
+            condition_appendix = suffix
+            notes.append("moved_contextual_sample_suffix_to_condition")
+
     sid, temp_notes = strip_inferred_temperature_suffix(sid, evidence)
     notes.extend(temp_notes)
     sid, load_notes = strip_inferred_loading_suffix(sid, evidence)
@@ -148,12 +167,16 @@ def sanitize_sample_id(sample_id: str, evidence: str = "") -> tuple[str, str, li
         condition_bit = trailing.group(0).strip()
         sid = _TRAILING_CONDITION_RE.sub("", sid).strip(" -_")
         notes.append("stripped_trailing_condition_from_sample_id")
-        return normalize_sample_id(sid), condition_bit, notes
+        merged_condition = "; ".join(
+            value for value in (condition_appendix, condition_bit) if value
+        )
+        return normalize_sample_id(sid), merged_condition, notes
 
     if not is_explicit_sample_name_in_evidence(sid, evidence) and is_condition_only_label(
         sid.split()[-1] if " " in sid else sid
     ):
         notes.append("sample_id_not_explicit_in_evidence")
-        return "", sid, notes
+        merged_condition = "; ".join(value for value in (condition_appendix, sid) if value)
+        return "", merged_condition, notes
 
-    return sid, "", notes
+    return sid, condition_appendix, notes

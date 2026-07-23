@@ -54,6 +54,8 @@ class BenchmarkPaperResult:
     coverage: dict[str, int] | None = None
     error: str = ""
     error_traceback: str = ""
+    skipped: bool = False
+    skip_reason: str = ""
 
 
 def _quality_score(rows: list) -> tuple[float, dict[str, int]]:
@@ -68,6 +70,16 @@ def _quality_score(rows: list) -> tuple[float, dict[str, int]]:
             "with_process": 0,
             "with_structure": 0,
             "with_performance": 0,
+            "qa_flagged": 0,
+            "actionable_qa": 0,
+            "duplicate_rows": 0,
+            "table_grounded": 0,
+            "narrative": 0,
+            "low_confidence": 0,
+            "process_rows": 0,
+            "deterministic_process_rows": 0,
+            "deterministic_performance_rows": 0,
+            "core_performance_rows": 0,
         }
 
     coverage = {
@@ -80,7 +92,18 @@ def _quality_score(rows: list) -> tuple[float, dict[str, int]]:
         "with_process": 0,
         "with_structure": 0,
         "with_performance": 0,
+        "qa_flagged": 0,
+        "actionable_qa": 0,
+        "duplicate_rows": 0,
+        "table_grounded": 0,
+        "narrative": 0,
+        "low_confidence": 0,
+        "process_rows": 0,
+        "deterministic_process_rows": 0,
+        "deterministic_performance_rows": 0,
+        "core_performance_rows": 0,
     }
+    semantic_keys: set[tuple[str, ...]] = set()
     for row in rows:
         if getattr(row, "sample_id", None):
             coverage["with_sample"] += 1
@@ -105,13 +128,79 @@ def _quality_score(rows: list) -> tuple[float, dict[str, int]]:
         if getattr(row, "performance_metric", None) and getattr(row, "performance_value", None):
             coverage["with_performance"] += 1
 
+        review_text = " ".join([
+            str(getattr(row, "reviewer_comment", None) or ""),
+            str(getattr(row, "performance_condition", None) or ""),
+        ]).lower()
+        qa_flagged = any(marker in review_text for marker in (
+            "qa_reason=", "checklist_failed", "export_tier_b_review",
+        ))
+        if qa_flagged:
+            coverage["qa_flagged"] += 1
+        method = str(getattr(row, "extraction_method", None) or "")
+        deterministic_process = method == "rule_table_process"
+        deterministic_performance = method == "rule_table_performance"
+        process_row = deterministic_process or "fact_type=process" in review_text
+        if process_row:
+            coverage["process_rows"] += 1
+        if deterministic_process:
+            coverage["deterministic_process_rows"] += 1
+        if deterministic_performance:
+            coverage["deterministic_performance_rows"] += 1
+        if "export_target=core_final_records" in review_text and not process_row:
+            coverage["core_performance_rows"] += 1
+
+        actionable_markers = (
+            "alignment_review_required", "background_or_reference",
+            "checklist_failed", "comparison_literature", "evidence_audit_failed",
+            "export_tier_b_review", "metric_unit_mismatch", "rough_source_location",
+        )
+        expected_process_review = (
+            deterministic_process
+            and "qa_reason=fact_type=process" in review_text
+            and not any(marker in review_text for marker in actionable_markers)
+        )
+        if qa_flagged and not expected_process_review:
+            coverage["actionable_qa"] += 1
+
+        if method in {
+            "AI_holistic_table", "rule_table_process", "rule_table_performance",
+        }:
+            coverage["table_grounded"] += 1
+        else:
+            coverage["narrative"] += 1
+        confidence = getattr(row, "ai_confidence", None)
+        if confidence is not None and float(confidence) < 0.7:
+            coverage["low_confidence"] += 1
+
+        condition = str(getattr(row, "performance_condition", None) or "")
+        condition = condition.split("; export_tier_", 1)[0]
+        key = tuple(
+            " ".join(str(value or "").lower().split())
+            for value in (
+                getattr(row, "sample_id", None),
+                getattr(row, "performance_metric", None),
+                getattr(row, "performance_value", None),
+                getattr(row, "performance_unit", None),
+                condition,
+            )
+        )
+        if key in semantic_keys:
+            coverage["duplicate_rows"] += 1
+        else:
+            semantic_keys.add(key)
+
     weighted = (
         coverage["with_sample"]
         + coverage["with_metric"]
         + coverage["with_value"]
         + coverage["with_evidence"]
     )
-    return round(weighted / (len(rows) * 4), 4), coverage
+    completeness = weighted / (len(rows) * 4)
+    clean_ratio = 1 - coverage["actionable_qa"] / len(rows)
+    unique_ratio = 1 - coverage["duplicate_rows"] / len(rows)
+    score = 0.55 * completeness + 0.30 * clean_ratio + 0.15 * unique_ratio
+    return round(score, 4), coverage
 
 
 def _metrics_rollup(metrics) -> dict[str, int | float]:
@@ -273,13 +362,28 @@ async def _run(args: argparse.Namespace) -> dict:
                     "candidate_count": len(rows),
                     "fact_count": len(facts),
                     "quality_score": score,
+                    "quality_score_note": (
+                        "Automated proxy: 55% field completeness, 30% actionable-review-free ratio, "
+                        "15% semantic uniqueness. Manual source verification is still required."
+                    ),
                     "coverage": coverage,
+                    "skipped": bool(result.get("skipped")),
+                    "skip_reason": result.get("skip_reason") or "",
                 }
                 (report_root / f"{pdf.stem}.benchmark.json").write_text(
                     json.dumps(paper_report, ensure_ascii=False, indent=2),
                     encoding="utf-8",
                 )
-                results.append(BenchmarkPaperResult(pdf.name, True, elapsed_ms, len(rows), score, coverage))
+                results.append(BenchmarkPaperResult(
+                    pdf.name,
+                    True,
+                    elapsed_ms,
+                    len(rows),
+                    score,
+                    coverage,
+                    skipped=bool(result.get("skipped")),
+                    skip_reason=result.get("skip_reason") or "",
+                ))
                 write_summary()
                 print(
                     f"[{paper_index}/{len(pdfs)}] done {pdf.name}: "
@@ -305,8 +409,18 @@ async def _run(args: argparse.Namespace) -> dict:
 
 def main() -> None:
     args = _parse_args()
-    summary = asyncio.run(_run(args))
+    summary = asyncio.run(_run_cli(args))
     print(json.dumps(summary, ensure_ascii=False, indent=2))
+
+
+async def _run_cli(args: argparse.Namespace) -> dict:
+    """Run one CLI benchmark and deterministically release DB worker threads."""
+    try:
+        return await _run(args)
+    finally:
+        database_module = sys.modules.get("app.core.database")
+        if database_module is not None:
+            await database_module.close_database()
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ pypdf==4.2.0
 PyMuPDF>=1.23
 pdfplumber>=0.10
 openai>=1.30
+json-repair==0.61.7
 httpx[socks]>=0.23
 redis>=5.2.0
 pytest==8.3.4

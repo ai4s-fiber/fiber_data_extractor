@@ -8,9 +8,12 @@ on stable block/table/figure anchors.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import inspect
 import re
+import uuid
+from html.parser import HTMLParser
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,7 +31,7 @@ from app.models.document_parse import (
     DocumentTable,
 )
 from app.models.paper import Paper
-from app.services.chunking import classify_section
+from app.services.chunking import classify_section, classify_section_transition
 from app.services.extractor_v7.exceptions import ExtractionCancelled
 from app.services.job_cancellation import run_with_cancel_poll
 from app.services.mineru_client import (
@@ -133,12 +136,20 @@ class DocumentContext:
     def chunks(self) -> list[dict[str, Any]]:
         chunks: list[dict[str, Any]] = []
         for block in self.blocks:
-            text = (block.text or block.html or "").strip()
+            source_type = _source_type_for_block(block.block_type)
+            if source_type == "table_text" and block.html:
+                table_text = table_html_to_tsv(block.html)
+                text = "\n".join(
+                    part for part in ((block.text or "").strip(), table_text) if part
+                )
+            else:
+                text = (block.text or block.html or "").strip()
             if not text:
                 continue
-            source_type = _source_type_for_block(block.block_type)
             chunk = {
                 "page_number": block.page_number,
+                "order_index": block.order_index,
+                "block_type": block.block_type,
                 "section_name": block.section_name,
                 "source_type": source_type,
                 "raw_text": text,
@@ -151,6 +162,66 @@ class DocumentContext:
                 chunk["has_figure_image"] = True
             chunks.append(chunk)
         return chunks
+
+
+@dataclass(slots=True)
+class ReusableMinerUArtifact:
+    result: MinerUParseResult
+    raw_result_path: str
+    markdown_path: str
+    source_run: DocumentParseRun | None = None
+
+
+class _TableHTMLParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.rows: list[list[str]] = []
+        self._row: list[str] | None = None
+        self._cell_parts: list[str] | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() == "tr":
+            self._row = []
+        elif tag.lower() in {"td", "th"} and self._row is not None:
+            self._cell_parts = []
+
+    def handle_data(self, data: str) -> None:
+        if self._cell_parts is not None:
+            self._cell_parts.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        lower = tag.lower()
+        if lower in {"td", "th"} and self._row is not None and self._cell_parts is not None:
+            value = re.sub(r"\s+", " ", " ".join(self._cell_parts)).strip()
+            self._row.append(value)
+            self._cell_parts = None
+        elif lower == "tr" and self._row is not None:
+            if any(cell for cell in self._row):
+                self.rows.append(self._row)
+            self._row = None
+            self._cell_parts = None
+
+
+def table_html_to_tsv(html: str) -> str:
+    """Convert MinerU table HTML into compact, row-addressable TSV text."""
+    if not (html or "").strip():
+        return ""
+    parser = _TableHTMLParser()
+    try:
+        parser.feed(html)
+        parser.close()
+    except Exception:
+        return re.sub(r"<[^>]+>", " ", html).strip()
+    if not parser.rows:
+        return re.sub(r"<[^>]+>", " ", html).strip()
+
+    width = max(len(row) for row in parser.rows)
+    rows = [row + [""] * (width - len(row)) for row in parser.rows]
+    header = "\t".join(rows[0])
+    lines = [f"[columns]\t{header}"]
+    for index, row in enumerate(rows[1:], start=1):
+        lines.append(f"[row {index}]\t" + "\t".join(row))
+    return "\n".join(lines)
 
 
 def _source_type_for_block(block_type: str) -> str:
@@ -311,6 +382,8 @@ def build_document_context_from_mineru_result(
     tables: list[DocumentTableData] = []
     figures: list[DocumentFigureData] = []
     order_index = 0
+    current_section: str | None = None
+    current_major_section: int | None = None
 
     for page_number, item in source_items:
         block_type = _normalize_block_type(item)
@@ -319,7 +392,22 @@ def build_document_context_from_mineru_result(
         if not isinstance(bbox, list):
             bbox = None
         block_id = f"B{order_index + 1:06d}"
-        section = classify_section(text or caption or html, page_number)
+        raw_heading_level = item.get("text_level")
+        try:
+            heading_level = int(raw_heading_level) if raw_heading_level is not None else None
+        except (TypeError, ValueError):
+            heading_level = None
+        section, next_major_section = classify_section_transition(
+            text or caption or html,
+            page_number,
+            current_section,
+            current_major_section,
+            block_type=block_type,
+            heading_level=heading_level,
+        )
+        if block_type not in {"header_footer", "page_number"}:
+            current_section = section
+            current_major_section = next_major_section
         blocks.append(
             DocumentBlockData(
                 block_id=block_id,
@@ -406,11 +494,48 @@ def _mineru_parse_cache_key(parser_strategy: str) -> dict[str, Any]:
     }
 
 
+def _file_sha256(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def file_sha256(path: str | Path) -> str:
+    """Public streaming hash helper used by resumable ingestion tooling."""
+    return _file_sha256(str(path))
+
+
+def _cache_key_digest(parser_strategy: str) -> str:
+    payload = json.dumps(
+        _mineru_parse_cache_key(parser_strategy),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("ascii")
+    return hashlib.sha256(payload).hexdigest()[:20]
+
+
+def _shared_artifact_paths(
+    document_sha256: str,
+    parser_strategy: str,
+) -> tuple[Path, Path]:
+    root = (
+        Path(settings.PARSE_ARTIFACT_DIR)
+        / "_cache"
+        / document_sha256
+        / _cache_key_digest(parser_strategy)
+    )
+    return root / "mineru_result.json", root / "mineru.md"
+
+
 def _load_mineru_parse_result_from_artifacts(
     *,
     raw_result_path: str,
     markdown_path: str,
     expected_cache_key: dict[str, Any],
+    expected_document_sha256: str = "",
 ) -> MinerUParseResult | None:
     raw_path = Path(raw_result_path)
     md_path = Path(markdown_path)
@@ -428,6 +553,13 @@ def _load_mineru_parse_result_from_artifacts(
     if not isinstance(artifact, dict):
         return None
     if artifact.get("cache_key") != expected_cache_key:
+        return None
+    artifact_sha256 = str(artifact.get("document_sha256") or "")
+    if (
+        expected_document_sha256
+        and artifact_sha256
+        and artifact_sha256 != expected_document_sha256
+    ):
         return None
 
     content_list = artifact.get("content_list")
@@ -451,7 +583,8 @@ async def _find_reusable_mineru_result(
     db: AsyncSession,
     paper_id: int,
     parser_strategy: str,
-) -> tuple[DocumentParseRun, MinerUParseResult] | None:
+    document_sha256: str,
+) -> ReusableMinerUArtifact | None:
     if not settings.MINERU_REUSE_PARSE_ARTIFACTS:
         return None
     if not parser_strategy.startswith("mineru_"):
@@ -474,9 +607,32 @@ async def _find_reusable_mineru_result(
             raw_result_path=parse_run.raw_result_path or "",
             markdown_path=parse_run.markdown_path or "",
             expected_cache_key=expected_cache_key,
+            expected_document_sha256=document_sha256,
         )
         if loaded is not None:
-            return parse_run, loaded
+            return ReusableMinerUArtifact(
+                result=loaded,
+                raw_result_path=parse_run.raw_result_path or "",
+                markdown_path=parse_run.markdown_path or "",
+                source_run=parse_run,
+            )
+
+    raw_path, markdown_path = _shared_artifact_paths(
+        document_sha256,
+        parser_strategy,
+    )
+    loaded = _load_mineru_parse_result_from_artifacts(
+        raw_result_path=str(raw_path),
+        markdown_path=str(markdown_path),
+        expected_cache_key=expected_cache_key,
+        expected_document_sha256=document_sha256,
+    )
+    if loaded is not None:
+        return ReusableMinerUArtifact(
+            result=loaded,
+            raw_result_path=str(raw_path),
+            markdown_path=str(markdown_path),
+        )
     return None
 
 
@@ -653,6 +809,10 @@ async def parse_pdf_to_document_context(
     if parser_strategy not in VALID_DOCUMENT_PARSER_STRATEGIES:
         raise ValueError(f"Unsupported document parser strategy: {parser_strategy}")
 
+    document_sha256 = ""
+    if settings.MINERU_REUSE_PARSE_ARTIFACTS and parser_strategy.startswith("mineru_"):
+        document_sha256 = await asyncio.to_thread(_file_sha256, pdf_path)
+
     parse_run = DocumentParseRun(
         paper_id=paper.id,
         job_id=job_id,
@@ -674,14 +834,23 @@ async def parse_pdf_to_document_context(
         if parser_strategy == "mineru_cloud":
             artifact_strategy = parser_strategy
             try:
-                reusable = await _find_reusable_mineru_result(db, paper.id, parser_strategy)
+                reusable = await _find_reusable_mineru_result(
+                    db,
+                    paper.id,
+                    parser_strategy,
+                    document_sha256,
+                )
                 if reusable is not None:
-                    cached_run, result = reusable
+                    result = reusable.result
                     parse_run.parse_method = "artifact_reuse"
-                    parse_run.mineru_task_id = cached_run.mineru_task_id
+                    parse_run.mineru_task_id = (
+                        reusable.source_run.mineru_task_id
+                        if reusable.source_run is not None
+                        else result.task_id
+                    )
                     parse_run.mineru_backend = result.backend
-                    parse_run.raw_result_path = cached_run.raw_result_path
-                    parse_run.markdown_path = cached_run.markdown_path
+                    parse_run.raw_result_path = reusable.raw_result_path
+                    parse_run.markdown_path = reusable.markdown_path
                     if progress_callback:
                         await _maybe_await(progress_callback("inventory", 12, "复用已有 MinerU Cloud 解析产物，跳过重新解析..."))
                 else:
@@ -720,6 +889,7 @@ async def parse_pdf_to_document_context(
                     job_id,
                     result,
                     artifact_strategy,
+                    document_sha256,
                 )
             context = await asyncio.to_thread(
                 build_document_context_from_mineru_result,
@@ -738,14 +908,23 @@ async def parse_pdf_to_document_context(
                         else "正在提交本地 MinerU 异步解析任务..."
                     )
                     await _maybe_await(progress_callback("inventory", 3, message))
-                reusable = await _find_reusable_mineru_result(db, paper.id, parser_strategy)
+                reusable = await _find_reusable_mineru_result(
+                    db,
+                    paper.id,
+                    parser_strategy,
+                    document_sha256,
+                )
                 if reusable is not None:
-                    cached_run, result = reusable
+                    result = reusable.result
                     parse_run.parse_method = "artifact_reuse"
-                    parse_run.mineru_task_id = cached_run.mineru_task_id
+                    parse_run.mineru_task_id = (
+                        reusable.source_run.mineru_task_id
+                        if reusable.source_run is not None
+                        else result.task_id
+                    )
                     parse_run.mineru_backend = result.backend
-                    parse_run.raw_result_path = cached_run.raw_result_path
-                    parse_run.markdown_path = cached_run.markdown_path
+                    parse_run.raw_result_path = reusable.raw_result_path
+                    parse_run.markdown_path = reusable.markdown_path
                     if progress_callback:
                         await _maybe_await(progress_callback("inventory", 12, "复用已有 MinerU 解析产物，跳过重新解析..."))
                 else:
@@ -762,6 +941,7 @@ async def parse_pdf_to_document_context(
                         job_id,
                         result,
                         parser_strategy,
+                        document_sha256,
                     )
                 context = await asyncio.to_thread(
                     build_document_context_from_mineru_result,
@@ -855,14 +1035,19 @@ def _write_parse_artifacts(
     job_id: int | None,
     result: MinerUParseResult,
     parser_strategy: str,
+    document_sha256: str = "",
 ) -> tuple[str, str]:
-    root = Path(settings.PARSE_ARTIFACT_DIR) / str(paper_id) / str(job_id or "manual")
-    root.mkdir(parents=True, exist_ok=True)
-    raw_path = root / "mineru_result.json"
-    md_path = root / "mineru.md"
+    if settings.MINERU_REUSE_PARSE_ARTIFACTS and document_sha256:
+        raw_path, md_path = _shared_artifact_paths(document_sha256, parser_strategy)
+    else:
+        root = Path(settings.PARSE_ARTIFACT_DIR) / str(paper_id) / str(job_id or "manual")
+        raw_path = root / "mineru_result.json"
+        md_path = root / "mineru.md"
+    raw_path.parent.mkdir(parents=True, exist_ok=True)
     raw_result = dict(result.raw_result or {})
     raw_result["_fiber_extractor_mineru_artifact"] = {
         "cache_key": _mineru_parse_cache_key(parser_strategy),
+        "document_sha256": document_sha256,
         "task_id": result.task_id,
         "backend": result.backend,
         "version": result.version,
@@ -871,6 +1056,58 @@ def _write_parse_artifacts(
         "content_list_v2": result.content_list_v2,
         "middle_json": result.middle_json,
     }
-    raw_path.write_text(json.dumps(raw_result, ensure_ascii=False, indent=2), encoding="utf-8")
-    md_path.write_text(result.md_content or "", encoding="utf-8")
+    # Keep temporary names short enough for default Windows path limits. The
+    # content hash and parser hash already make the parent directory long.
+    temp_id = uuid.uuid4().hex[:8]
+    raw_temp = raw_path.with_name(f".r-{temp_id}.tmp")
+    md_temp = md_path.with_name(f".m-{temp_id}.tmp")
+    try:
+        raw_temp.write_text(
+            json.dumps(raw_result, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        md_temp.write_text(result.md_content or "", encoding="utf-8")
+        raw_temp.replace(raw_path)
+        md_temp.replace(md_path)
+    finally:
+        raw_temp.unlink(missing_ok=True)
+        md_temp.unlink(missing_ok=True)
     return str(raw_path), str(md_path)
+
+
+def load_shared_mineru_artifact(
+    document_sha256: str,
+    parser_strategy: str = "mineru_cloud",
+) -> MinerUParseResult | None:
+    """Load a content-addressed MinerU artifact without creating database rows."""
+    if not document_sha256 or not parser_strategy.startswith("mineru_"):
+        return None
+    raw_path, markdown_path = _shared_artifact_paths(
+        document_sha256,
+        parser_strategy,
+    )
+    return _load_mineru_parse_result_from_artifacts(
+        raw_result_path=str(raw_path),
+        markdown_path=str(markdown_path),
+        expected_cache_key=_mineru_parse_cache_key(parser_strategy),
+        expected_document_sha256=document_sha256,
+    )
+
+
+def persist_shared_mineru_artifact(
+    result: MinerUParseResult,
+    document_sha256: str,
+    parser_strategy: str = "mineru_cloud",
+) -> tuple[str, str]:
+    """Atomically prefill the cache consumed by normal extraction jobs."""
+    if not document_sha256:
+        raise ValueError("document_sha256 is required for a shared MinerU artifact")
+    if not parser_strategy.startswith("mineru_"):
+        raise ValueError("Shared artifacts are supported only for MinerU strategies")
+    return _write_parse_artifacts(
+        paper_id=0,
+        job_id=None,
+        result=result,
+        parser_strategy=parser_strategy,
+        document_sha256=document_sha256,
+    )

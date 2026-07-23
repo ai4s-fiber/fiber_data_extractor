@@ -1,7 +1,7 @@
 """Page inventory model — per-page metadata for extraction planning."""
 
 from datetime import datetime, timezone
-from sqlalchemy import String, Text, Integer, Float, Boolean, DateTime, ForeignKey
+from sqlalchemy import Text, Integer, Float, Boolean, DateTime, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base

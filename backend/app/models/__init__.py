@@ -17,3 +17,21 @@ from app.models.document_parse import (
     DocumentTable,
     DocumentFigure,
 )
+
+__all__ = [
+    "Base",
+    "Project",
+    "Paper",
+    "ExtractionJob",
+    "PageInventory",
+    "CandidateRecord",
+    "EvidenceItem",
+    "ReviewLog",
+    "ExportJob",
+    "SampleCatalog",
+    "FactCandidate",
+    "DocumentParseRun",
+    "DocumentBlock",
+    "DocumentTable",
+    "DocumentFigure",
+]

@@ -39,12 +39,12 @@ Rules:
    - "A1 (v1), A2 (v2), A3 (v3) and B (v4)" → four separate facts; do NOT merge all values onto A1/A2/A3.
    - "permittivity of 1.004 and loss tangent of 8e-4" → two facts with dielectric_constant=1.004 and loss_tangent=8e-4.
    - Target sample vs control sample in one sentence → separate facts; never attach control values to target sample.
-5. Each fact MUST include evidence_text (quote the original text) and source_location (page/table/figure).
+5. Each fact MUST include evidence_text (quote the original text), source_location (page/table/figure), source_block_id, and source_page copied from the exact input block header.
 6. candidate_sample_ids: sample names aligned with this fact's value only.
 7. Keep full sample IDs (Sample-1, PI1, PI-200°C, 2MZ-AZINE-PI3). Do NOT truncate PI1→PI.
 8. Skip Introduction/background/literature-reference values unless clearly this paper's own experimental result.
 9. Use loss_tangent for tan δ; dielectric_constant for permittivity/ε′; dielectric_loss for ε″ only.
-10. Cycle counts, frequency, strain, thickness, humidity are test conditions, not standalone performance values.
+10. Cycle counts, ordinary test frequency, strain, thickness, and humidity are conditions, not standalone performance values. A bandgap, resonance, eigenfrequency, or transmission-attenuation frequency/range is a performance result.
 11. Fill performance_condition when stated. Do not invent missing conditions.
 12. Do not create sample groups, sample cards, final records, or Excel rows.
 13. sample_id / candidate_sample_ids must come from explicit names in the chunk. NEVER put test/process conditions into sample_id (200°C, 300°C, 20 min, 50% strain, X-band, RH≈100%, 8–12 GHz) unless the chunk explicitly names a specimen that way (e.g. "PI-200°C sample"). Put those tokens in condition / performance_condition instead.
@@ -57,6 +57,8 @@ Rules:
 20. FTIR_band / Raman_peak / XPS_peak / XRD_peak / NMR_shift are characterization peaks (structure proof), NOT core performance metrics.
 21. FTIR reference peaks used only in imidization formulas (e.g. 1377 & 1489 cm⁻¹) are method parameters, not performance.
 22. If evidence says PI1 or PI1 aerogel, sample_id must be PI1 aerogel — never collapse to generic PI.
+23. Explicit material-behavior transition strains are performance facts only when the same quoted evidence binds value and phenomenon: knee → knee_strain; damage-index change → damage_transition_strain; stiffness recovery → stiffness_recovery_strain. A generic transition-zone endpoint or ordinary test strain is not a standalone result.
+24. Extract unfamiliar but explicit material/structure results even when absent from the standardized list. Examples include displacement at a fixed load, softening load, load-stability improvement, bandgap range, transmission-attenuation range, maximum acceleration, acceleration reduction, and specific energy absorption.
 
 Standardized performance metrics include:
 {{metrics_list}}
@@ -85,11 +87,33 @@ Output JSON format:
       "category": "mechanical",
       "evidence_text": "PI-200 exhibited a tensile strength of 7.13 MPa",
       "source_location": "Section 3.2, page 8",
+      "source_block_id": "B000123",
+      "source_page": 8,
       "extraction_method": "AI_text",
       "confidence": 0.9
     }
   ]
 }"""
+
+STAGE2_PERFORMANCE_REPAIR_PROMPT = """Repair missing quantitative material-performance facts from these selected high-information blocks.
+
+Known sample IDs:
+{sample_ids}
+
+Rules:
+1. Extract only this paper's explicit measured or calculated material/structure PERFORMANCE RESULTS.
+2. Keep intrinsic constituent properties (for example density, Young's modulus, or Poisson's ratio) when explicitly reported. Assign them to the constituent, never to a composite variant.
+3. Skip composition/loading values, fabrication parameters, test conditions, geometry/model constants, formula variables, point/row counts, temperatures, speeds, cycle counts, and figure labels as standalone results. Put relevant test settings in condition.
+4. A bandgap, eigenfrequency, resonance, attenuation-frequency range, displacement at fixed load, softening load, acceleration, or energy absorption is a result, not a test condition.
+5. Preserve exact sample-value binding. Resolve generic phrases such as "the reinforced composite" to an explicit composition/configuration stated in the same input block. Do not guess across blocks.
+6. Use a Known sample ID when the evidence supports it. Create one concise new ID only when the block explicitly describes a different composition/configuration.
+7. ONE scalar result = ONE fact. Keep a scientifically meaningful range A-B as one range fact. Never emit uncertainty, a range endpoint, or a comparison baseline as an extra metric.
+8. Copy evidence_text verbatim and copy source_block_id/source_page from the exact block header containing the value.
+9. Skip prior-work/reference values and qualitative claims. Do not calculate or infer unstated values.
+10. Use a precise metric name. Unknown but explicit performance metrics are allowed.
+
+Return compact JSON only:
+{{"facts":[{{"fact_type":"performance","subject_text":"","candidate_sample_ids":[],"metric_or_parameter":"","value":"","unit":"","method":"","condition":"","category":"","evidence_text":"","source_location":"","source_block_id":"","source_page":0,"confidence":0.0}}]}}"""
 
 WEAK_FACTS_PROMPT = """Extract atomic material facts from this text chunk or batched chunk group.
 

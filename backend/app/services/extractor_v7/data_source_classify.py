@@ -21,6 +21,7 @@ from app.services.validation import (
     is_formula_method_parameter_fact,
     normalize_unit,
 )
+from app.services.extractor_v7.validators import text_has_primary_result_signal
 
 # ---- Signal-word lists ----
 
@@ -119,7 +120,8 @@ def classify_data_source_type(fact: dict) -> str:
         return "characterization_feature"
 
     # 3. Experimental condition (test parameters, not performance)
-    canonical = find_metric_canonical(metric) or metric
+    known_canonical = find_metric_canonical(metric)
+    canonical = known_canonical or metric
     unit_norm = normalize_unit(unit)
     if canonical.lower() in _CONDITION_METRICS:
         return "experimental_condition"
@@ -129,12 +131,23 @@ def classify_data_source_type(fact: dict) -> str:
         "onset_decomposition_temperature", "Td5",
     ):
         # Bare temperature/time/frequency as value without a property metric
-        if not canonical or canonical == metric:
+        if known_canonical is None:
             return "experimental_condition"
+
+    if (
+        fact.get("extraction_method") in {
+            "AI_holistic_table", "rule_table_performance",
+        }
+        and fact.get("_source_table_row") is not None
+    ):
+        return "paper_core_result"
 
     # 4. Background reference (Introduction / prior work)
     is_bg = _text_has_background_signal(combined, section)
-    is_this = _text_has_this_work_signal(combined)
+    is_this = _text_has_this_work_signal(combined) or (
+        section.lower().strip() in {"results", "conclusion", "experimental"}
+        and text_has_primary_result_signal(combined)
+    )
 
     if is_bg and not is_this:
         # 5. Comparison literature (explicit comparison with other work)

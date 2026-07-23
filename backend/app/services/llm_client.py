@@ -3,7 +3,7 @@
 Provides:
 - OpenAI-compatible API via the openai SDK (with response_format=json_object)
 - Anthropic Messages API via httpx (with content block parsing)
-- Multi-layer JSON recovery (fence stripping, brace extraction, regex KV)
+- Multi-layer JSON recovery (strict parsing, json-repair, regex KV)
 - Automatic retry with exponential backoff
 - Graceful fallback when response_format is unsupported (e.g. DeepSeek)
 - Vision/multimodal support for both providers
@@ -14,18 +14,20 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextvars
 import json
 import re
 import time
 from typing import Any
 
 import httpx
+from json_repair import repair_json
 
 from app.core.config import settings
-from app.services.llm_budget import dashscope_extra_body
+from app.services.llm_budget import openai_compatible_extra_body
 
 # ---------------------------------------------------------------------------
-# JSON recovery utilities (portable, no dependencies)
+# JSON recovery utilities
 # ---------------------------------------------------------------------------
 
 
@@ -103,12 +105,27 @@ def _tolerant_parse_json(text: str) -> dict[str, Any]:
                 except (json.JSONDecodeError, ValueError):
                     pass
 
-    # Layer 3: regex key-value extraction
+    # Layer 3: repair malformed or truncated LLM JSON with a dedicated parser.
+    try:
+        repaired = repair_json(
+            cleaned,
+            return_objects=True,
+            skip_json_loads=True,
+            ensure_ascii=False,
+        )
+        if isinstance(repaired, dict) and repaired:
+            return repaired
+        if isinstance(repaired, list) and repaired:
+            return {"_items": repaired}
+    except Exception:
+        pass
+
+    # Layer 4: regex key-value extraction
     kv = _regex_extract_items(cleaned)
     if kv:
         return kv
 
-    # Layer 4: return raw text
+    # Layer 5: return raw text
     return {"_raw_text": text[:4000], "_parse_failed": True}
 
 
@@ -236,7 +253,17 @@ class LLMClient:
         self.base_url = base_url
         self.timeout_seconds = timeout_seconds
         self.max_retries = max_retries
-        self.last_usage: dict[str, int] = {}
+        self._last_usage_var: contextvars.ContextVar[dict[str, int]] = (
+            contextvars.ContextVar(f"llm_usage_{id(self)}", default={})
+        )
+
+    @property
+    def last_usage(self) -> dict[str, int]:
+        return dict(self._last_usage_var.get())
+
+    @last_usage.setter
+    def last_usage(self, value: dict[str, int]) -> None:
+        self._last_usage_var.set(dict(value or {}))
 
     def test_connection(self) -> str:
         content = self.generate_text(
@@ -284,19 +311,10 @@ class LLMClient:
         user_prompt: str,
         max_tokens: int = 4096,
     ) -> tuple[dict[str, Any], str]:
-        """Like generate_json but never raises on parse failure."""
-        raw = ""
-        try:
-            raw = self.generate_text(
-                system_prompt, user_prompt, max_tokens=max_tokens, json_mode=True
-            )
-        except Exception:
-            try:
-                raw = self.generate_text(
-                    system_prompt, user_prompt, max_tokens=max_tokens, json_mode=False
-                )
-            except Exception:
-                pass
+        """Tolerate malformed JSON while preserving upstream request failures."""
+        raw = self.generate_text(
+            system_prompt, user_prompt, max_tokens=max_tokens, json_mode=True
+        )
         parsed = _tolerant_parse_json(raw)
         return parsed, raw
 
@@ -305,7 +323,9 @@ class LLMClient:
         system_prompt: str,
         user_prompt: str,
         max_tokens: int = 4096,
+        reasoning_effort: str | None = None,
     ) -> tuple[dict[str, Any], str]:
+        del reasoning_effort  # Not every provider exposes reasoning controls.
         return await asyncio.to_thread(
             self.generate_json_tolerant,
             system_prompt,
@@ -387,7 +407,7 @@ class OpenAICompatibleClient(LLMClient):
     ) -> None:
         super().__init__(api_key, model, base_url, timeout_seconds, max_retries)
         try:
-            from openai import OpenAI
+            from openai import AsyncOpenAI, OpenAI
         except ImportError as exc:
             raise RuntimeError("未安装 openai 包，请先安装 requirements.txt。") from exc
         kwargs: dict[str, Any] = {
@@ -398,11 +418,147 @@ class OpenAICompatibleClient(LLMClient):
         if base_url.strip():
             kwargs["base_url"] = base_url.strip()
         self.client = OpenAI(**kwargs)
-        self.extra_body = dashscope_extra_body(
+        self._async_client_factory = AsyncOpenAI
+        self._async_client_kwargs = dict(kwargs)
+        self.extra_body = openai_compatible_extra_body(
             model=model,
             base_url=base_url,
             disable_thinking=settings.LLM_DISABLE_THINKING,
         )
+        self._response_format_supported: bool | None = None
+
+    @staticmethod
+    def _reasoning_effort(model: str, requested: str | None) -> str | None:
+        effort = str(requested or "").strip().lower()
+        if effort not in {"none", "minimal", "low", "medium", "high", "xhigh"}:
+            return None
+        model_name = (model or "").strip().lower()
+        if model_name.startswith(("gpt-5", "o1", "o3", "o4")):
+            return effort
+        return None
+
+    @staticmethod
+    def _chat_kwargs(
+        model: str,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int,
+        *,
+        json_mode: bool,
+        extra_body: dict[str, Any] | None,
+        reasoning_effort: str | None = None,
+    ) -> dict[str, Any]:
+        if json_mode and "json" not in f"{system_prompt}\n{user_prompt}".lower():
+            system_prompt = f"{system_prompt}\nReturn json only."
+        kwargs: dict[str, Any] = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "temperature": 0,
+            "max_tokens": max_tokens,
+        }
+        if json_mode:
+            kwargs["response_format"] = {"type": "json_object"}
+        if extra_body:
+            kwargs["extra_body"] = extra_body
+        resolved_effort = OpenAICompatibleClient._reasoning_effort(
+            model, reasoning_effort
+        )
+        if resolved_effort:
+            kwargs["reasoning_effort"] = resolved_effort
+        return kwargs
+
+    async def _agenerate_text(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int,
+        *,
+        json_mode: bool,
+        reasoning_effort: str | None = None,
+    ) -> str:
+        use_response_format = (
+            json_mode and self._response_format_supported is not False
+        )
+        kwargs = self._chat_kwargs(
+            self.model,
+            system_prompt,
+            user_prompt,
+            max_tokens,
+            json_mode=use_response_format,
+            extra_body=self.extra_body,
+            reasoning_effort=reasoning_effort,
+        )
+        async with self._async_client_factory(**self._async_client_kwargs) as client:
+            try:
+                response = await client.chat.completions.create(**kwargs)
+            except Exception as exc:
+                if use_response_format and _should_retry_without_response_format(exc):
+                    self._response_format_supported = False
+                    kwargs.pop("response_format", None)
+                    try:
+                        response = await client.chat.completions.create(**kwargs)
+                    except Exception as retry_exc:
+                        raise RuntimeError(_format_ai_exception(retry_exc)) from retry_exc
+                else:
+                    raise RuntimeError(_format_ai_exception(exc)) from exc
+            else:
+                if use_response_format:
+                    self._response_format_supported = True
+        self.last_usage = _usage_to_dict(getattr(response, "usage", None))
+        return response.choices[0].message.content or ""
+
+    async def agenerate_json_tolerant(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int = 4096,
+        reasoning_effort: str | None = None,
+    ) -> tuple[dict[str, Any], str]:
+        raw = await self._agenerate_text(
+            system_prompt,
+            user_prompt,
+            max_tokens,
+            json_mode=True,
+            reasoning_effort=reasoning_effort,
+        )
+        return _tolerant_parse_json(raw), raw
+
+    async def agenerate_vision_json_tolerant(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        images: list[bytes],
+        max_tokens: int = 4096,
+    ) -> tuple[dict[str, Any], str]:
+        content: list[dict[str, Any]] = [{"type": "text", "text": user_prompt}]
+        for image in images:
+            encoded = base64.b64encode(image).decode("ascii")
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/png;base64,{encoded}"},
+            })
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": content},
+            ],
+            "temperature": 0,
+            "max_tokens": max_tokens,
+        }
+        if self.extra_body:
+            kwargs["extra_body"] = self.extra_body
+        async with self._async_client_factory(**self._async_client_kwargs) as client:
+            try:
+                response = await client.chat.completions.create(**kwargs)
+            except Exception as exc:
+                raise RuntimeError(_format_ai_exception(exc)) from exc
+        self.last_usage = _usage_to_dict(getattr(response, "usage", None))
+        raw = response.choices[0].message.content or ""
+        return _tolerant_parse_json(raw), raw
 
     def generate_text(
         self,
@@ -422,14 +578,18 @@ class OpenAICompatibleClient(LLMClient):
             "temperature": 0,
             "max_tokens": max_tokens,
         }
-        if json_mode:
+        use_response_format = (
+            json_mode and self._response_format_supported is not False
+        )
+        if use_response_format:
             kwargs["response_format"] = {"type": "json_object"}
         if self.extra_body:
             kwargs["extra_body"] = self.extra_body
         try:
             response = self.client.chat.completions.create(**kwargs)
         except Exception as exc:
-            if json_mode and _should_retry_without_response_format(exc):
+            if use_response_format and _should_retry_without_response_format(exc):
+                self._response_format_supported = False
                 kwargs.pop("response_format", None)
                 try:
                     response = self.client.chat.completions.create(**kwargs)
@@ -439,6 +599,9 @@ class OpenAICompatibleClient(LLMClient):
                     ) from retry_exc
             else:
                 raise RuntimeError(_format_ai_exception(exc)) from exc
+        else:
+            if use_response_format:
+                self._response_format_supported = True
         self.last_usage = _usage_to_dict(getattr(response, "usage", None))
         return response.choices[0].message.content or ""
 

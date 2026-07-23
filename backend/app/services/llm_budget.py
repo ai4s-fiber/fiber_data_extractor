@@ -21,16 +21,40 @@ def is_dashscope_base_url(base_url: str) -> bool:
     return "dashscope.aliyuncs.com" in (base_url or "").strip().lower()
 
 
+def is_glm_model(model: str) -> bool:
+    return (model or "").strip().lower().startswith("glm-")
+
+
+def is_bigmodel_base_url(base_url: str) -> bool:
+    return "bigmodel.cn" in (base_url or "").strip().lower()
+
+
 def should_disable_thinking(model: str, base_url: str, enabled: bool) -> bool:
     if not enabled:
         return False
-    return is_qwen_model(model) or is_dashscope_base_url(base_url)
+    return (
+        is_qwen_model(model)
+        or is_dashscope_base_url(base_url)
+        or is_glm_model(model)
+        or is_bigmodel_base_url(base_url)
+    )
+
+
+def openai_compatible_extra_body(
+    model: str,
+    base_url: str,
+    disable_thinking: bool,
+) -> dict | None:
+    if not should_disable_thinking(model, base_url, disable_thinking):
+        return None
+    if is_glm_model(model) or is_bigmodel_base_url(base_url):
+        return {"thinking": {"type": "disabled"}}
+    return {"enable_thinking": False}
 
 
 def dashscope_extra_body(model: str, base_url: str, disable_thinking: bool) -> dict | None:
-    if should_disable_thinking(model, base_url, disable_thinking):
-        return {"enable_thinking": False}
-    return None
+    """Backward-compatible alias for older callers."""
+    return openai_compatible_extra_body(model, base_url, disable_thinking)
 
 
 def clamp_max_tokens(

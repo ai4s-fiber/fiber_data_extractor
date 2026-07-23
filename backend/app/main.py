@@ -2,12 +2,13 @@
 
 import asyncio
 import logging
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
+from app.core.database import close_database
 from app.core.health_checks import check_database, check_mineru_cloud_configured
 from app.core.redis_client import close_redis, ping_redis
 from app.core.schema_repair import ensure_runtime_schema
@@ -37,10 +38,16 @@ async def lifespan(app: FastAPI):
     await extraction_job_backend.recover_interrupted_jobs()
     await extraction_job_backend.try_start_next()
     poller = asyncio.create_task(_queue_poller())
-    yield
-    poller.cancel()
-    await progress_bus.close()
-    await close_redis()
+    try:
+        yield
+    finally:
+        poller.cancel()
+        with suppress(asyncio.CancelledError):
+            await poller
+        await extraction_job_backend.shutdown()
+        await progress_bus.close()
+        await close_redis()
+        await close_database()
 
 app = FastAPI(
     title=settings.APP_NAME,
