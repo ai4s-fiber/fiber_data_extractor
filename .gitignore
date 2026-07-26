@@ -27,7 +27,10 @@ Thumbs.db
 # Runtime data
 backend/exports/
 backend/uploads/
+exports/
+uploads/
 backend/parse_artifacts/
+/parse_artifacts/
 backend/reports/
 backend/benchmark_pdfs/
 backend/*.db
@@ -39,6 +42,8 @@ backend/*.sqlite3
 *.log
 *.xlsx
 deploy*.sh
+.pytest_cache/
+.ruff_cache/
 
 # Environment
 .env

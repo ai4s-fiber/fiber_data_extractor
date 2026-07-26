@@ -48,7 +48,7 @@ fiber_data_extractor/
 - Node.js 20.19+
 - npm 10+
 - Docker Desktop（可选，仅 Docker Compose 部署需要）
-- LLM API Key（仅启动 AI 抽取时需要，在项目设置页填写；默认 OpenAI-compatible 模型为 `gpt-5.5`）
+- LLM API Key（仅启动 AI 抽取时需要，在项目设置页填写；默认 OpenAI-compatible 模型为 `gpt-5.6-luna`）
 - `MINERU_CLOUD_TOKEN`（正式抽取默认使用 MinerU Cloud；不配置时抽取会失败并提示）
 
 ## 获取代码
@@ -110,7 +110,7 @@ Docker Compose 默认启用 PostgreSQL、Redis、后端和前端，前端入口�
 ## 功能配置
 
 - 基础工作区功能（项目、文献上传、候选记录复核、Excel 导出）不需要登录。
-- AI 抽取必须在项目设置页配置 `llm_provider`、`llm_base_url`、`llm_model` 和 `llm_api_key`。默认值为 `openai` / `https://aigw.sotatts.online/v1` / `gpt-5.5`。
+- AI 抽取必须在项目设置页配置 `llm_provider`、`llm_base_url`、`llm_model` 和 `llm_api_key`。默认值为 `openai` / `https://aigw.sotatts.online/v1` / `gpt-5.6-luna`。
 - 默认 PDF 解析策略是 `mineru_cloud`，正式抽取使用 MinerU Cloud VLM 解析 PDF 版式、表格和结构。系统会保存 MinerU Markdown/JSON 产物；同一文献、同一解析配置重新抽取时会优先复用产物，避免重复消耗 MinerU 配额。
 - 必须在 `.env` 中配置 `MINERU_CLOUD_TOKEN` 后再启动抽取；未配置或 Cloud 解析失败时系统会直接失败并提示，不会自动退回本地 MinerU 或传统纯文本解析。
 - 可选解析策略 `mineru_local_sync` 使用 MinerU 官方本地 `mineru-api /file_parse` 同步接口；适合单篇兼容调用。自建 GPU 批处理优先使用 MinerU 异步 `/tasks` 与 `mineru-router`，避免同步请求长期占用连接。默认仍使用 MinerU Cloud。
@@ -162,7 +162,7 @@ $env:LLM_METRICS_DIR="./reports/llm_metrics"
 python scripts\benchmark\run_extraction_benchmark.py `
   --pdf-dir benchmark_pdfs `
   --api-key-env AIGW_API_KEY `
-  --model gpt-5.5 `
+  --model gpt-5.6-luna `
   --base-url https://aigw.sotatts.online/v1 `
   --model-mode strong `
   --parser-strategy mineru_cloud `
@@ -171,7 +171,7 @@ python scripts\benchmark\run_extraction_benchmark.py `
 
 ## 工程批量抽取
 
-`run_bulk_extraction.py` 面向数千篇本地 PDF。它先按 SHA-256 去重，再使用 MinerU Cloud 官方 v4 批量上传接口预解析；每篇完成后立即写入共享缓存并进入 `gpt-5.5` 强抽取队列，不会等待同批最慢文献。应用任务和 MinerU 远端批次都会持久化，同一命令中断后重跑即可续传、续查和跳过已完成文献。
+`run_bulk_extraction.py` 面向数千篇本地 PDF。它先按 SHA-256 去重，再使用 MinerU Cloud 官方 v4 批量上传接口预解析；每篇完成后立即写入共享缓存并进入 `gpt-5.6-luna` 强抽取队列，不会等待同批最慢文献。应用任务和 MinerU 远端批次都会持久化，同一命令中断后重跑即可续传、续查和跳过已完成文献。
 
 运行批量命令时，不要同时启动另一个连接同一数据库的后端抽取 worker：
 
@@ -190,7 +190,7 @@ python scripts\ops\run_bulk_extraction.py `
 python scripts\ops\run_bulk_extraction.py `
   --pdf-dir "E:\数据\创智的paper" `
   --project-name "Fiber corpus" `
-  --model gpt-5.5 `
+  --model gpt-5.6-luna `
   --batch-size 20 `
   --max-jobs 3
 ```
@@ -217,10 +217,16 @@ python scripts\ops\run_bulk_extraction.py `
 - `LLM_GLOBAL_MAX_CONCURRENT_CALLS=16`：进程内所有 LLM 请求共享总并发闸门。
 - `LLM_BATCH_MAX_CONCURRENT_CALLS=12`：批量文献抽取的并发上限；实际预算还会受全局上限和预留通道约束。
 - `LLM_INTERACTIVE_RESERVED_CALLS=4`：从全局 LLM 并发中显式预留日常调用通道；系统会在保证已启动任务至少可前进的前提下压缩批量预算。
-- `LLM_DEFAULT_REASONING_EFFORT=low`：GPT-5.5 强抽取默认使用低思考档；保留多阶段证据校验，同时减少长思考造成的延迟和 Token 消耗。
+- `LLM_DEFAULT_REASONING_EFFORT=low`：GPT-5.6-luna 强抽取默认使用低思考档；保留多阶段证据校验，同时减少长思考造成的延迟和 Token 消耗。
 - `LLM_REQUEST_MAX_RETRIES=3`：只重试 429、可恢复的 5xx 和连接故障；长生成读超时交给更小窗口的阶段回退，避免重复支付同一大请求。
 - `LLM_RETRY_BASE_SECONDS=1.0` / `LLM_RETRY_MAX_SECONDS=20.0`：所有并发调用共享网关冷却窗口，并采用尊重 `Retry-After` 的带抖动指数退避。
-- `STRONG_HOLISTIC_PERFORMANCE_WINDOW_CHARS=6000`：按 MinerU 块边界切分 Results，并行调用 `gpt-5.5`，降低大窗口长尾超时。
+- `STRONG_HOLISTIC_PERFORMANCE_WINDOW_CHARS=6000`：按 MinerU 块边界切分 Results，并行调用 `gpt-5.6-luna`，降低大窗口长尾超时。
+- `STRONG_HOLISTIC_CATALOG_RETRY_ENABLED=true`：样品目录返回空时只做一次小窗口重试，避免直接触发完整原子 Stage 1 扫描。
+- `STRONG_HOLISTIC_CATALOG_RETRY_MAX_CHARS=8000` / `STRONG_HOLISTIC_CATALOG_RETRY_MAX_TOKENS=1800`：限定目录重试的上下文和输出预算；重试仍为空才进入现有回退链路。
+- `STRONG_HOLISTIC_RESULT_MIN_SCORE=4`：Holistic 性能扫表只优先发送包含定量值或强指标信号的结果块；低于阈值的块仍保留在 Stage 2 回退链路中。
+- `STRONG_HOLISTIC_MAX_RESULT_BLOCKS=80`：单篇论文进入 Holistic 性能上下文的结果块上限，防止长文献把无关数字全部送入模型。
+- `STRONG_HOLISTIC_RESULT_NEIGHBOR_BLOCKS=1`：每个高信号结果块最多保留同页相邻上下文块，维持跨句样品归属信息。
+- `STRONG_HOLISTIC_SKIP_EMPTY_PERFORMANCE=true`：没有样品或没有定量结果信号时不发起核心性能扫表，仍由现有 Stage 2 和确定性恢复处理其他事实。
 - `STRONG_HOLISTIC_PERFORMANCE_TIMEOUT_SECONDS=180`：单个窗口超时后按 MinerU 块缩小重试；仍失败时继续走定向 Stage 2 补抽，最终证据与质量门禁仍不通过时才把论文标记为需处理。
 - `STRONG_HOLISTIC_PARALLEL_CALLS=3`：强模式 Holistic 分支最多并行 3 路；样品目录完成后，背景与性能窗口并行执行。
 - `STRONG_HOLISTIC_BACKGROUND_TIMEOUT_SECONDS=60`：组成/工艺背景支路采用短超时；超时只降低背景字段覆盖率，不阻塞性能主链路。
@@ -251,3 +257,24 @@ python scripts\ops\export_project_workbooks.py `
 ```
 
 重复运行会校验并跳过未变化的工作簿；增加 `--overwrite` 可强制重建。超大证据或解析块会自动拆分到编号 Sheet，避免超过 Excel 单 Sheet 行数上限。完整原始文件名始终保留在 `Papers.original_filename`，磁盘文件名只做 Windows 安全截断。
+
+## 化学纤维完整模板投影
+
+完整化学纤维模板采用稀疏、证据驱动的投影，不会要求每篇文献填满所有工业设备和测试字段。现有 `FactCandidate`、`SampleCatalog` 和 `EvidenceItem` 会在不改变 MinerU + GPT-5.6 主链路的情况下生成样品级 JSON；缺失值、待复核值和未映射事实均保留状态与来源。
+
+```text
+GET /api/template-schema
+GET /api/projects/{project_id}/papers/{paper_id}/template-projection
+```
+
+增加 `download=true` 可下载单篇 JSON，增加 `include_unmapped=false` 可只查看已映射字段。当前投影版本是 `chemical_fiber_projection_v1`，外部数据库字段 ID 和写入协议仍需通过机器可读 schema 绑定，详见 `docs/chemical_fiber_template_projection.md`。
+
+批量生成可续传的逐篇模板 JSON（只读取数据库中的既有抽取结果）：
+
+```powershell
+cd backend
+python scripts\ops\export_template_projections.py `
+  --project-id 1 `
+  --database-url "postgresql+asyncpg://..." `
+  --output-dir "E:\fiber_template_projections"
+```

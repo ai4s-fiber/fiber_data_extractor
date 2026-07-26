@@ -151,6 +151,7 @@ def normalize_unit(unit: str) -> str:
         "degrees": "degree",
         "deg": "degree",
         "°": "degree",
+        "phunits": "ph",
         "ph": "ph",
         "mgcm-3": "mg/cm3",
         "mg/cm3": "mg/cm3",

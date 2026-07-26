@@ -2797,6 +2797,8 @@ class V7ExtractorService:
         bracketed = re.fullmatch(r"\[\s*([^\[\]]+?)\s*\]", unit)
         if bracketed:
             unit = bracketed.group(1)
+        if re.fullmatch(r"(?i)p\s*h\s+units?", unit):
+            return "pH"
         if re.fullmatch(r"(?i)(?:%|percent)\s*(?:strain)?", unit) or re.fullmatch(
             r"(?i)strain\s*%", unit
         ):
@@ -4258,11 +4260,28 @@ class V7ExtractorService:
                         catalog_reasoning_effort=(
                             settings.STRONG_HOLISTIC_CATALOG_REASONING_EFFORT
                         ),
+                        catalog_retry_enabled=(
+                            settings.STRONG_HOLISTIC_CATALOG_RETRY_ENABLED
+                        ),
+                        catalog_retry_max_chars=(
+                            settings.STRONG_HOLISTIC_CATALOG_RETRY_MAX_CHARS
+                        ),
+                        catalog_retry_max_tokens=(
+                            settings.STRONG_HOLISTIC_CATALOG_RETRY_MAX_TOKENS
+                        ),
                         max_performance_tokens=settings.STRONG_HOLISTIC_PERFORMANCE_MAX_TOKENS,
                         performance_timeout=settings.STRONG_HOLISTIC_PERFORMANCE_TIMEOUT_SECONDS,
                         results_max_chars=settings.STRONG_HOLISTIC_RESULTS_MAX_CHARS,
                         performance_window_chars=settings.STRONG_HOLISTIC_PERFORMANCE_WINDOW_CHARS,
                         performance_window_overlap_blocks=settings.STRONG_HOLISTIC_WINDOW_OVERLAP_BLOCKS,
+                        performance_min_score=settings.STRONG_HOLISTIC_RESULT_MIN_SCORE,
+                        performance_max_blocks=settings.STRONG_HOLISTIC_MAX_RESULT_BLOCKS,
+                        performance_neighbor_blocks=(
+                            settings.STRONG_HOLISTIC_RESULT_NEIGHBOR_BLOCKS
+                        ),
+                        skip_empty_performance=(
+                            settings.STRONG_HOLISTIC_SKIP_EMPTY_PERFORMANCE
+                        ),
                         parallel_calls=per_job_llm_parallel_limit(
                             settings.STRONG_HOLISTIC_PARALLEL_CALLS
                         ),
@@ -4278,15 +4297,31 @@ class V7ExtractorService:
                 holistic_background = holistic.background
                 holistic_performance_facts = holistic.performance_facts
                 holistic_covered_table_ids = set(holistic.covered_table_block_ids)
-                holistic_performance_attempted = True
+                holistic_performance_attempted = bool(
+                    getattr(holistic, "performance_attempted", True)
+                )
                 for warning in holistic.warnings:
-                    print(f"Warning: Holistic branch failed: {warning}")
+                    if warning.startswith((
+                        "holistic_performance_skipped:",
+                        "samples_retry:empty",
+                    )):
+                        print(f"Info: {warning}")
+                    else:
+                        print(f"Warning: Holistic branch failed: {warning}")
                     pipeline_warnings.append(f"holistic: {warning}")
+                if getattr(holistic, "performance_skipped_reason", ""):
+                    pipeline_warnings.append(
+                        "holistic: performance sweep skipped because "
+                        f"{holistic.performance_skipped_reason}"
+                    )
                 holistic_performance_incomplete = any(
                     warning.startswith("performances:")
                     for warning in holistic.warnings
                 )
-                holistic_performance_complete = not holistic_performance_incomplete
+                holistic_performance_complete = (
+                    holistic_performance_attempted
+                    and not holistic_performance_incomplete
+                )
                 if holistic_samples:
                     sample_mentions = sample_mentions + catalog_to_mentions(holistic_samples)
                     for sample in holistic_samples:

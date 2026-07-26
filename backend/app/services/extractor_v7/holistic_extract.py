@@ -38,7 +38,10 @@ _MEASUREMENT_RE = re.compile(
     r"g\s*/\s*g|mg\s*/\s*g|W\s*/\s*mK|S\s*/\s*(?:m|cm)|pC\s*/\s*N|"
     r"kg\s*m\s*(?:\^?\s*-?3|⁻³)|g\s*cm\s*(?:\^?\s*-?3|⁻³)|"
     r"kN|mN|N|MHz|kHz|Hz|m\s*s\s*(?:\^?\s*-?1|⁻¹)|m/s|"
-    r"V|mV|µV|μV|A|mA|µA|μA|nA|nm|µm|μm|mm|cm[⁻-]?1|eV|°C|K)(?=\s|[),.;]|$)"
+    r"V|mV|µV|μV|A|mA|µA|μA|nA|nm|µm|μm|mm|cm[⁻-]?1|eV|°C|K|"
+    r"J\s*/\s*(?:g|kg|m2|m²)|m2\s*/\s*g|m²\s*/\s*g|"
+    r"dB|kV(?:\s*/\s*(?:mm|cm))?|mW\s*/\s*cm2|µW\s*/\s*cm2|"
+    r"mS\s*/\s*cm|dtex|tex|cycles?)(?=\s|[),.;]|$)"
 )
 _RESULT_TERM_RE = re.compile(
     r"(?i)\b(?:strength|modulus|elongation|conductivit|capacity|absorption|sorption|"
@@ -46,7 +49,43 @@ _RESULT_TERM_RE = re.compile(
     r"crystallinity|permittivity|dielectric|voltage|current|sensitivity|response\s+time|"
     r"degree\s+of|retention|efficiency|transmittance|reflectance|toughness|"
     r"load|force|displacement|stress|strain|stiffness|band\s*gap|frequency|"
-    r"transmission|acceleration|damping|vibration|energy\s+absorption)\b"
+    r"transmission|acceleration|damping|vibration|energy\s+absorption|"
+    r"diameter|roughness|surface\s+area|pore\s+size|shrinkage|resistivity|"
+    r"permeability|filtration|pH|thermal\s+stability|phase\s+content)\b"
+)
+_DIMENSIONLESS_RESULT_LABEL = (
+    r"(?:pH|Poisson(?:'s)?\s+ratio|maximum\s+acceleration|"
+    r"normalized\s+(?:bandgap|frequency)|gauge\s+factor|porosity|"
+    r"crystallinity|permittivity|dielectric(?:\s+constant)?|"
+    r"coefficient\s+of\s+friction|efficiency|retention|recovery|"
+    r"dimensionless)"
+)
+_DIMENSIONLESS_RESULT_NUMBER = r"(?:\d+(?:\.\d+)?|\.\d+)"
+_DIMENSIONLESS_RESULT_SIGNAL_RE = re.compile(
+    rf"(?is)(?:{_DIMENSIONLESS_RESULT_NUMBER}.{{0,120}}"
+    rf"{_DIMENSIONLESS_RESULT_LABEL}\b|"
+    rf"{_DIMENSIONLESS_RESULT_LABEL}\b.{{0,120}}"
+    rf"{_DIMENSIONLESS_RESULT_NUMBER})"
+)
+
+_BACKGROUND_COMPOSITION_RE = re.compile(
+    r"(?i)\b(?:composition|matrix|polymer|reinforc\w*|additive|solution|"
+    r"solvent|precursor|concentration|loading|wt\s*%|vol\s*%|content)\b"
+)
+_BACKGROUND_PROCESS_RE = re.compile(
+    r"(?i)\b(?:electrospin\w*|spinn\w*|cast\w*|extrud\w*|dry\w*|"
+    r"anneal\w*|cure\w*|pyrolys\w*|carboniz\w*|calcination|"
+    r"temperature|voltage|flow\s+rate|feed\s+rate|distance|duration|"
+    r"humidity|pressure|post[- ]?treat\w*)\b"
+)
+_BACKGROUND_STRUCTURE_RE = re.compile(
+    r"(?i)\b(?:SEM|TEM|AFM|XRD|FT-?IR|Raman|XPS|morpholog\w*|"
+    r"crystall\w*|porosity|pore|orientation|roughness|diameter|"
+    r"structure|phase)\b"
+)
+_BACKGROUND_TREATMENT_RE = re.compile(
+    r"(?i)\b(?:treat\w*|modif\w*|functionaliz\w*|coat\w*|dope\w*|"
+    r"cross[- ]?link\w*|oxid\w*|reduc\w*)\b"
 )
 
 SAMPLES_PROMPT = """You are an AI material data architect. Extract ALL prepared fiber/material samples from the experimental section.
@@ -244,6 +283,8 @@ class HolisticExtractionResult:
     results_chars: int = 0
     warnings: list[str] = field(default_factory=list)
     covered_table_block_ids: list[str] = field(default_factory=list)
+    performance_attempted: bool = False
+    performance_skipped_reason: str = ""
 
 
 def _flatten_dict_rows(value: Any) -> list[dict]:
@@ -324,8 +365,16 @@ def select_performance_context_chunks(
     chunks: list[dict],
     *,
     max_chars: int,
+    min_score: int = 0,
+    max_blocks: int = 0,
+    neighbor_blocks: int = 1,
 ) -> list[dict]:
-    """Keep numeric result blocks across the whole paper plus local context neighbors."""
+    """Keep high-signal result blocks plus bounded local context neighbors.
+
+    The default arguments preserve the historical behavior. Strong-mode callers
+    can raise ``min_score`` and cap ``max_blocks`` so large papers do not send
+    every incidental number in Results to the long-context model.
+    """
     ordered = sorted(
         chunks,
         key=lambda chunk: (chunk.get("page_number") or 0, chunk.get("order_index") or 0),
@@ -344,24 +393,78 @@ def select_performance_context_chunks(
         and str(chunk.get("raw_text") or "").strip()
     ]
     scores: dict[int, int] = {}
+    threshold = max(0, int(min_score or 0))
     for index, chunk in enumerate(candidates):
         text = str(chunk.get("raw_text") or "")
         score = len(_MEASUREMENT_RE.findall(text)) * 4
         score += len(_RESULT_TERM_RE.findall(text))
+        # Preserve result metrics whose values are intentionally unitless.
+        # Without this signal, a strict score threshold can drop pH, Poisson
+        # ratio, normalized frequency, and similar facts from sparse pages.
+        if threshold > 0 and _DIMENSIONLESS_RESULT_SIGNAL_RE.search(text):
+            score += 4
         if chunk.get("source_type") == "figure_caption" and re.search(r"\d", text):
             score += 4
-        if score > 0:
+        if score >= threshold and score > 0:
             scores[index] = score
 
     if not scores:
-        return candidates
+        return candidates if threshold == 0 else []
 
     selected_indices = set(scores)
+    neighbor_blocks = max(0, int(neighbor_blocks or 0))
     for index in list(scores):
-        for neighbor in (index - 1, index + 1):
-            if 0 <= neighbor < len(candidates):
-                if candidates[neighbor].get("page_number") == candidates[index].get("page_number"):
-                    selected_indices.add(neighbor)
+        for distance in range(1, neighbor_blocks + 1):
+            for neighbor in (index - distance, index + distance):
+                if 0 <= neighbor < len(candidates):
+                    if candidates[neighbor].get("page_number") == candidates[index].get("page_number"):
+                        selected_indices.add(neighbor)
+
+    block_cap = max(0, int(max_blocks or 0))
+    if block_cap and len(selected_indices) > block_cap:
+        ranked = sorted(
+            scores,
+            key=lambda index: (
+                -scores[index],
+                candidates[index].get("page_number") or 0,
+                candidates[index].get("order_index") or 0,
+            ),
+        )
+        # Keep the strongest signal from each page before filling remaining
+        # slots by score. This avoids truncating all late-page results.
+        best_by_page: dict[int, int] = {}
+        for index in ranked:
+            page = int(candidates[index].get("page_number") or 0)
+            best_by_page.setdefault(page, index)
+        primary: list[int] = []
+        for index in sorted(
+            best_by_page.values(),
+            key=lambda item: (-scores[item], item),
+        ):
+            if len(primary) >= block_cap:
+                break
+            primary.append(index)
+        for index in ranked:
+            if len(primary) >= block_cap:
+                break
+            if index not in primary:
+                primary.append(index)
+
+        selected_indices = set(primary)
+        if neighbor_blocks and len(selected_indices) < block_cap:
+            for index in sorted(primary):
+                for distance in range(1, neighbor_blocks + 1):
+                    for neighbor in (index - distance, index + distance):
+                        if len(selected_indices) >= block_cap:
+                            break
+                        if (
+                            0 <= neighbor < len(candidates)
+                            and candidates[neighbor].get("page_number")
+                            == candidates[index].get("page_number")
+                        ):
+                            selected_indices.add(neighbor)
+                    if len(selected_indices) >= block_cap:
+                        break
 
     selected = [candidates[index] for index in sorted(selected_indices)]
     total_chars = sum(len(str(chunk.get("raw_text") or "")) + 120 for chunk in selected)
@@ -382,10 +485,82 @@ def select_performance_context_chunks(
         if index not in best_by_page.values()
     )
     for index in priority:
+        if block_cap and len(chosen) >= block_cap:
+            break
         size = len(str(candidates[index].get("raw_text") or "")) + 120
         if chosen and used + size > max_chars:
             continue
         chosen.add(index)
+        used += size
+    return [candidates[index] for index in sorted(chosen)]
+
+
+def select_background_context_chunks(
+    chunks: list[dict],
+    *,
+    max_chars: int,
+) -> list[dict]:
+    """Select compact experimental evidence for shared background extraction."""
+    ordered = sorted(
+        chunks,
+        key=lambda chunk: (chunk.get("page_number") or 0, chunk.get("order_index") or 0),
+    )
+    candidates = [
+        chunk for chunk in ordered
+        if (chunk.get("section_name") or "").lower() in EXPERIMENTAL_SECTIONS
+        and (chunk.get("section_name") or "").lower() not in BACKGROUND_SECTIONS
+        and str(chunk.get("block_type") or "").lower() not in IGNORED_CONTEXT_BLOCK_TYPES
+        and str(chunk.get("raw_text") or "").strip()
+    ]
+    if not candidates:
+        return []
+
+    scores: dict[int, int] = {}
+    for index, chunk in enumerate(candidates):
+        text = str(chunk.get("raw_text") or "")
+        score = 0
+        if _BACKGROUND_COMPOSITION_RE.search(text):
+            score += 5
+        if _BACKGROUND_PROCESS_RE.search(text):
+            score += 5
+        if _BACKGROUND_STRUCTURE_RE.search(text):
+            score += 3
+        if _BACKGROUND_TREATMENT_RE.search(text):
+            score += 3
+        if chunk.get("source_type") == "table_text":
+            score += 3
+        score += min(3, len(re.findall(r"\d", text)) // 8)
+        if score:
+            scores[index] = score
+
+    if not scores:
+        scores = {index: 1 for index in range(len(candidates))}
+
+    selected_indices = set(scores)
+    for index in tuple(scores):
+        for neighbor in (index - 1, index + 1):
+            if (
+                0 <= neighbor < len(candidates)
+                and candidates[neighbor].get("page_number")
+                == candidates[index].get("page_number")
+            ):
+                selected_indices.add(neighbor)
+
+    ordered_indices = sorted(
+        selected_indices,
+        key=lambda index: (-scores.get(index, 0), index),
+    )
+    chosen: list[int] = []
+    used = 0
+    limit = max(1, int(max_chars or 1))
+    for index in ordered_indices:
+        size = len(str(candidates[index].get("raw_text") or "")) + 120
+        if chosen and used + size > limit:
+            continue
+        if not chosen and size > limit:
+            chosen.append(index)
+            break
+        chosen.append(index)
         used += size
     return [candidates[index] for index in sorted(chosen)]
 
@@ -554,7 +729,14 @@ def select_treatment_variant_context_chunks(
     return bounded
 
 
-def build_context_texts(chunks: list[dict], *, results_max_chars: int = 35000) -> tuple[str, str]:
+def build_context_texts(
+    chunks: list[dict],
+    *,
+    results_max_chars: int = 35000,
+    performance_min_score: int = 0,
+    performance_max_blocks: int = 0,
+    performance_neighbor_blocks: int = 1,
+) -> tuple[str, str]:
     """Build experimental and results merged texts from MinerU chunks."""
     experimental = merge_chunks_text(
         chunks,
@@ -566,6 +748,9 @@ def build_context_texts(chunks: list[dict], *, results_max_chars: int = 35000) -
     result_chunks = select_performance_context_chunks(
         chunks,
         max_chars=results_max_chars,
+        min_score=performance_min_score,
+        max_blocks=performance_max_blocks,
+        neighbor_blocks=performance_neighbor_blocks,
     )
     results = merge_chunks_text(
         result_chunks,
@@ -574,14 +759,19 @@ def build_context_texts(chunks: list[dict], *, results_max_chars: int = 35000) -
         exclude_source_types=frozenset({"table_text"}),
         max_chars=results_max_chars,
     )
-    if len(results) < 3000:
+    if not result_chunks and performance_min_score > 0:
+        # An explicitly signal-gated route must not fall back to arbitrary
+        # experimental/process numbers and accidentally trigger a performance
+        # sweep. Tables are handled by the separate deterministic/table route.
+        results = ""
+    elif len(results) < 3000:
         results = merge_chunks_text(
             chunks,
             source_types=frozenset({"table_text", "figure_caption"}),
             exclude_source_types=frozenset({"table_text"}),
             max_chars=results_max_chars,
         )
-    if len(results) < 3000:
+    if (result_chunks or performance_min_score == 0) and len(results) < 3000:
         results = merge_chunks_text(
             chunks,
             exclude_source_types=frozenset({"table_text"}),
@@ -2468,12 +2658,19 @@ async def run_holistic_extraction(
     llm_timeout: int,
     sample_max_chars: int = 16000,
     catalog_reasoning_effort: str | None = None,
+    catalog_retry_enabled: bool = True,
+    catalog_retry_max_chars: int = 8000,
+    catalog_retry_max_tokens: int = 1800,
     max_performance_tokens: int = 6000,
     performance_timeout: int | None = None,
     results_max_chars: int = 35000,
     sensing_enabled: bool = True,
     performance_window_chars: int = 18000,
     performance_window_overlap_blocks: int = 1,
+    performance_min_score: int = 0,
+    performance_max_blocks: int = 0,
+    performance_neighbor_blocks: int = 1,
+    skip_empty_performance: bool = False,
     parallel_calls: int = 3,
     background_timeout: int = 60,
     background_max_chars: int = 9000,
@@ -2481,7 +2678,13 @@ async def run_holistic_extraction(
     table_timeout: int = 75,
 ) -> HolisticExtractionResult:
     """Run large-context extraction with bounded, block-aware parallel sweeps."""
-    experimental, results = build_context_texts(chunks, results_max_chars=results_max_chars)
+    experimental, results = build_context_texts(
+        chunks,
+        results_max_chars=results_max_chars,
+        performance_min_score=performance_min_score,
+        performance_max_blocks=performance_max_blocks,
+        performance_neighbor_blocks=performance_neighbor_blocks,
+    )
     result = HolisticExtractionResult(
         experimental_chars=len(experimental),
         results_chars=len(results),
@@ -2507,6 +2710,17 @@ async def run_holistic_extraction(
             sections=EXPERIMENTAL_SECTIONS,
             max_chars=4500,
         )
+        background_chunks = select_background_context_chunks(
+            chunks,
+            max_chars=background_max_chars,
+        )
+        background_context = merge_chunks_text(
+            background_chunks,
+            sections=EXPERIMENTAL_SECTIONS,
+            max_chars=background_max_chars,
+        )
+        if len(background_context) < 1000:
+            background_context = experimental[:background_max_chars]
 
         async def _extract_catalog(
             prompt: str,
@@ -2566,6 +2780,62 @@ async def run_holistic_extraction(
         )
         result.samples = augment_catalog_samples_from_process_tables(chunks, result.samples)
 
+        # A valid model response can still contain an empty catalog when a
+        # large-context request is truncated or the gateway returns an
+        # incomplete structured response. Retry once with a smaller,
+        # block-aligned context before the caller pays for the full atomic
+        # Stage 1 fallback. The retry is intentionally bounded and only runs
+        # when the first catalog produced no usable material sample.
+        retry_tokens = max(0, int(catalog_retry_max_tokens or 0))
+        if (
+            catalog_retry_enabled
+            and retry_tokens > 0
+            and not result.samples
+        ):
+            retry_chars = max(
+                1500,
+                min(
+                    max(1500, int(catalog_retry_max_chars or 0)),
+                    max(1500, int(sample_max_chars or 0)),
+                ),
+            )
+            retry_chunks = select_sample_catalog_context_chunks(
+                chunks,
+                max_chars=retry_chars,
+            )
+            retry_context = merge_chunks_text(
+                retry_chunks,
+                sections=EXPERIMENTAL_SECTIONS,
+                max_chars=retry_chars,
+            )
+            if len(retry_context) < 1000:
+                retry_context = experimental[:retry_chars]
+            try:
+                retry_samples = await _extract_catalog(
+                    SAMPLES_PROMPT,
+                    (
+                        "The previous catalog response was empty. Re-read this "
+                        "compact experimental context and return only explicitly "
+                        "prepared material samples. Do not invent a sample; if the "
+                        "paper truly names none, return an empty samples list.\n\n"
+                        f"Experimental text:\n{retry_context}"
+                    ),
+                    max_tokens=retry_tokens,
+                    stage="holistic_samples_retry",
+                )
+                result.samples = sanitize_catalog_samples(
+                    retry_samples,
+                    source_text=experimental,
+                )
+                result.samples = augment_catalog_samples_from_process_tables(
+                    chunks,
+                    result.samples,
+                )
+                if not result.samples:
+                    result.warnings.append("samples_retry:empty")
+            except Exception as exc:
+                result.warnings.append(f"samples_retry: {exc}")
+
     sample_ids = [
         normalize_sample_id(s.get("sample_id") or "")
         for s in result.samples
@@ -2579,7 +2849,7 @@ async def run_holistic_extraction(
         async with semaphore:
             parsed, _ = await llm_json(
                 BACKGROUND_PROMPT,
-                f"Known samples: {sample_hint}\n\nExperimental text:\n{experimental[:background_max_chars]}",
+                f"Known samples: {sample_hint}\n\nExperimental text:\n{background_context}",
                 max_tokens=background_max_tokens,
                 timeout_seconds=min(llm_timeout, background_timeout),
                 stage="holistic_background",
@@ -2590,12 +2860,21 @@ async def run_holistic_extraction(
     if experimental.strip() and catalog_supports_shared_background(result.samples):
         tasks.append(("background", _run_background()))
 
-    if results.strip() and sample_ids:
+    has_result_signal = bool(
+        _MEASUREMENT_RE.search(results) or _RESULT_TERM_RE.search(results)
+    )
+    if (
+        results.strip()
+        and sample_ids
+        and (not skip_empty_performance or has_result_signal)
+    ):
         windows = split_context_windows(
             results,
             max_chars=performance_window_chars,
             overlap_blocks=performance_window_overlap_blocks,
         )
+        if windows:
+            result.performance_attempted = True
         sweep_specs: list[tuple[str, str, str, int, str]] = []
         for index, window in enumerate(windows, start=1):
             stage = (
@@ -2723,6 +3002,11 @@ async def run_holistic_extraction(
         )
         for kind, prompt, stage, max_tokens, window in sweep_specs:
             tasks.append((kind, _run_one(kind, prompt, stage, max_tokens, window)))
+    elif sample_ids and skip_empty_performance and not has_result_signal:
+        result.performance_skipped_reason = "no_quantitative_signal"
+        result.warnings.append(
+            "holistic_performance_skipped:no_quantitative_signal"
+        )
 
     table_chunks = [
         chunk for chunk in chunks

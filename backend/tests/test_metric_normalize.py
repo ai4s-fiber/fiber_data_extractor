@@ -6,6 +6,7 @@ from app.services.extractor_v7.metric_normalize import (
     normalize_metrics_in_facts,
     normalize_spectroscopy_peaks,
 )
+from app.services.validation import normalize_unit
 from app.services.metrics_dictionary import (
     find_metric_canonical,
     find_process_parameter_canonical,
@@ -485,3 +486,20 @@ def test_fills_canonical_units_for_unitless_poisson_ratio_and_ph():
 
     assert facts[0]["unit"] == "dimensionless"
     assert facts[1]["unit"] == "pH"
+def test_poisson_alias_and_ph_unit_variants_are_canonicalized():
+    assert canonicalize_metric_name(
+        "poisson_s_ratio",
+        evidence="The poisson ratio was 0.43.",
+    ) == "Poissons_ratio"
+    assert normalize_unit("pH units") == "ph"
+
+    facts = normalize_metrics_in_facts([{
+        "fact_type": "performance",
+        "metric_or_parameter": "pH",
+        "value": "7.60",
+        "unit": "pH units",
+        "evidence_text": "The pH increased to 7.60 after immersion.",
+    }])
+
+    assert facts[0]["metric_or_parameter"] == "pH"
+    assert facts[0]["unit"] == "pH"

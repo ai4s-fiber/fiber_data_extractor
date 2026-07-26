@@ -47,11 +47,20 @@ _MODIFIED_MATERIAL_RE = re.compile(
     r"(?i)\b(?:composites?|reinforced|filled|enhancement|modified|treated|"
     r"hybrids?|tpms|metamaterials?)\b"
 )
+_MATRIX_ROLE_RE = re.compile(
+    r"(?i)\b(?:polymer|resin|epoxy|tpu|pa|pe|pp|pcl|pvdf)?\s*"
+    r"matrix(?:\s+(?:material|phase))?\b"
+)
+_REINFORCING_ROLE_RE = re.compile(
+    r"(?i)\breinforcing\s+phase(?:\s+material)?\b|"
+    r"\breinforcement\s+phase(?:\s+material)?\b|"
+    r"\b(?:carbon|glass|basalt|aramid|silica|natural)\s+fib(?:er|re)\b"
+)
 _GENERIC_MODIFIED_REFERENCE_TOKENS = frozenset({
     "composite", "composites", "enhanced", "enhancement", "fiber", "fibers",
     "fibre", "fibres", "filled", "material", "materials", "metamaterial",
-    "metamaterials", "modified", "reinforced", "reinforcement", "structure",
-    "structures", "tpms", "treated",
+    "metamaterials", "mechanical", "modified", "reinforced", "reinforcement",
+    "structure", "structures", "tpms", "treated",
 })
 _TREATED_VARIANT_RE = re.compile(
     r"(?i)\b(?:treated|modified|functionalized|functionalised|acetylated|"
@@ -467,6 +476,149 @@ def _sample_name_explicitly_supported(
     ))
 
 
+def _role_from_subject(subject_text: str) -> tuple[str, str]:
+    """Return a material role and the subject prefix that identifies it."""
+    normalized = normalize_for_match(subject_text)
+    if not normalized:
+        return "", ""
+    matrix_match = _MATRIX_ROLE_RE.search(normalized)
+    reinforcing_match = _REINFORCING_ROLE_RE.search(normalized)
+    matrix_marker = re.search(r"\bmatrix\b", normalized)
+    reinforcing_marker = re.search(
+        r"\b(?:reinforcing|reinforcement)\s+phase\b",
+        normalized,
+    ) or reinforcing_match
+    if matrix_match and not reinforcing_match:
+        prefix_end = matrix_marker.start() if matrix_marker else matrix_match.start()
+        return "matrix", normalized[:prefix_end].strip()
+    if reinforcing_match and not matrix_match:
+        prefix_end = (
+            reinforcing_marker.start()
+            if reinforcing_marker
+            else reinforcing_match.start()
+        )
+        return "reinforcing_phase", normalized[:prefix_end].strip()
+    return "", ""
+
+
+def _role_candidate_score(
+    card: dict,
+    *,
+    role: str,
+    subject_prefix: str,
+) -> float:
+    """Score one card against an explicit matrix/reinforcing subject role."""
+    sample_id = normalize_sample_id(card.get("sample_id") or "")
+    if not sample_id:
+        return -100.0
+    names = [
+        sample_id,
+        *parse_sample_aliases(card.get("sample_aliases")),
+        str(card.get("material_system") or ""),
+        str(card.get("matrix_name") or ""),
+        str(card.get("fiber_type") or ""),
+    ]
+    card_text = normalize_for_match(" ".join(value for value in names if value))
+    card_tokens = _token_set(card_text)
+    prefix_tokens = {
+        token
+        for token in re.split(r"[\s_/\-]+", normalize_for_match(subject_prefix))
+        if len(token) >= 3 and token not in _GENERIC_STOPWORDS
+    }
+    score = float(len(prefix_tokens & card_tokens) * 2)
+    normalized_prefix = normalize_for_match(subject_prefix)
+    if normalized_prefix and normalized_prefix in card_text:
+        score += 6
+
+    fiber_type = normalize_for_match(card.get("fiber_type") or "")
+    if role == "matrix":
+        if re.search(r"\bmatrix\b", card_text):
+            score += 8
+        if card.get("matrix_name") or card.get("matrix_content"):
+            score += 4
+        if fiber_type in {"fiber", "fibers", "nanofiber", "nanofibers"}:
+            score -= 8
+        if re.search(
+            r"\b(?:composite|composites|reinforced|tpms|metamaterial)\b",
+            card_text,
+        ):
+            score -= 4
+        if "structure" in card_tokens and "matrix" not in card_tokens:
+            score -= 3
+    elif role == "reinforcing_phase":
+        if fiber_type in {"fiber", "fibers", "nanofiber", "nanofibers"}:
+            score += 6
+        if re.search(
+            r"\b(?:carbon|glass|basalt|aramid|silica|natural)\s+fib(?:er|re)\b",
+            card_text,
+        ):
+            score += 6
+        if re.search(r"\breinforc(?:e|ed|ement|ing)\b", card_text):
+            score += 2
+        if re.search(
+            r"\b(?:composite|composites|tpms|metamaterial)\b",
+            card_text,
+        ):
+            score -= 4
+    return score
+
+
+def repair_explicit_sample_assignments(
+    facts: list[dict],
+    cards: list[dict],
+) -> list[dict]:
+    """Correct a model assignment when the subject explicitly names a material role.
+
+    This intentionally uses subject_text as the role signal and requires a
+    unique score margin. A long evidence paragraph alone cannot move a fact,
+    because it often contains properties for both matrix and reinforcement.
+    """
+    for fact in facts:
+        if fact.get("_background_only"):
+            continue
+        role, subject_prefix = _role_from_subject(
+            str(fact.get("subject_text") or "")
+        )
+        if not role:
+            continue
+        scored = sorted(
+            (
+                (
+                    _role_candidate_score(
+                        card,
+                        role=role,
+                        subject_prefix=subject_prefix,
+                    ),
+                    normalize_sample_id(card.get("sample_id") or ""),
+                )
+                for card in cards
+            ),
+            reverse=True,
+        )
+        scored = [(score, sid) for score, sid in scored if sid]
+        if not scored or scored[0][0] < 4:
+            continue
+        if len(scored) > 1 and scored[0][0] - scored[1][0] < 2:
+            continue
+        target = scored[0][1]
+        current = normalize_sample_id(fact.get("assigned_sample_id") or "")
+        if current == target:
+            continue
+        fact["assigned_sample_id"] = target
+        fact["candidate_sample_ids"] = [target]
+        fact["assignment_status"] = "assigned"
+        fact["assignment_confidence"] = max(
+            float(fact.get("assignment_confidence") or 0),
+            0.92,
+        )
+        reason = str(fact.get("assignment_reason") or "").strip()
+        if "evidence_role_sample_assignment" not in reason:
+            fact["assignment_reason"] = (
+                f"{reason}; evidence_role_sample_assignment".strip("; ")
+            )
+    return facts
+
+
 def repair_contextual_fact_assignments(
     facts: list[dict],
     cards: list[dict],
@@ -505,8 +657,13 @@ def repair_contextual_fact_assignments(
         return facts
     base_ids = {
         sid for sid in aliases_by_id
-        if sid and sid not in variant_ids and not _MODIFIED_MATERIAL_RE.search(
-            normalize_for_match(sid)
+        if (
+            sid
+            and sid not in variant_ids
+            and (
+                not _MODIFIED_MATERIAL_RE.search(normalize_for_match(sid))
+                or _is_generic_modified_reference(sid)
+            )
         )
     }
     for fact in facts:
@@ -1051,7 +1208,12 @@ def merge_sample_identities(
         sample_cards=sample_cards,
     )
     if not alias_map:
-        return sample_mentions, facts, sample_cards
+        repaired_facts = repair_explicit_sample_assignments(facts, sample_cards)
+        return (
+            sample_mentions,
+            _attach_aliases_to_facts(repaired_facts, sample_cards),
+            sample_cards,
+        )
     alias_map = _augment_contextual_aliases(
         alias_map,
         facts=facts,
@@ -1064,5 +1226,6 @@ def merge_sample_identities(
         facts=facts,
         sample_cards=sample_cards,
     )
+    updated_facts = repair_explicit_sample_assignments(updated_facts, updated_cards)
     updated_facts = repair_contextual_fact_assignments(updated_facts, updated_cards)
     return mentions, _attach_aliases_to_facts(updated_facts, updated_cards), updated_cards

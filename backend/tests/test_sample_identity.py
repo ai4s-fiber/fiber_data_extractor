@@ -5,6 +5,7 @@ from app.services.extractor_v7.sample_identity import (
     build_sample_alias_map,
     merge_sample_identities,
     parse_sample_aliases,
+    repair_explicit_sample_assignments,
     repair_contextual_fact_assignments,
 )
 
@@ -932,3 +933,34 @@ def test_contextual_repair_ignores_short_formula_aliases_and_moves_structure_pro
     assert repaired[2]["assigned_sample_id"] == target
     assert repaired[3]["assigned_sample_id"] == "TPU_matrix"
     assert repaired[4]["assigned_sample_id"] == "T300_carbon_fiber"
+def test_explicit_subject_roles_correct_sample_assignment_without_evidence_overreach():
+    cards = [
+        {"sample_id": "TPU_matrix", "sample_aliases": ["TPU", "TPU matrix material"],
+         "material_system": "thermoplastic polyurethane (TPU)", "fiber_type": "bulk"},
+        {"sample_id": "T300_carbon_fiber", "material_system": "T300 carbon fiber",
+         "fiber_type": "fiber"},
+        {"sample_id": "TPU_T300_composite",
+         "material_system": "TPU/T300 carbon fiber composite", "fiber_type": "bulk"},
+    ]
+    facts = [
+        {"fact_type": "performance", "assigned_sample_id": "T300_carbon_fiber",
+         "subject_text": "TPU matrix material", "metric_or_parameter": "density",
+         "value": "1200", "unit": "kg m^-3",
+         "evidence_text": "The matrix material has density 1200; the reinforcing phase is T300 carbon fiber."},
+        {"fact_type": "performance", "assigned_sample_id": "TPU_T300_composite",
+         "subject_text": "T300 carbon fiber reinforcing phase material",
+         "metric_or_parameter": "Youngs_modulus", "value": "230", "unit": "GPa",
+         "evidence_text": "The reinforcing phase material is T300 carbon fiber with modulus 230 GPa."},
+        {"fact_type": "performance", "assigned_sample_id": "TPU_T300_composite",
+         "subject_text": "Youngs_modulus", "metric_or_parameter": "Youngs_modulus",
+         "value": "26", "unit": "MPa",
+         "evidence_text": "The matrix material has 20 MPa and the fiber composite has 26 MPa."},
+    ]
+
+    out = repair_explicit_sample_assignments(facts, cards)
+
+    assert out[0]["assigned_sample_id"] == "TPU_matrix"
+    assert out[1]["assigned_sample_id"] == "T300_carbon_fiber"
+    assert out[2]["assigned_sample_id"] == "TPU_T300_composite"
+    assert "evidence_role_sample_assignment" in out[0]["assignment_reason"]
+    assert "evidence_role_sample_assignment" in out[1]["assignment_reason"]

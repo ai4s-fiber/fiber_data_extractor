@@ -5,7 +5,7 @@ import { useProject } from '../stores/project';
 import api from '../api/client';
 
 const DEFAULT_LLM_BASE_URL = 'https://aigw.sotatts.online/v1';
-const DEFAULT_LLM_MODEL = 'gpt-5.5';
+const DEFAULT_LLM_MODEL = 'gpt-5.6-luna';
 
 interface DiagnosticAttempt {
   base_url: string;
@@ -206,7 +206,7 @@ export default function SettingsPage() {
                   form.setFieldsValue({ llm_base_url: 'https://api.anthropic.com', llm_model: 'claude-sonnet-4-6' });
                 }
               }}>
-                <Select.Option value="openai">OpenAI-compatible (AI Gateway / GPT-5.5 等接口)</Select.Option>
+                <Select.Option value="openai">OpenAI-compatible (AI Gateway / GPT-5.6 等接口)</Select.Option>
                 <Select.Option value="anthropic">Anthropic (Claude 系列模型)</Select.Option>
               </Select>
             </Form.Item>
@@ -239,7 +239,7 @@ export default function SettingsPage() {
               rules={[{ required: true, message: '请输入或选择模型名称' }]}
             >
               <Input
-                placeholder="如 gpt-5.5, deepseek-chat, glm-4"
+                placeholder="如 gpt-5.6-luna, deepseek-chat, glm-4"
                 className="custom-input"
               />
             </Form.Item>

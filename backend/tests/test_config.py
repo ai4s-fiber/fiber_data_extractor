@@ -42,16 +42,23 @@ def test_default_llm_uses_gpt55_gateway_with_batch_budget():
     settings = Settings(DEBUG=False, _env_file=None)
     assert settings.DEFAULT_LLM_PROVIDER == "openai"
     assert settings.DEFAULT_LLM_BASE_URL == "https://aigw.sotatts.online/v1"
-    assert settings.DEFAULT_LLM_MODEL == "gpt-5.5"
+    assert settings.DEFAULT_LLM_MODEL == "gpt-5.6-luna"
     assert settings.EXTRACTION_MAX_CONCURRENT_JOBS == 3
     assert settings.EXTRACTION_MAX_ATTEMPTS == 2
     assert settings.EXTRACTION_PIPELINE_TIMEOUT_SECONDS == 1800
     assert settings.STRONG_LLM_PARALLEL_CALLS == 4
     assert settings.STRONG_HOLISTIC_SAMPLE_MAX_CHARS == 16000
     assert settings.STRONG_HOLISTIC_CATALOG_REASONING_EFFORT == "low"
+    assert settings.STRONG_HOLISTIC_CATALOG_RETRY_ENABLED is True
+    assert settings.STRONG_HOLISTIC_CATALOG_RETRY_MAX_CHARS == 8000
+    assert settings.STRONG_HOLISTIC_CATALOG_RETRY_MAX_TOKENS == 1800
     assert settings.STRONG_HOLISTIC_PERFORMANCE_TIMEOUT_SECONDS == 180
     assert settings.STRONG_HOLISTIC_PERFORMANCE_WINDOW_CHARS == 6000
     assert settings.STRONG_HOLISTIC_WINDOW_OVERLAP_BLOCKS == 1
+    assert settings.STRONG_HOLISTIC_RESULT_MIN_SCORE == 4
+    assert settings.STRONG_HOLISTIC_MAX_RESULT_BLOCKS == 80
+    assert settings.STRONG_HOLISTIC_RESULT_NEIGHBOR_BLOCKS == 1
+    assert settings.STRONG_HOLISTIC_SKIP_EMPTY_PERFORMANCE is True
     assert settings.STRONG_HOLISTIC_PARALLEL_CALLS == 3
     assert settings.STRONG_HOLISTIC_BACKGROUND_TIMEOUT_SECONDS == 60
     assert settings.STRONG_HOLISTIC_BACKGROUND_MAX_CHARS == 9000
@@ -77,6 +84,9 @@ def test_strong_chunk_limits_sane():
     assert s.WEAK_STAGE2_BATCH_SIZE >= 1
     assert s.WEAK_STAGE2_BATCH_MAX_CHARS >= 2000
     assert s.WEAK_STAGE2_BATCH_MAX_TOKENS >= 1400
+    assert s.STRONG_HOLISTIC_RESULT_MIN_SCORE >= 0
+    assert s.STRONG_HOLISTIC_MAX_RESULT_BLOCKS >= 1
+    assert s.STRONG_HOLISTIC_RESULT_NEIGHBOR_BLOCKS >= 0
 
 
 def test_project_llm_config_update_is_partial_by_default():

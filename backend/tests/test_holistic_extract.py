@@ -20,6 +20,7 @@ from app.services.extractor_v7.holistic_extract import (
     reconcile_holistic_table_duplicates,
     run_holistic_extraction,
     sanitize_catalog_samples,
+    select_background_context_chunks,
     select_performance_context_chunks,
     select_sample_catalog_context_chunks,
     select_specialized_result_context,
@@ -325,6 +326,216 @@ def test_performance_context_detects_mechanics_and_frequency_units():
     selected = select_performance_context_chunks(chunks, max_chars=2000)
 
     assert selected == chunks
+
+
+def test_performance_context_keeps_dimensionless_result_metrics():
+    chunks = [
+        {
+            "page_number": 4,
+            "order_index": 1,
+            "section_name": "results",
+            "source_type": "text",
+            "raw_text": "The Poisson's ratio was 0.42 and the maximum acceleration was 37.",
+        },
+        {
+            "page_number": 5,
+            "order_index": 2,
+            "section_name": "results",
+            "source_type": "text",
+            "raw_text": "The normalized bandgap frequency ranged from 0.145 to 0.194.",
+        },
+    ]
+
+    selected = select_performance_context_chunks(
+        chunks,
+        max_chars=2000,
+        min_score=4,
+        max_blocks=10,
+        neighbor_blocks=0,
+    )
+
+    assert selected == chunks
+
+
+def test_performance_context_can_limit_low_signal_blocks_and_neighbors():
+    chunks = [
+        {
+            "page_number": 2,
+            "order_index": 1,
+            "section_name": "results",
+            "source_type": "text",
+            "raw_text": "The sample count was 24 and the test was repeated three times.",
+        },
+        {
+            "page_number": 3,
+            "order_index": 2,
+            "section_name": "results",
+            "source_type": "text",
+            "raw_text": "Sample S1 showed a tensile strength of 120 MPa.",
+        },
+        {
+            "page_number": 3,
+            "order_index": 3,
+            "section_name": "results",
+            "source_type": "text",
+            "raw_text": "The fracture surface of S1 was examined by SEM.",
+        },
+        {
+            "page_number": 8,
+            "order_index": 4,
+            "section_name": "results",
+            "source_type": "text",
+            "raw_text": "Sample S2 showed a tensile strength of 95 MPa.",
+        },
+    ]
+
+    selected = select_performance_context_chunks(
+        chunks,
+        max_chars=5000,
+        min_score=4,
+        max_blocks=2,
+        neighbor_blocks=0,
+    )
+
+    assert [chunk["page_number"] for chunk in selected] == [3, 8]
+    assert all("sample count" not in chunk["raw_text"] for chunk in selected)
+
+
+def test_background_context_prefers_process_and_composition_evidence():
+    chunks = [
+        {
+            "page_number": 1,
+            "order_index": 1,
+            "section_name": "experimental",
+            "source_type": "text",
+            "raw_text": "The material was prepared in a laboratory.",
+        },
+        {
+            "page_number": 2,
+            "order_index": 2,
+            "section_name": "experimental",
+            "source_type": "text",
+            "raw_text": (
+                "A 12 wt% polymer solution in DMF was electrospun at 18 kV, "
+                "followed by annealing at 120 °C for 2 h."
+            ),
+        },
+        {
+            "page_number": 4,
+            "order_index": 3,
+            "section_name": "experimental",
+            "source_type": "text",
+            "raw_text": "SEM showed a uniform nanofiber morphology.",
+        },
+    ]
+
+    selected = select_background_context_chunks(chunks, max_chars=1000)
+
+    assert any("electrospun" in chunk["raw_text"] for chunk in selected)
+    assert sum(len(chunk["raw_text"]) for chunk in selected) <= 1000
+
+
+@pytest.mark.asyncio
+async def test_holistic_skips_empty_core_performance_call_when_configured():
+    chunks = [
+        {
+            "page_number": 1,
+            "order_index": 0,
+            "section_name": "experimental",
+            "source_type": "text",
+            "raw_text": "Sample S1 was prepared as a composite.",
+        },
+        {
+            "page_number": 2,
+            "order_index": 1,
+            "section_name": "results",
+            "source_type": "text",
+            "raw_text": "The morphology was observed using microscopy.",
+        },
+    ]
+    stages: list[str] = []
+
+    async def fake_llm_json(_system, _user, *, stage, **_kwargs):
+        stages.append(stage)
+        if stage == "holistic_samples":
+            return {"samples": [{"sample_id": "S1"}]}, ""
+        if stage == "holistic_background":
+            return {"process": {}}, ""
+        if stage.startswith("holistic_performances"):
+            raise AssertionError("core performance call should have been skipped")
+        return {}, ""
+
+    result = await run_holistic_extraction(
+        chunks=chunks,
+        llm_json=fake_llm_json,
+        llm_timeout=5,
+        performance_min_score=4,
+        skip_empty_performance=True,
+        sensing_enabled=False,
+    )
+
+    assert result.performance_attempted is False
+    assert result.performance_skipped_reason == "no_quantitative_signal"
+    assert not any(stage.startswith("holistic_performances") for stage in stages)
+
+
+@pytest.mark.asyncio
+async def test_empty_sample_catalog_retries_once_with_compact_context():
+    chunks = [{
+        "page_number": 1,
+        "order_index": 0,
+        "section_name": "experimental",
+        "source_type": "text",
+        "raw_text": "The TPU matrix and T300 carbon fiber were combined to prepare CF-TPU.",
+    }]
+    stages: list[str] = []
+
+    async def fake_llm_json(_system, _user, *, stage, **_kwargs):
+        stages.append(stage)
+        if stage == "holistic_samples":
+            return {"samples": []}, ""
+        if stage == "holistic_samples_retry":
+            return {"samples": [{"sample_id": "CF-TPU"}]}, ""
+        return {}, ""
+
+    result = await run_holistic_extraction(
+        chunks=chunks,
+        llm_json=fake_llm_json,
+        llm_timeout=5,
+        sensing_enabled=False,
+    )
+
+    assert stages.count("holistic_samples") == 1
+    assert stages.count("holistic_samples_retry") == 1
+    assert [sample["sample_id"] for sample in result.samples] == ["CF-TPU"]
+
+
+@pytest.mark.asyncio
+async def test_empty_sample_catalog_retry_is_bounded():
+    chunks = [{
+        "page_number": 1,
+        "order_index": 0,
+        "section_name": "experimental",
+        "source_type": "text",
+        "raw_text": "A composite material was prepared for testing.",
+    }]
+    stages: list[str] = []
+
+    async def fake_llm_json(_system, _user, *, stage, **_kwargs):
+        stages.append(stage)
+        return {"samples": []}, ""
+
+    result = await run_holistic_extraction(
+        chunks=chunks,
+        llm_json=fake_llm_json,
+        llm_timeout=5,
+        sensing_enabled=False,
+    )
+
+    assert result.samples == []
+    assert stages.count("holistic_samples") == 1
+    assert stages.count("holistic_samples_retry") == 1
+    assert "samples_retry:empty" in result.warnings
 
 
 def test_sample_catalog_context_keeps_identities_not_parameter_sweeps_or_timepoints():

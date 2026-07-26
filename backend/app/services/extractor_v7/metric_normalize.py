@@ -70,7 +70,7 @@ def canonicalize_metric_name(
     if str(unit or "").strip().lower() == "ph" and re.search(r"\bp\s*h\b", evidence_lower):
         return "pH"
     if raw_key in {
-        "orientation_factor", "poisson_ratio", "poissons_ratio", "surface_roughness",
+        "orientation_factor", "poisson_ratio", "poissons_ratio", "poisson_s_ratio", "surface_roughness",
     } and re.search(
         r"poisson(?:[’']s|s)?\s+ratio", evidence_lower,
     ):
@@ -247,7 +247,7 @@ def normalize_metrics_in_facts(facts: list[dict]) -> list[dict]:
             ):
                 fact["unit"] = "dimensionless"
             elif canonical_metric == "pH" and raw_unit in {
-                "", "-", "ph", "unitless",
+                "", "-", "ph", "ph units", "unitless",
             }:
                 fact["unit"] = "pH"
     return normalize_spectroscopy_peaks(facts)

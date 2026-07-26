@@ -58,7 +58,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--project-name", default="Bulk literature extraction")
     parser.add_argument("--api-key-env", default="AIGW_API_KEY")
     parser.add_argument("--base-url", default="https://aigw.sotatts.online/v1")
-    parser.add_argument("--model", default="gpt-5.5")
+    parser.add_argument("--model", default="gpt-5.6-luna")
     parser.add_argument("--provider", default="openai")
     parser.add_argument("--database-url", default="")
     parser.add_argument("--limit", type=int, default=0, help="0 means all PDFs.")
