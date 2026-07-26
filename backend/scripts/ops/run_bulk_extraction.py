@@ -208,7 +208,24 @@ async def _hash_documents(
                 preview_chars=inspection.preview_chars,
             )
 
-        document = await asyncio.to_thread(inspect_one)
+        try:
+            document = await asyncio.to_thread(inspect_one)
+        except Exception as exc:
+            # One damaged or transiently unreadable PDF must not abort the
+            # inventory for the whole corpus. Keep it in the report as a
+            # rejected item so the remaining files can continue through the
+            # MinerU batch and the operator can repair or retry it later.
+            document = SourceDocument(
+                path=path,
+                sha256="",
+                rejection_reason="preflight_error",
+                warning=(
+                    f"{exc.__class__.__name__}: {str(exc)[:500]}"
+                ),
+                relevance_decision="review",
+                relevance_reason="preflight_error",
+            )
+            print(f"[hash] failed {path}: {document.warning}", flush=True)
         async with lock:
             completed += 1
             if completed == len(paths) or completed % 100 == 0:
@@ -229,13 +246,17 @@ async def _hash_documents(
         hashed.extend(await asyncio.gather(*(bounded(path) for path in batch)))
 
     unique: dict[str, SourceDocument] = {}
+    failed: list[SourceDocument] = []
     for item in hashed:
+        if not item.sha256:
+            failed.append(item)
+            continue
         existing = unique.get(item.sha256)
         if existing is None:
             unique[item.sha256] = item
         else:
             existing.duplicate_paths.append(item.path)
-    return list(unique.values())
+    return [*unique.values(), *failed]
 
 
 def _materialize_pdf(
@@ -1122,7 +1143,9 @@ async def _run(args: argparse.Namespace) -> dict:
             inspect_relevance=args.relevance_prefilter != "off",
         )
         report["unique_files"] = len(documents)
-        report["duplicate_files"] = len(paths) - len(documents)
+        report["duplicate_files"] = sum(
+            len(item.duplicate_paths) for item in documents
+        )
         report["duplicate_groups"] = [
             {
                 "sha256": item.sha256,

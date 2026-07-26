@@ -78,6 +78,40 @@ async def test_bulk_hashing_deduplicates_identical_pdf_bytes(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_bulk_hashing_isolates_single_preflight_error(tmp_path, monkeypatch):
+    first = tmp_path / "first.pdf"
+    broken = tmp_path / "broken.pdf"
+    third = tmp_path / "third.pdf"
+    first.write_bytes(b"first-pdf")
+    broken.write_bytes(b"broken-pdf")
+    third.write_bytes(b"third-pdf")
+
+    from app.services import file_integrity
+
+    real_file_sha256 = file_integrity.file_sha256
+
+    def flaky_file_sha256(path):
+        if Path(path).name == "broken.pdf":
+            raise OSError(22, "Invalid argument")
+        return real_file_sha256(path)
+
+    monkeypatch.setattr(file_integrity, "file_sha256", flaky_file_sha256)
+    documents = await _hash_documents(
+        [first, broken, third],
+        concurrency=2,
+        inspect_relevance=False,
+    )
+
+    assert {item.path.name for item in documents} == {
+        "first.pdf", "broken.pdf", "third.pdf",
+    }
+    failed = next(item for item in documents if item.path.name == "broken.pdf")
+    assert failed.sha256 == ""
+    assert failed.rejection_reason == "preflight_error"
+    assert "OSError" in failed.warning
+
+
+@pytest.mark.asyncio
 async def test_bulk_retry_uses_latest_failed_job_over_older_completed_job(
     bulk_result_db,
     tmp_path,

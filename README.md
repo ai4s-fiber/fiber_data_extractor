@@ -196,6 +196,7 @@ python scripts\ops\run_bulk_extraction.py `
 ```
 
 - 默认使用硬链接把语料纳入 `uploads/`，源目录与项目不在同一磁盘时自动退回复制；不会修改原始 PDF。
+- 单篇 PDF 在本地哈希、页数或前两页预检阶段发生异常时，会被记录到 `preflight_rejected_files` 并继续处理其余文献，不会因为一个损坏或暂时不可读的文件中断整批；最终报告会将该批标记为需要复核。
 - 默认启用保守型本地相关性预筛。它只用成熟的 `pypdf` 读取元数据和前两页，经过 Unicode 规范化后跳过明确综述、书评、勘误、撤稿和纯临床噪声；仅仅“前两页未出现纤维关键词”不会被跳过，文本不足或判断模糊的论文仍提交 MinerU。报告中的 `relevance_skipped_files` 可逐篇审计，使用 `--include-prefilter-rejected` 可强制纳入。
 - 默认跳过已完成和失败文献，并以每篇论文最新一条任务记录为准。确认要重试最新失败项时增加 `--retry-failed`，确认要重新抽取最新已完成项时增加 `--reextract-completed`；旧成功记录不会再阻止最新失败任务重试。
 - 使用一个或多个 `--pdf-name "exact-name.pdf"` 可以只恢复指定论文，不需要重新扫描和提交整个项目。
