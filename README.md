@@ -1,5 +1,9 @@
 # Fiber Data Extractor
 
+> [!IMPORTANT]
+> **这是独立的纤维文献数据抽取工具，不是 Material Graph Studio 主平台。**
+> 完整主项目请前往 [ai4s-fiber/material-graph-studio](https://github.com/ai4s-fiber/material-graph-studio)。
+
 开放式本地/私有 Web 工作区，用于从纤维材料文献 PDF 中提取结构化数据。
 
 > 当前代码仓库已公开用于协作查看。应用已取消登录和用户系统，能够访问部署服务的人都可以操作项目数据；实际部署请只放在本机、内网或受控环境中。
