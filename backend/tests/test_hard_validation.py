@@ -63,6 +63,45 @@ def test_evidence_corrects_storage_modulus_and_interlaminar_toughness():
     )
 
 
+def test_power_law_indices_are_not_absolute_storage_or_loss_moduli():
+    evidence = (
+        "For neat PLA, the fitted powerlaw indices were 1.82 for G' and "
+        "0.92 for G″, slightly deviating from the theoretical values."
+    )
+
+    assert infer_metric_from_evidence(
+        evidence,
+        unit="dimensionless",
+        current_metric="storage_modulus",
+        value="1.82",
+    ) == "storage_modulus_power_law_index"
+    assert infer_metric_from_evidence(
+        evidence,
+        unit="dimensionless",
+        current_metric="loss_modulus",
+        value="0.92",
+    ) == "loss_modulus_power_law_index"
+
+    corrected = apply_hard_validation([{
+        "fact_type": "performance",
+        "metric_or_parameter": "storage_modulus",
+        "value": "1.82",
+        "unit": "dimensionless",
+        "evidence_text": evidence,
+    }])
+
+    assert (
+        corrected[0]["metric_or_parameter"]
+        == "storage_modulus_power_law_index"
+    )
+    assert metric_unit_compatible(
+        "storage_modulus_power_law_index", "dimensionless"
+    )
+    assert metric_unit_compatible(
+        "loss_modulus_power_law_index", "dimensionless"
+    )
+
+
 def test_evidence_corrects_relative_strength_metrics():
     assert infer_metric_from_evidence(
         "The flexural strength increased by 8% compared with CF/EP.",
@@ -136,6 +175,102 @@ def test_evidence_uses_value_proximity_when_flexural_strength_and_ilss_cooccur()
         current_metric="flexural_strength",
         value="83",
     ) == "interlaminar_shear_strength"
+
+
+def test_clause_local_metric_inference_separates_tufting_tradeoffs():
+    evidence = (
+        "Tufting resulted in reduction in the in-plane properties like TS, "
+        "FS & IPS by 15%-20% whereas mode-1 interlaminar fracture toughness "
+        "was enhanced by about 10 times."
+    )
+
+    for value in ("15", "20"):
+        assert infer_metric_from_evidence(
+            evidence,
+            unit="%",
+            current_metric="fracture_toughness_improvement",
+            value=value,
+        ) == "in_plane_property_reduction"
+    assert infer_metric_from_evidence(
+        evidence,
+        unit="times",
+        current_metric="interlaminar_fracture_toughness",
+        value="10",
+    ) == "mode_I_interlaminar_fracture_toughness_improvement"
+
+
+def test_ordered_strength_changes_bind_each_value_to_its_metric():
+    evidence = (
+        "The compressive and flexural strength of organic hybrid fiber "
+        "reinforced geopolymer increased by more than 90% and 65%, and the "
+        "compressive strength of mineral-organic hybrid fiber reinforced "
+        "geopolymer increased by more than 160%."
+    )
+
+    assert infer_metric_from_evidence(
+        evidence,
+        unit="%",
+        current_metric="flexural_strength_improvement",
+        value="90",
+    ) == "compressive_strength_improvement"
+    assert infer_metric_from_evidence(
+        evidence,
+        unit="%",
+        current_metric="flexural_strength_improvement",
+        value="65",
+    ) == "flexural_strength_improvement"
+    assert infer_metric_from_evidence(
+        evidence,
+        unit="%",
+        current_metric="flexural_strength_improvement",
+        value="160",
+    ) == "compressive_strength_improvement"
+
+
+def test_relative_water_parameters_use_change_metrics():
+    evidence = (
+        "These two parameters increase by 802.86 and 176.80%, respectively, "
+        "as the water temperature increases from 30 to 90 C."
+    )
+
+    assert infer_metric_from_evidence(
+        evidence,
+        unit="%",
+        current_metric="equilibrium_water_content",
+        value="802.86",
+    ) == "equilibrium_water_content_change"
+    assert infer_metric_from_evidence(
+        evidence,
+        unit="%",
+        current_metric="water_diffusion_coefficient",
+        value="176.80",
+    ) == "water_diffusion_coefficient_change"
+
+
+def test_composition_percentages_are_not_expanded_as_performance_rows():
+    evidence = (
+        "The optimum compositions were organic composite (formulated as 98% "
+        "of MK, 1% of PP and 1% of PVA) and hybrid composite (formulated as "
+        "83% of MK, 15% of WS and 2% of PVA), whose compressive strength "
+        "increased by 90% and 160%, respectively."
+    )
+    fact = {
+        "fact_id": "F1",
+        "fact_type": "performance",
+        "metric_or_parameter": "compressive_strength_improvement",
+        "value": "90",
+        "unit": "%",
+        "assigned_sample_id": "organic composite",
+        "condition": "formulated as 98% MK, 1% PP and 1% PVA",
+        "evidence_text": evidence,
+        "_alignment_review_required": True,
+    }
+
+    out = apply_hard_validation([fact])
+
+    assert len(out) == 1
+    assert out[0]["value"] == "90"
+    assert out[0]["assigned_sample_id"] == "organic composite"
 
 
 def test_characteristic_strains_are_not_surface_roughness():
@@ -330,3 +465,51 @@ def test_temperature_performance_is_not_relabelled_as_test_condition():
     assert "temperature_moved_to_condition" not in (
         out[0].get("assignment_reason") or ""
     )
+
+
+def test_cold_crystallization_temperature_remains_a_performance_value():
+    facts = [{
+        "fact_id": "F1",
+        "fact_type": "performance",
+        "metric_or_parameter": "cold_crystallization_temperature",
+        "value": "101.63",
+        "unit": "°C",
+        "evidence_text": "Table 2 reports Tcc = 101.63 °C for PLA/FR 4%.",
+        "assigned_sample_id": "PLA/FR 4%",
+    }]
+
+    out = apply_hard_validation(facts)
+
+    assert out[0]["value"] == "101.63"
+    assert out[0]["unit"] == "°C"
+    assert "temperature_moved_to_condition" not in (
+        out[0].get("assignment_reason") or ""
+    )
+
+def test_absolute_loss_modulus_is_not_a_power_law_index():
+    evidence = (
+        "At an angular frequency of 100 rad s-1, G″ increased from "
+        "15496 Pa to 55990 Pa."
+    )
+
+    assert infer_metric_from_evidence(
+        evidence,
+        unit="Pa",
+        current_metric="loss_modulus_power_law_index",
+        value="15496",
+    ) == "loss_modulus"
+
+
+def test_storage_modulus_temperature_drop_maps_to_glass_transition_range():
+    evidence = (
+        "A noticeable drop in G' was observed between 50 °C and 70 °C "
+        "across all samples, indicating the occurrence of the glass transition."
+    )
+
+    for value in ("50", "70"):
+        assert infer_metric_from_evidence(
+            evidence,
+            unit="°C",
+            current_metric="storage_modulus",
+            value=value,
+        ) == "glass_transition_temperature"

@@ -13,6 +13,7 @@ def test_scientific_notation_parsing():
     assert parse_scientific_value("8x10-4") == "8e-4"
     assert parse_scientific_value("8e-4") == "8e-4"
     assert parse_scientific_value("1.5×10^3") == "1.5e3"
+    assert parse_scientific_value(r"$5.2425 \times 10^{-13}$") == "5.2425e-13"
 
 
 def test_reconcile_mantissa_from_evidence():
@@ -100,6 +101,17 @@ def test_sample_id_rejects_decimal_prefix_hallucination():
 
     assert sid == ""
     assert "sample_id_was_decimal_prefix_only" in notes
+
+
+def test_table_row_provenance_suffix_is_removed_from_sample_id():
+    sid, condition, notes = sanitize_sample_id(
+        "PLA_F-CNC_2wt% (row 3",
+        "PLA_F-CNC_2wt% had a tensile strength of 57.35 MPa.",
+    )
+
+    assert sid == "PLA_F-CNC_2wt%"
+    assert condition == ""
+    assert "removed_table_row_suffix_from_sample_id" in notes
 
 
 def test_imidization_not_crystallinity():

@@ -5,7 +5,7 @@ import { useProject } from '../stores/project';
 import api from '../api/client';
 
 const DEFAULT_LLM_BASE_URL = 'https://aigw.sotatts.online/v1';
-const DEFAULT_LLM_MODEL = 'gpt-5.6-luna';
+const DEFAULT_LLM_MODEL = 'gpt-5.5';
 
 interface DiagnosticAttempt {
   base_url: string;
@@ -239,7 +239,7 @@ export default function SettingsPage() {
               rules={[{ required: true, message: '请输入或选择模型名称' }]}
             >
               <Input
-                placeholder="如 gpt-5.6-luna, deepseek-chat, glm-4"
+                placeholder="如 gpt-5.5, deepseek-chat, glm-4"
                 className="custom-input"
               />
             </Form.Item>

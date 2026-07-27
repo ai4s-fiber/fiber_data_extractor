@@ -87,6 +87,13 @@ _PRIMARY_RESULT_PATTERNS = (
     re.compile(r"(?i)\b(?:these|the|our)\s+(?:results?|values?)\s+(?:are|were)\s+(?:shown|presented|reported|summarized)\b"),
     re.compile(r"(?i)\b(?:the\s+)?plot\s+(?:shows?|indicates?|reveals?)\b"),
     re.compile(r"(?i)\b(?:was|were|is|are)\s+(?:measured|obtained|found|observed)\b"),
+    re.compile(
+        r"(?is)(?:^|[.!?]\s+)\s*the\s+measured\b"
+        r"(?:(?!\b(?:previously|literature)\b|reported\s+by).){0,160}?"
+        r"\b(?:is|are|was|were)\b"
+        r"(?:(?!\b(?:previously|literature)\b|reported\s+by).){0,80}?"
+        r"[+-]?(?:\d+(?:\.\d+)?|\.\d+)"
+    ),
 )
 
 

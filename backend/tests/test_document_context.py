@@ -28,6 +28,46 @@ def test_table_html_to_tsv_preserves_every_cell_with_row_ids():
     assert "<td>" not in text
 
 
+def test_table_html_to_tsv_flattens_mineru_multilevel_headers():
+    html = (
+        '<table><tr><td rowspan="2">Groups</td>'
+        '<td colspan="2">Precursors</td><td colspan="2">Activators</td>'
+        '<td rowspan="2">Seawater</td><td colspan="2">Fiber (vol%)</td></tr>'
+        '<tr><td>GBFS</td><td>FA</td><td>Na2SiO3</td><td>NaOH</td>'
+        '<td>BF</td><td>bF</td></tr>'
+        '<tr><td>BF-0.6 %</td><td>560</td><td>560</td><td>107.21</td>'
+        '<td>42.05</td><td>425.6</td><td>0.6</td><td>-</td></tr>'
+        '<tr><td>bF-0.6 %</td><td>560</td><td>560</td><td>107.21</td>'
+        '<td>42.05</td><td>425.6</td><td>-</td><td>0.6</td></tr></table>'
+    )
+
+    text = table_html_to_tsv(html)
+
+    assert text.splitlines()[0] == (
+        "[columns]\tGroups\tPrecursors / GBFS\tPrecursors / FA\t"
+        "Activators / Na2SiO3\tActivators / NaOH\tSeawater\t"
+        "Fiber (vol%) / BF\tFiber (vol%) / bF"
+    )
+    assert "[row 1]\tBF-0.6 %\t560\t560\t107.21\t42.05\t425.6\t0.6\t-" in text
+    assert "[row 2]\tbF-0.6 %\t560\t560\t107.21\t42.05\t425.6\t-\t0.6" in text
+    assert "[row 1]\tGBFS" not in text
+
+
+def test_table_html_to_tsv_keeps_body_rowspan_columns_without_repeating_payload():
+    html = (
+        "<table><tr><td>Source</td><td>Model</td><td>Specimen</td><td>R2</td></tr>"
+        '<tr><td rowspan="2">Huang et al.</td><td rowspan="2">long equation</td>'
+        "<td>Control</td><td>0.916</td></tr>"
+        "<tr><td>BF-0.3 %</td><td>0.992</td></tr></table>"
+    )
+
+    text = table_html_to_tsv(html)
+
+    assert "[row 1]\tHuang et al.\tlong equation\tControl\t0.916" in text
+    assert "[row 2]\t\t\tBF-0.3 %\t0.992" in text
+    assert text.count("long equation") == 1
+
+
 def test_document_chunks_include_caption_and_table_body():
     context = DocumentContext(
         paper_id=1,

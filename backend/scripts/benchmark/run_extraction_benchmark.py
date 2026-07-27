@@ -29,7 +29,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--pdf-dir", required=True, help="Directory containing benchmark PDFs.")
     parser.add_argument("--api-key-env", default="AIGW_API_KEY", help="Environment variable holding the API key.")
     parser.add_argument("--base-url", default="https://aigw.sotatts.online/v1")
-    parser.add_argument("--model", default="gpt-5.6-luna")
+    parser.add_argument("--model", default="gpt-5.5")
     parser.add_argument("--provider", default="openai")
     parser.add_argument("--model-mode", default="weak", choices=["weak", "strong", "auto"])
     parser.add_argument(

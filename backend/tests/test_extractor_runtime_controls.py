@@ -342,6 +342,30 @@ def test_fact_candidates_backfill_sample_mentions_filters_conditions():
     assert "fiber" not in sample_ids
 
 
+def test_fact_candidates_backfill_unicode_respective_sample_names():
+    evidence = (
+        "The measured κ of P-BN fiber and C-BN fiber are "
+        "39.5 ± 1.6 and 53.9 ± 1.4 W m−1 K−1 (Figure 3d), respectively."
+    )
+    facts = [
+        {
+            "candidate_sample_ids": ["P-BN fiber and C-BN fiber"],
+            "assigned_sample_id": "BN fiber",
+            "metric_or_parameter": "thermal_conductivity",
+            "value": value,
+            "unit": "W m^-1 K^-1",
+            "source_location": "page 5, Figure 3d",
+            "evidence_text": evidence,
+        }
+        for value in ("39.5", "53.9")
+    ]
+
+    mentions = V7ExtractorService._sample_mentions_from_fact_candidates(facts)
+
+    sample_ids = {mention["normalized_sample_id"] for mention in mentions}
+    assert {"P-BN fiber", "C-BN fiber"} <= sample_ids
+
+
 def test_fact_candidates_reject_aggregate_and_fraction_phrases_as_samples():
     facts = [{
         "candidate_sample_ids": [
@@ -1215,6 +1239,48 @@ def test_variable_context_does_not_confuse_weight_loss_with_filler_loading():
     assert out[0]["assigned_sample_id"] == "pure PES membrane"
 
 
+def test_variable_context_binds_hybrid_organic_loading_to_a3():
+    samples = [
+        {
+            "sample_id": "A2",
+            "variable_name": "PVA fiber content",
+            "variable_value": "1",
+            "variable_unit": "wt%",
+        },
+        {
+            "sample_id": "A3",
+            "variable_name": "hybrid organic fiber content",
+            "variable_value": "2",
+            "variable_unit": "wt%",
+        },
+        {
+            "sample_id": "A6",
+            "variable_name": "PP fiber content",
+            "variable_value": "2",
+            "variable_unit": "wt%",
+        },
+    ]
+    facts = [{
+        "fact_type": "performance",
+        "assigned_sample_id": "of organic fiber",
+        "candidate_sample_ids": ["of organic fiber"],
+        "condition": "2 wt% of hybrid organic fiber",
+        "evidence_text": (
+            "The compressive strength increased by 53.33% with 2 wt% of "
+            "hybrid organic fiber."
+        ),
+    }]
+
+    out = V7ExtractorService._repair_sample_assignment_from_variable_context(
+        facts,
+        samples,
+    )
+
+    assert out[0]["assigned_sample_id"] == "A3"
+    assert out[0]["candidate_sample_ids"] == ["A3"]
+    assert "sample_bound_from_variable_context" in out[0]["assignment_reason"]
+
+
 def test_sample_card_sanitizer_merges_cleaned_anaphoric_identity():
     cards = V7ExtractorService._sanitize_sample_cards([
         {
@@ -1232,6 +1298,128 @@ def test_sample_card_sanitizer_merges_cleaned_anaphoric_identity():
     assert cards[0]["sample_id"] == "epoxy resin matrix"
     assert cards[0]["material_system"] == "epoxy"
     assert "that of epoxy resin matrix" in cards[0]["sample_aliases"]
+
+
+def test_sample_card_sanitizer_preserves_mixed_case_material_codes():
+    cards = V7ExtractorService._sanitize_sample_cards([
+        {
+            "sample_id": "BF-0.6 %",
+            "evidence_text": "[row 3] BF-0.6 % 3.29",
+        },
+        {
+            "sample_id": "bF-0.6 %",
+            "evidence_text": "[row 6] bF-0.6 % 3.86",
+        },
+    ])
+
+    assert {card["sample_id"] for card in cards} == {
+        "BF-0.6 %",
+        "bF-0.6 %",
+    }
+
+
+@pytest.mark.parametrize(
+    "variable_unit",
+    ["wt%", "wt% relative to base resin"],
+)
+def test_sample_card_sanitizer_preserves_structured_plain_percent_loadings(
+    variable_unit,
+):
+    cards = V7ExtractorService._sanitize_sample_cards([
+        {
+            "sample_id": f"PLA/FR {value}%",
+            "variable_name": "FR content",
+            "variable_value": str(value),
+            "variable_unit": variable_unit,
+            "evidence_text": (
+                f"PLA with 0.5 wt% compatibilizer and {value} wt% "
+                "flame-retardant additive relative to base resin"
+            ),
+        }
+        for value in (2, 4, 6, 8)
+    ])
+
+    assert {
+        (card["sample_id"], card["variable_value"], card["variable_unit"])
+        for card in cards
+    } == {
+        ("PLA/FR 2%", "2", variable_unit),
+        ("PLA/FR 4%", "4", variable_unit),
+        ("PLA/FR 6%", "6", variable_unit),
+        ("PLA/FR 8%", "8", variable_unit),
+    }
+
+
+def test_loading_context_rebinds_generic_sample_to_unique_fraction_variant():
+    cards = [
+        {
+            "sample_id": f"PLA/FR {value}%",
+            "variable_name": "FR content",
+            "variable_value": str(value),
+            "variable_unit": "wt%",
+        }
+        for value in (2, 4, 6, 8)
+    ]
+    facts = [{
+        "fact_type": "performance",
+        "assigned_sample_id": "PLA/FR",
+        "candidate_sample_ids": ["PLA/FR"],
+        "metric_or_parameter": "complex_viscosity",
+        "value": "1651.1",
+        "unit": "Pa s",
+        "condition": "4 wt% TPPO; angular frequency 1 rad s-1",
+        "evidence_text": (
+            "At 4 wt% TPPO, viscosity increased to 1651.1 Pa s at 1 rad s-1."
+        ),
+    }]
+
+    out = V7ExtractorService._repair_sample_assignment_from_variable_context(
+        facts,
+        cards,
+    )
+
+    assert out[0]["assigned_sample_id"] == "PLA/FR 4%"
+    assert out[0]["candidate_sample_ids"] == ["PLA/FR 4%"]
+    assert "sample_bound_from_loading_context" in out[0]["assignment_reason"]
+
+
+def test_sample_card_sanitizer_merges_ordinary_case_only_aliases():
+    cards = V7ExtractorService._sanitize_sample_cards([
+        {
+            "sample_id": "CF-0.6 %",
+            "evidence_text": "[row 7] CF-0.6 % 3.23",
+        },
+        {
+            "sample_id": "cf-0.6 %",
+            "evidence_text": "[row 7] cf-0.6 % 3.23",
+        },
+    ])
+
+    assert len(cards) == 1
+
+
+def test_sample_card_sanitizer_drops_prefixed_apparatus_and_generic_collection():
+    cards = V7ExtractorService._sanitize_sample_cards([
+        {"sample_id": "tufting_machine", "evidence_text": "machine limitation"},
+        {"sample_id": "TN_tufting_needle", "evidence_text": "needle tip"},
+        {"sample_id": "SN_sewing_needles", "evidence_text": "needle designs"},
+        {
+            "sample_id": "two types of fiber reinforced geopolymer composites",
+            "evidence_text": "The optimum composition of two types was obtained.",
+        },
+    ])
+
+    assert cards == []
+
+
+def test_sample_card_sanitizer_splits_short_compound_codes_without_merging_them():
+    cards = V7ExtractorService._sanitize_sample_cards([
+        {"sample_id": "A1", "composition_expression": "MK=100 wt%"},
+        {"sample_id": "B1", "composition_expression": "MK=100 wt%"},
+        {"sample_id": "A1/ B1", "evidence_text": "A1/ B1 are controls"},
+    ])
+
+    assert {card["sample_id"] for card in cards} == {"A1", "B1"}
 
 
 def test_sample_aliases_are_serialized_before_database_binding():

@@ -33,8 +33,8 @@ _G_IC_RE = re.compile(
     rf"(?i)(?<![A-Za-z])G{_MATH_SEPARATOR}I{_MATH_SEPARATOR}"
     rf"C(?![A-Za-z])"
 )
-_MODE_II_TOUGHNESS_RE = re.compile(r"(?i)\bmode[\s-]*II\b")
-_MODE_I_TOUGHNESS_RE = re.compile(r"(?i)\bmode[\s-]*I(?!I)\b")
+_MODE_II_TOUGHNESS_RE = re.compile(r"(?i)\bmode[\s-]*(?:II|2)\b")
+_MODE_I_TOUGHNESS_RE = re.compile(r"(?i)\bmode[\s-]*(?:I(?!I)|1)\b")
 _SAMPLE_ID_TAIL_RE = re.compile(
     r"(?i)\b("
     r"2MZ-AZINE-PI-\d+%(?:\s+aerogel)?|"
@@ -118,6 +118,7 @@ _TRANSITION_METRICS = frozenset({
 _TEMPERATURE_PERFORMANCE_METRICS = frozenset({
     "surface_temperature",
     "glass_transition_temperature",
+    "cold_crystallization_temperature",
     "melting_temperature",
     "decomposition_temperature",
     "austenite_start_temperature",
@@ -236,6 +237,99 @@ def _nearest_mechanical_metric(evidence: str, value: Any) -> str | None:
     return min(candidates)[1] if candidates else None
 
 
+_VALUE_CLAUSE_SPLIT_RE = re.compile(
+    r"(?i)\bwhereas\b|\bwhile\b|;|(?<=[.!?])\s+|"
+    r",\s*(?=(?:but|and\s+the)\b)"
+)
+_ORDERED_STRENGTH_CHANGE_RE = re.compile(
+    r"(?is)\b(?P<metrics>(?:compressive|flexural|tensile)"
+    r"(?:\s*(?:,|and)\s*(?:compressive|flexural|tensile))*)\s+"
+    r"strengths?\b.{0,220}?\b(?:increas|improv|enhanc)\w*\s+by\s+"
+    r"(?:more\s+than\s+)?(?P<values>\d+(?:\.\d+)?\s*%"
+    r"(?:\s*(?:,|and)\s*\d+(?:\.\d+)?\s*%)*)"
+)
+_RHEOLOGY_POWER_LAW_CONTEXT_RE = re.compile(
+    r"(?is)\bpower\s*[- ]?\s*law\b.{0,80}\b(?:indices?|indexes|exponents?)\b|"
+    r"\b(?:indices?|indexes|exponents?)\b.{0,80}\bpower\s*[- ]?\s*law\b"
+)
+_RHEOLOGY_POWER_LAW_PAIR_RE = re.compile(
+    r"(?i)(?P<value>[+-]?\d+(?:\.\d+)?)\s*(?:for|of)\s*"
+    r"(?P<label>G\s*(?:″|''|′′|”|[′'’]))"
+)
+
+
+def _number_key(value: Any) -> str:
+    match = re.search(r"[+-]?\d+(?:\.\d+)?", str(value or ""))
+    if not match:
+        return ""
+    try:
+        return f"{float(match.group()):g}"
+    except ValueError:
+        return ""
+
+
+def _value_local_clause(evidence: str, value: Any) -> str:
+    """Return the semantic clause containing the selected result value."""
+    target = _number_key(value)
+    if not target:
+        return evidence
+    candidates: list[tuple[int, int, str]] = []
+    offset = 0
+    for clause in _VALUE_CLAUSE_SPLIT_RE.split(evidence or ""):
+        stripped = clause.strip(" ,")
+        if not stripped:
+            offset += len(clause)
+            continue
+        numbers = {_number_key(match.group()) for match in re.finditer(
+            r"[+-]?\d+(?:\.\d+)?", stripped
+        )}
+        if target in numbers:
+            score = int(bool(re.search(
+                r"(?i)\b(?:increas|improv|enhanc|decreas|reduc|change|"
+                r"higher|lower|times|fold)\w*\b",
+                stripped,
+            )))
+            candidates.append((score, -offset, stripped))
+        offset += len(clause)
+    return max(candidates)[2] if candidates else evidence
+
+
+def _ordered_strength_change_metric(evidence: str, value: Any) -> str | None:
+    target = _number_key(value)
+    if not target:
+        return None
+    for match in _ORDERED_STRENGTH_CHANGE_RE.finditer(evidence or ""):
+        metrics = re.findall(
+            r"(?i)compressive|flexural|tensile",
+            match.group("metrics"),
+        )
+        values = [
+            _number_key(raw)
+            for raw in re.findall(r"\d+(?:\.\d+)?", match.group("values"))
+        ]
+        if target not in values:
+            continue
+        if len(metrics) == len(values):
+            return f"{metrics[values.index(target)].lower()}_strength_improvement"
+        if len(metrics) == 1:
+            return f"{metrics[0].lower()}_strength_improvement"
+    return None
+
+
+def _rheology_power_law_metric(evidence: str, value: Any) -> str | None:
+    target = _number_key(value)
+    if not target or not _RHEOLOGY_POWER_LAW_CONTEXT_RE.search(evidence or ""):
+        return None
+    for match in _RHEOLOGY_POWER_LAW_PAIR_RE.finditer(evidence or ""):
+        if _number_key(match.group("value")) != target:
+            continue
+        prime = re.sub(r"\s+", "", match.group("label"))[1:]
+        if prime in {"″", "''", "′′", "”"}:
+            return "loss_modulus_power_law_index"
+        return "storage_modulus_power_law_index"
+    return None
+
+
 def infer_metric_from_evidence(
     evidence: str,
     *,
@@ -247,34 +341,123 @@ def infer_metric_from_evidence(
     from app.services.extractor_v7.sample_value_alignment import parse_metric_value_pairs
 
     ev = evidence or ""
-    lower = ev.lower()
+    local_ev = _value_local_clause(ev, value) if value not in (None, "") else ev
+    lower = local_ev.lower()
     unit_norm = normalize_unit(unit)
     current = find_metric_canonical(current_metric) or current_metric
-    relative_change = unit_norm == "%" and bool(re.search(
-        r"(?i)\b(?:increas|improv|enhanc|growth|gain|higher|rise|rose)\w*\b",
-        ev,
+    ratio_comparison = unit_norm in {"times", "fold"} and bool(re.search(
+        r"(?is)\b(?:times?|fold)\b.{0,40}?\b(?:that|those)\s+of\b|"
+        r"\b(?:times?|fold)\s+(?:higher|greater|larger|lower|smaller)\b",
+        local_ev,
     ))
+    relative_change = unit_norm in {"%", "times", "fold"} and (
+        ratio_comparison
+        or bool(re.search(
+            r"(?i)\b(?:increas|improv|enhanc|growth|gain|higher|rise|rose|"
+            r"decreas|reduc|drop|lower)\w*\b",
+            local_ev,
+        ))
+    )
 
-    if unit_norm == "ph" and re.search(r"(?i)\bpH\b", ev):
+    if (
+        unit_norm in {"°c", "c", "k"}
+        and current in {
+            "storage_modulus",
+            "loss_modulus",
+            "storage_modulus_power_law_index",
+            "loss_modulus_power_law_index",
+        }
+        and re.search(r"(?i)\bglass\s+transition\b", ev)
+    ):
+        return "glass_transition_temperature"
+
+    if unit_norm in {"pa", "kpa", "mpa", "gpa"}:
+        rheology_ev = local_ev.replace(",", "")
+        target = _number_key(value)
+        if target:
+            target_pattern = re.escape(target)
+            if re.search(
+                rf"(?i)G\s*(?:″|′′|''|”|double\s+prime)"
+                rf".{{0,100}}?(?<![\d.]){target_pattern}(?![\d.])",
+                rheology_ev,
+            ):
+                return "loss_modulus"
+            if re.search(
+                rf"(?i)G\s*(?:′|')(?![′'])"
+                rf".{{0,100}}?(?<![\d.]){target_pattern}(?![\d.])",
+                rheology_ev,
+            ):
+                return "storage_modulus"
+
+    metric_pairs = parse_metric_value_pairs(ev)
+    parsed_matches = [
+        metric for metric, parsed_value in metric_pairs
+        if _number_key(parsed_value) == _number_key(value)
+    ]
+    if len(parsed_matches) == 1:
+        from app.services.extractor_v7.metric_normalize import canonicalize_metric_name
+
+        return canonicalize_metric_name(
+            parsed_matches[0],
+            evidence=ev,
+            unit=unit,
+        )
+
+    if unit_norm == "ph" and re.search(r"(?i)\bpH\b", local_ev):
         return "pH"
 
-    if re.search(r"(?i)\b(?:energy\s+|dynamic\s+)?storage\s+modulus\b", ev):
+    ordered_strength = _ordered_strength_change_metric(ev, value)
+    if ordered_strength:
+        return ordered_strength
+
+    if unit_norm in {"-", "dimensionless"}:
+        rheology_power_law = _rheology_power_law_metric(local_ev, value)
+        if rheology_power_law:
+            return rheology_power_law
+
+    if (
+        unit_norm == "%"
+        and current == "equilibrium_water_content"
+        and relative_change
+    ):
+        return "equilibrium_water_content_change"
+    if (
+        unit_norm == "%"
+        and current in {
+            "water_diffusion_coefficient",
+            "water_diffusion_coefficient_change",
+            "water_diffusion_coefficient_reduction",
+        }
+        and relative_change
+    ):
+        if re.search(r"(?i)\b(?:decreas|reduc|drop|lower)\w*\b", local_ev):
+            return "water_diffusion_coefficient_reduction"
+        return "water_diffusion_coefficient_change"
+
+    if (
+        unit_norm == "%"
+        and re.search(r"(?i)\bin[- ]plane\s+propert(?:y|ies)\b", local_ev)
+        and re.search(r"(?i)\b(?:decreas|reduc|drop|lower)\w*\b", local_ev)
+    ):
+        return "in_plane_property_reduction"
+
+    if re.search(r"(?i)\b(?:energy\s+|dynamic\s+)?storage\s+modulus\b", local_ev):
         if relative_change:
             return "storage_modulus_improvement"
         return "storage_modulus"
 
-    g_iic = bool(_G_IIC_RE.search(ev))
-    g_ic = bool(_G_IC_RE.search(ev))
+    g_iic = bool(_G_IIC_RE.search(local_ev))
+    g_ic = bool(_G_IC_RE.search(local_ev))
     toughness_context = bool(
-        re.search(r"(?i)\b(?:fracture\s+toughness|interlaminar)\b", ev)
+        re.search(r"(?i)\b(?:fracture\s+toughness|interlaminar)\b", local_ev)
         or g_iic
         or g_ic
     )
     mode_ii = g_iic or (
-        toughness_context and bool(_MODE_II_TOUGHNESS_RE.search(ev))
+        toughness_context and bool(_MODE_II_TOUGHNESS_RE.search(local_ev))
     )
     mode_i = g_ic or (
-        toughness_context and bool(_MODE_I_TOUGHNESS_RE.search(ev))
+        toughness_context and bool(_MODE_I_TOUGHNESS_RE.search(local_ev))
     )
     if mode_ii:
         if relative_change:
@@ -285,15 +468,21 @@ def infer_metric_from_evidence(
             return "mode_I_interlaminar_fracture_toughness_improvement"
         return "mode_I_interlaminar_fracture_toughness"
 
-    if re.search(r"(?i)\bfracture\s+toughness\b", ev):
+    if re.search(r"(?i)\bfracture\s+toughness\b", local_ev):
         if relative_change:
             return "fracture_toughness_improvement"
-        interlaminar = bool(re.search(r"(?i)\binterlaminar\b", ev))
+        interlaminar = bool(re.search(r"(?i)\binterlaminar\b", local_ev))
         if interlaminar:
             return "interlaminar_fracture_toughness"
         return "fracture_toughness"
 
-    nearest_mechanical = _nearest_mechanical_metric(ev, value)
+    if relative_change and (
+        current in {"fracture_energy", "fracture_energy_improvement"}
+        or re.search(r"(?i)\bfracture\s+energy\b", local_ev)
+    ):
+        return "fracture_energy_improvement"
+
+    nearest_mechanical = _nearest_mechanical_metric(local_ev, value)
     if nearest_mechanical == "flexural_strength":
         return (
             "flexural_strength_improvement"
@@ -362,7 +551,6 @@ def infer_metric_from_evidence(
             if unit_norm in ("µm", "um", "μm") and "length" in lower:
                 return "fiber_length"
 
-    metric_pairs = parse_metric_value_pairs(ev)
     if len(metric_pairs) >= 2 and current:
         for metric, val in metric_pairs:
             if current == "dielectric_constant" and metric == "loss_tangent":
@@ -649,6 +837,17 @@ def _fact_needs_sample_alignment_table(fact: dict, evidence: str) -> bool:
         _value_linked_to_sample,
         parse_sample_value_pairs,
     )
+
+    composition_pairs = re.findall(
+        r"(?i)\d+(?:\.\d+)?\s*(?:(?:wt|vol|mol)\s*)?%\s*"
+        r"(?:of\s+)?[A-Za-z][A-Za-z0-9-]{0,20}\b",
+        evidence or "",
+    )
+    if len(composition_pairs) >= 2 and re.search(
+        r"(?i)\b(?:composition|formulated|formulation)\b",
+        evidence or "",
+    ):
+        return False
 
     pairs = parse_sample_value_pairs(evidence)
     ordered = parse_ordered_sample_value_list(evidence)

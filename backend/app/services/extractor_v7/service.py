@@ -39,6 +39,7 @@ from app.core.config import settings
 from app.services.llm_client import create_llm_client, llm_client_session
 from app.services.llm_budget import clamp_max_tokens
 from app.services.llm_concurrency import llm_call_slot, per_job_llm_parallel_limit
+from app.services.runtime_llm_credentials import resolve_llm_api_key
 from app.services.document_context import parse_pdf_to_document_context
 from app.services.document_type import (
     classify_document_type,
@@ -103,6 +104,7 @@ from app.services.extractor_v7.output_postprocess import (
     merge_characterization_features,
 )
 from app.services.extractor_v7.sample_value_alignment import (
+    _prefer_loading_specific_sample,
     apply_sample_value_alignment,
     extract_explicit_sample_names,
 )
@@ -2544,28 +2546,115 @@ class V7ExtractorService:
         """Apply the shared sample-ID sanitizer before catalog persistence."""
         from app.services.extractor_v7.sample_id_rules import sanitize_sample_id
 
+        prepared: list[tuple[dict, set[str]]] = []
+        codes_by_folded: dict[str, set[str]] = defaultdict(set)
+
+        def leading_material_code(sample_id: str) -> str:
+            match = re.match(
+                r"([A-Za-z]{2,8})(?=[_\s/\-]|\d|$)",
+                sample_id,
+            )
+            return match.group(1) if match else ""
+
+        def split_short_compound_codes(sample_id: str) -> list[str]:
+            if not re.fullmatch(
+                r"\s*[A-Za-z]{1,4}\d{1,3}"
+                r"(?:\s*/\s*[A-Za-z]{1,4}\d{1,3})+\s*",
+                sample_id,
+            ):
+                return [sample_id]
+            return re.findall(r"[A-Za-z]{1,4}\d{1,3}", sample_id)
+
+        def sanitizer_evidence_for_loading(card: dict, sample_id: str) -> str:
+            evidence = str(card.get("evidence_text") or "")
+            variable_name = str(card.get("variable_name") or "")
+            variable_value = str(card.get("variable_value") or "").strip()
+            raw_variable_unit = re.sub(
+                r"[\s.]", "", str(card.get("variable_unit") or "").lower()
+            )
+            variable_unit = ""
+            for unit, prefixes in {
+                "wt%": ("wt%", "wtpct", "weight%"),
+                "vol%": ("vol%", "volpct", "volume%"),
+                "mol%": ("mol%", "molpct"),
+                "%": ("%", "pct"),
+            }.items():
+                if raw_variable_unit.startswith(prefixes):
+                    variable_unit = unit
+                    break
+            suffix = re.search(
+                r"(?i)(?<![\d.])(?P<value>\d+(?:\.\d+)?)\s*"
+                r"(?P<unit>(?:wt|vol|mol)\.?\s*%|%)\s*$",
+                sample_id,
+            )
+            if (
+                not suffix
+                or not re.search(
+                    r"(?i)\b(?:loading|content|fraction|concentration|dosage)\b",
+                    variable_name,
+                )
+                or not re.fullmatch(r"[+-]?\d+(?:\.\d+)?", variable_value)
+                or variable_unit not in {"%", "wt%", "vol%", "mol%"}
+                or float(suffix.group("value")) != float(variable_value)
+            ):
+                return evidence
+            suffix_unit = re.sub(r"[\s.]", "", suffix.group("unit").lower())
+            if suffix_unit != "%" and suffix_unit != variable_unit:
+                return evidence
+            return f"{evidence}\n[structured sample loading] {suffix.group(0).strip()}"
+
+        for raw_card in sample_cards:
+            original = str(raw_card.get("sample_id") or "").strip()
+            split_ids = split_short_compound_codes(original)
+            for proposed_id in split_ids:
+                card = dict(raw_card)
+                sample_id, _, _ = sanitize_sample_id(
+                    proposed_id,
+                    sanitizer_evidence_for_loading(card, proposed_id),
+                )
+                if not sample_id or not is_material_sample_id(sample_id):
+                    continue
+                aliases = (
+                    set()
+                    if len(split_ids) > 1
+                    else set(parse_sample_aliases(card.get("sample_aliases")))
+                )
+                if (
+                    len(split_ids) == 1
+                    and normalize_for_match(original) != normalize_for_match(sample_id)
+                ):
+                    aliases.add(original)
+                card["sample_id"] = sample_id
+                card["sample_aliases"] = sorted(
+                    alias
+                    for alias in aliases
+                    if alias
+                    and normalize_for_match(alias) != normalize_for_match(sample_id)
+                )
+                prepared.append((card, aliases))
+                code = leading_material_code(sample_id)
+                if code:
+                    codes_by_folded[code.lower()].add(code)
+
+        protected_case_codes = {
+            folded: codes
+            for folded, codes in codes_by_folded.items()
+            if len(codes) > 1
+            and any(
+                any(char.islower() for char in code)
+                and any(char.isupper() for char in code)
+                for code in codes
+            )
+        }
+
         cleaned: list[dict] = []
         by_id: dict[str, dict] = {}
-        for raw_card in sample_cards:
-            card = dict(raw_card)
-            original = str(card.get("sample_id") or "").strip()
-            sample_id, _, _ = sanitize_sample_id(
-                original,
-                str(card.get("evidence_text") or ""),
-            )
-            if not sample_id or not is_material_sample_id(sample_id):
-                continue
-            aliases = set(parse_sample_aliases(card.get("sample_aliases")))
-            if normalize_for_match(original) != normalize_for_match(sample_id):
-                aliases.add(original)
-            card["sample_id"] = sample_id
-            card["sample_aliases"] = sorted(
-                alias
-                for alias in aliases
-                if alias
-                and normalize_for_match(alias) != normalize_for_match(sample_id)
-            )
+        for card, aliases in prepared:
+            sample_id = card["sample_id"]
             key = normalize_for_match(sample_id)
+            code = leading_material_code(sample_id)
+            if code in protected_case_codes.get(code.lower(), set()):
+                key = f"{key}|case:{code}"
             existing = by_id.get(key)
             if existing is None:
                 by_id[key] = card
@@ -2701,7 +2790,8 @@ class V7ExtractorService:
         """Bind scoped composition/load conditions to the matching sample card."""
         generic_variable_words = {
             "amount", "content", "fraction", "level", "loading",
-            "concentration", "ratio", "percentage",
+            "concentration", "ratio", "percentage", "fiber", "fibers",
+            "fibre", "fibres",
         }
         variable_samples: list[tuple[dict, str, str, tuple[str, ...]]] = []
         for sample in samples:
@@ -2742,6 +2832,66 @@ class V7ExtractorService:
             condition = str(fact.get("condition") or "").strip()
             if not condition:
                 continue
+
+            loading_context = re.sub(
+                r"(?i)(?<![\d.])\d+(?:\.\d+)?\s*"
+                r"(?:(?:wt|vol|mol)\.?\s*)?%\s*"
+                r"(?:(?:weight|mass)\s+loss|strain|relative\s+humidity|rh)\b",
+                " ",
+                condition,
+            )
+
+            source_sample_ids: list[str] = []
+            seen_source_ids: set[str] = set()
+            for raw_sample_id in (
+                fact.get("assigned_sample_id"),
+                *(fact.get("candidate_sample_ids") or []),
+            ):
+                source_sample_id = str(raw_sample_id or "").strip()
+                source_key = V7ExtractorService._normalize_for_match(
+                    source_sample_id
+                )
+                if source_key and source_key not in seen_source_ids:
+                    seen_source_ids.add(source_key)
+                    source_sample_ids.append(source_sample_id)
+            preferred_sample_ids = [
+                _prefer_loading_specific_sample(
+                    source_sample_id,
+                    loading_context,
+                    samples,
+                )
+                for source_sample_id in source_sample_ids
+            ]
+            preferred_keys = {
+                V7ExtractorService._normalize_for_match(sample_id)
+                for sample_id in preferred_sample_ids
+                if sample_id
+            }
+            if (
+                source_sample_ids
+                and len(preferred_keys) == 1
+                and any(
+                    V7ExtractorService._normalize_for_match(preferred) !=
+                    V7ExtractorService._normalize_for_match(source)
+                    for source, preferred in zip(
+                        source_sample_ids, preferred_sample_ids
+                    )
+                )
+            ):
+                sample_id = preferred_sample_ids[0]
+                fact["assigned_sample_id"] = sample_id
+                fact["candidate_sample_ids"] = [sample_id]
+                fact["assignment_confidence"] = max(
+                    float(fact.get("assignment_confidence") or 0),
+                    0.92,
+                )
+                fact["assignment_status"] = "assigned"
+                fact["assignment_reason"] = V7ExtractorService._append_unique(
+                    fact.get("assignment_reason"),
+                    "sample_bound_from_loading_context",
+                )
+                continue
+
             condition_lower = condition.lower()
             matches: dict[str, dict] = {}
             for sample, value, unit, concepts in variable_samples:
@@ -4126,7 +4276,8 @@ class V7ExtractorService:
             }
 
         # -- Check LLM availability --
-        has_llm = bool(project.llm_api_key and project.llm_api_key.strip())
+        llm_api_key = resolve_llm_api_key(project.id, project.llm_api_key)
+        has_llm = bool(llm_api_key)
         if not has_llm:
             await restore_paper_status_after_interruption(
                 db, paper, empty_status="failed"
@@ -4143,7 +4294,7 @@ class V7ExtractorService:
         try:
             client = create_llm_client(
                 provider=project.llm_provider or "openai",
-                api_key=project.llm_api_key,
+                api_key=llm_api_key,
                 model=project.llm_model or settings.DEFAULT_LLM_MODEL,
                 base_url=project.llm_base_url or settings.DEFAULT_LLM_BASE_URL,
                 timeout_seconds=llm_timeout,
@@ -4541,6 +4692,7 @@ class V7ExtractorService:
             facts,
             chunks=chunks,
             paper_metadata=paper_metadata,
+            sample_cards=sample_cards,
         )
         sample_cards = enrich_sample_cards_with_form(sample_cards)
 

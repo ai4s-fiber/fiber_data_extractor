@@ -35,6 +35,65 @@ def test_metric_normalization_preserves_specific_modulus_metric():
     assert metric_unit_compatible("storage_modulus_improvement", "%")
 
 
+def test_pre_output_validation_preserves_relative_condition_and_metric():
+    facts = [{
+        "fact_type": "performance",
+        "metric_or_parameter": "tensile strength",
+        "value": "17.3",
+        "unit": "% higher than control",
+        "evidence_text": "Tensile strength was 17.3% higher than the control.",
+    }]
+
+    out = apply_pre_output_validation(facts, [])[0]
+
+    assert out["metric_or_parameter"] == "tensile_strength_improvement"
+    assert out["unit"] == "%"
+    assert "higher than control" in out["condition"]
+
+
+def test_pre_output_validation_adds_tga_label_condition():
+    facts = [{
+        "fact_type": "performance",
+        "metric_or_parameter": "T_onset",
+        "value": "350",
+        "unit": "°C",
+        "method": "TGA",
+        "evidence_text": "TGA onset decomposition temperature T_onset was 350 °C.",
+    }]
+
+    out = apply_pre_output_validation(facts, [])[0]
+
+    assert out["metric_or_parameter"] == "decomposition_temperature"
+    assert "onset temperature" in out["condition"]
+
+
+def test_pre_output_validation_preserves_thermal_peak_and_mass_loss_labels():
+    facts = [
+        {
+            "fact_type": "performance",
+            "metric_or_parameter": "$T_{m1}$",
+            "value": "168",
+            "unit": "°C",
+            "evidence_text": "The first melting peak $T_{m1}$ was 168 °C.",
+        },
+        {
+            "fact_type": "performance",
+            "metric_or_parameter": "$T_{-5%}$",
+            "value": "312",
+            "unit": "°C",
+            "method": "TGA",
+            "evidence_text": "$T_{-5%}$ was 312 °C.",
+        },
+    ]
+
+    out = apply_pre_output_validation(facts, [])
+
+    assert out[0]["metric_or_parameter"] == "melting_temperature"
+    assert "melting peak 1" in out[0]["condition"]
+    assert out[1]["metric_or_parameter"] == "decomposition_temperature"
+    assert "at 5% mass loss" in out[1]["condition"]
+
+
 def test_spaced_inverse_cubic_density_unit_is_normalized():
     assert metric_unit_compatible("density", "kg m^-3")
 

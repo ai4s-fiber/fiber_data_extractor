@@ -46,6 +46,40 @@ def test_respective_value_list_before_composition_samples_is_bound_positionally(
     ]
 
 
+def test_measured_sample_list_before_values_is_bound_positionally():
+    evidence = (
+        "The measured κ of P-BN fiber and C-BN fiber are "
+        "39.5 ± 1.6 and 53.9 ± 1.4 W m−1 K−1 "
+        "(Figure 3d), respectively."
+    )
+
+    assert parse_sample_value_pairs(evidence) == [
+        ("P-BN fiber", "39.5"),
+        ("C-BN fiber", "53.9"),
+    ]
+
+    facts = [
+        {
+            "fact_id": f"F{index}",
+            "fact_type": "performance",
+            "assigned_sample_id": "BN fiber",
+            "candidate_sample_ids": ["BN fiber"],
+            "metric_or_parameter": "thermal_conductivity",
+            "value": value,
+            "unit": "W m^-1 K^-1",
+            "evidence_text": evidence,
+        }
+        for index, value in enumerate(("39.5", "53.9"), 1)
+    ]
+
+    out = expand_multi_entity_facts(facts)
+
+    assert {fact["value"]: fact["assigned_sample_id"] for fact in out} == {
+        "39.5": "P-BN fiber",
+        "53.9": "C-BN fiber",
+    }
+
+
 def test_partial_value_pair_uses_only_remaining_explicit_catalog_sample():
     evidence = (
         "The CA of both PCL/AA/SBCu and control PCL/AA/S decreased; "
@@ -355,6 +389,283 @@ def test_multi_metric_split():
     assert "loss_tangent" in metrics
 
 
+def test_respective_relative_metric_list_is_bound_positionally():
+    evidence = (
+        "The BF-1.2 % specimen showed tensile strength, ultimate strain, "
+        "and fracture energy increased by 119 %, 104 %, and 349 %, "
+        "respectively, relative to the control."
+    )
+
+    assert parse_metric_value_pairs(evidence) == [
+        ("tensile_strength", "119"),
+        ("ultimate_strain", "104"),
+        ("fracture_energy", "349"),
+    ]
+
+
+def test_existing_relative_metric_facts_are_rebound_without_cross_cloning():
+    evidence = (
+        "The BF-1.2 % specimen exhibited the highest reinforcing efficiency, "
+        "with tensile strength, ultimate strain, and fracture energy increased "
+        "by 119 %, 104 %, and 349 %, respectively, relative to the plain "
+        "geopolymer composite."
+    )
+    facts = [
+        {
+            "fact_id": f"F{index}",
+            "fact_type": "performance",
+            "metric_or_parameter": metric,
+            "value": value,
+            "unit": "%",
+            "assigned_sample_id": "BF-1.2 %",
+            "evidence_text": evidence,
+        }
+        for index, (metric, value) in enumerate(
+            [
+                ("tensile_strength", "119"),
+                ("tensile_strength", "104"),
+                ("fracture_energy", "349"),
+            ],
+            1,
+        )
+    ]
+
+    out = apply_sample_value_alignment(
+        facts,
+        [{"sample_id": "BF-1.2 %"}],
+    )
+
+    assert len(out) == 3
+    assert {
+        fact["value"]: fact["metric_or_parameter"]
+        for fact in out
+    } == {
+        "119": "tensile_strength_improvement",
+        "104": "ultimate_strain_improvement",
+        "349": "fracture_energy_improvement",
+    }
+
+
+def test_times_that_of_is_a_relative_fracture_energy_fact():
+    evidence = (
+        "The BF-1.2 % group exhibited a fracture energy of 1481.8 J/m^3, "
+        "which was 4.5 times that of the control group (329.9 J/m^3)."
+    )
+    facts = [
+        {
+            "fact_id": "F1",
+            "fact_type": "performance",
+            "metric_or_parameter": "fracture_energy",
+            "value": "1481.8",
+            "unit": "J/m^3",
+            "assigned_sample_id": "BF-1.2 %",
+            "evidence_text": evidence,
+        },
+        {
+            "fact_id": "F2",
+            "fact_type": "performance",
+            "metric_or_parameter": "fracture_energy",
+            "value": "4.5",
+            "unit": "times",
+            "assigned_sample_id": "BF-1.2 %",
+            "condition": "relative to control group",
+            "evidence_text": evidence,
+        },
+    ]
+
+    out = apply_sample_value_alignment(
+        facts,
+        [{"sample_id": "BF-1.2 %"}, {"sample_id": "Control"}],
+    )
+
+    by_value = {fact["value"]: fact for fact in out}
+    assert by_value["1481.8"]["metric_or_parameter"] == "fracture_energy"
+    assert by_value["4.5"]["metric_or_parameter"] == "fracture_energy_improvement"
+
+
+def test_relative_changes_are_assigned_to_subject_not_comparison_baselines():
+    evidence = (
+        "In contrast, while PVA fibers were less effective than BF and CF in "
+        "strength enhancement, they imparted the highest strain capacity, "
+        "which was 13.4 % and 18.8 % higher than those of the BF-0.6 % and "
+        "CF-0.6 % composites, respectively."
+    )
+    facts = [
+        {
+            "fact_id": f"F{index}",
+            "fact_type": "performance",
+            "metric_or_parameter": "elongation_at_break",
+            "value": value,
+            "unit": "%",
+            "assigned_sample_id": assigned,
+            "candidate_sample_ids": [assigned],
+            "assignment_status": "assigned",
+            "evidence_text": evidence,
+        }
+        for index, (value, assigned) in enumerate(
+            [
+                ("13.4", "PVA_0.6volpct_FRGC"),
+                ("18.8", "PVA_0.6volpct_FRGC"),
+                ("13.4", "BF_0.6volpct_FRGC"),
+                ("18.8", "CF_0.6volpct_FRGC"),
+            ],
+            1,
+        )
+    ]
+    cards = [
+        {
+            "sample_id": "PVA_0.6volpct_FRGC",
+            "sample_aliases": '["PVA", "PVA-0.6 %"]',
+        },
+        {
+            "sample_id": "BF_0.6volpct_FRGC",
+            "sample_aliases": '["BF", "BF-0.6 %"]',
+        },
+        {
+            "sample_id": "CF_0.6volpct_FRGC",
+            "sample_aliases": '["CF", "CF-0.6 %"]',
+        },
+    ]
+
+    out = apply_sample_value_alignment(facts, cards)
+
+    assert {
+        fact["assigned_sample_id"]
+        for fact in out
+        if fact["value"] in {"13.4", "18.8"}
+    } == {"PVA_0.6volpct_FRGC"}
+    assert all(
+        "relative_change_subject_alignment" in fact["assignment_reason"]
+        for fact in out
+    )
+
+
+def test_relative_changes_prefer_loading_specific_composite_card():
+    evidence = (
+        "In contrast, while PVA fibers were less effective than BF and CF in "
+        "strength enhancement, they imparted the highest strain capacity, "
+        "which was 13.4 % and 18.8 % higher than those of the BF-0.6 % and "
+        "CF-0.6 % composites, respectively."
+    )
+    facts = [
+        {
+            "fact_id": f"F{index}",
+            "fact_type": "performance",
+            "metric_or_parameter": "elongation_at_break",
+            "value": value,
+            "unit": "%",
+            "assigned_sample_id": baseline,
+            "candidate_sample_ids": [baseline],
+            "assignment_status": "assigned",
+            "condition": "Fiber content: 0.6 vol% PVA",
+            "evidence_text": evidence,
+        }
+        for index, (value, baseline) in enumerate(
+            [("13.4", "BF_fiber"), ("18.8", "CF_fiber")],
+            1,
+        )
+    ]
+    cards = [
+        {"sample_id": "PVA_fiber", "sample_aliases": '["PVA"]'},
+        {"sample_id": "BF_fiber", "sample_aliases": '["BF"]'},
+        {"sample_id": "CF_fiber", "sample_aliases": '["CF"]'},
+        {
+            "sample_id": "PVA_0.6volpct_FRGC",
+            "variable_name": "PVA loading",
+            "variable_value": "0.6",
+            "variable_unit": "vol%",
+        },
+        {
+            "sample_id": "BF_0.6volpct_FRGC",
+            "variable_name": "BF loading",
+            "variable_value": "0.6",
+            "variable_unit": "vol%",
+        },
+        {
+            "sample_id": "CF_0.6volpct_FRGC",
+            "variable_name": "CF loading",
+            "variable_value": "0.6",
+            "variable_unit": "vol%",
+        },
+    ]
+
+    out = apply_sample_value_alignment(facts, cards)
+
+    assert {fact["assigned_sample_id"] for fact in out} == {
+        "PVA_0.6volpct_FRGC"
+    }
+
+
+def test_case_sensitive_relative_comparison_assigns_bf_lowercase_variant():
+    evidence = (
+        "A comparison of composites with 0.6 vol% of BF and bF revealed that "
+        "bF-0.6 % exhibited superior performance, with a tensile strength "
+        "17.3 % higher than that of BF-0.6 %."
+    )
+    facts = [{
+        "fact_id": "F1",
+        "fact_type": "performance",
+        "metric_or_parameter": "tensile_strength_improvement",
+        "value": "17.3",
+        "unit": "%",
+        "assigned_sample_id": "BF_0.6volpct_FRGC",
+        "candidate_sample_ids": ["BF_0.6volpct_FRGC"],
+        "assignment_status": "assigned",
+        "evidence_text": evidence,
+    }]
+    cards = [
+        {
+            "sample_id": "BF_0.6volpct_FRGC",
+            "sample_aliases": '["BF", "BF-0.6 %"]',
+        },
+        {
+            "sample_id": "bF_0.6volpct_FRGC",
+            "sample_aliases": '["bF", "bF-0.6 %"]',
+        },
+    ]
+
+    out = apply_sample_value_alignment(facts, cards)
+
+    assert out[0]["assigned_sample_id"] == "bF_0.6volpct_FRGC"
+    assert "relative_change_subject_alignment" in out[0]["assignment_reason"]
+
+
+def test_case_sensitive_relative_comparison_resolves_table_and_catalog_aliases():
+    evidence = (
+        "A comparison of composites with 0.6 vol% of BF and bF revealed that "
+        "bF-0.6 % exhibited superior performance, with a tensile strength "
+        "17.3 % higher than that of BF-0.6 %."
+    )
+    facts = [{
+        "fact_id": "F1",
+        "fact_type": "performance",
+        "metric_or_parameter": "tensile_strength_improvement",
+        "value": "17.3",
+        "unit": "%",
+        "assigned_sample_id": "BF_0.6volpct_FRGC",
+        "candidate_sample_ids": ["BF_0.6volpct_FRGC"],
+        "assignment_status": "assigned",
+        "condition": "comparison of BF and bF composites",
+        "evidence_text": evidence,
+    }]
+    cards = [
+        {"sample_id": "BF_fiber", "sample_aliases": '["BF", "bF"]'},
+        {
+            "sample_id": "BF_0.6volpct_FRGC",
+            "variable_name": "BF loading",
+            "variable_value": "0.6",
+            "variable_unit": "vol%",
+        },
+        {"sample_id": "BF-0.6 %"},
+        {"sample_id": "bF-0.6 %"},
+    ]
+
+    out = apply_sample_value_alignment(facts, cards)
+
+    assert out[0]["assigned_sample_id"] == "bF-0.6 %"
+    assert "relative_change_subject_alignment" in out[0]["assignment_reason"]
+
+
 def test_expand_parenthesis_splits_facts():
     facts = [{
         "fact_id": "F1",
@@ -368,6 +679,39 @@ def test_expand_parenthesis_splits_facts():
     values = sorted(f.get("value") for f in out)
     assert values == ["10", "20", "30"]
     assert {f.get("assigned_sample_id") for f in out} == {"A", "B", "C"}
+
+
+def test_xrd_miller_indices_are_not_parsed_as_sample_value_pairs():
+    evidence = (
+        "The XRD intensity ratio of (100) and (002) peaks "
+        "(I(100)/I(002)) reflects orientation. For the randomly distributed "
+        "BNNS/epoxy composite, I(100)/I(002) shows a value of 14.5%."
+    )
+
+    assert parse_sample_value_pairs(evidence) == []
+
+    out = expand_multi_entity_facts([{
+        "fact_id": "F1",
+        "fact_type": "performance",
+        "assigned_sample_id": "r-BNNS/epoxy composite",
+        "metric_or_parameter": "xrd_orientation_intensity_ratio_i100_i002",
+        "value": "14.5",
+        "unit": "%",
+        "evidence_text": evidence,
+    }])
+
+    assert len(out) == 1
+    assert out[0]["value"] == "14.5"
+    assert out[0]["assigned_sample_id"] == "r-BNNS/epoxy composite"
+
+
+def test_xrd_intensity_ratio_notation_is_filtered_without_xrd_keywords():
+    evidence = (
+        "I(100)/I(002) can reach 20.4% in the aligned composite, "
+        "compared with 10.5% in the reference."
+    )
+
+    assert parse_sample_value_pairs(evidence) == []
 
 
 def test_verify_flags_multi_sample_mismatch():
@@ -518,6 +862,60 @@ def test_respectively_uses_catalog_order_and_keeps_conditions_separate():
         "11.98": "acetylated jute fiber",
         "44.36": "raw jute",
         "56.26": "acetylated jute",
+    }
+
+
+def test_loading_respectively_aligns_atomic_and_holistic_duplicates():
+    evidence = (
+        "At 30 °C, the water diffusion coefficient decreased by 11.79 and "
+        "19.27% for specimens treated with 2 and 4 wt % silica coating, "
+        "respectively."
+    )
+    facts = [
+        {
+            "fact_id": f"F{index}",
+            "fact_type": "performance",
+            "metric_or_parameter": "water_diffusion_coefficient_change",
+            "value": value,
+            "unit": "%",
+            "assigned_sample_id": "glass_fiber_2wtSiO2",
+            "candidate_sample_ids": ["glass_fiber_2wtSiO2"],
+            "evidence_text": evidence,
+            "extraction_method": method,
+        }
+        for index, (value, method) in enumerate(
+            [
+                ("11.79", "AI_atomic"),
+                ("19.27", "AI_atomic"),
+                ("11.79", "AI_holistic"),
+                ("19.27", "AI_holistic"),
+            ],
+            1,
+        )
+    ]
+    cards = [
+        {
+            "sample_id": "glass_fiber_2wtSiO2",
+            "variable_name": "silica coating concentration",
+            "variable_value": "2",
+            "variable_unit": "wt%",
+        },
+        {
+            "sample_id": "glass_fiber_4wtSiO2",
+            "variable_name": "silica coating concentration",
+            "variable_value": "4",
+            "variable_unit": "wt%",
+        },
+    ]
+
+    out = apply_sample_value_alignment(facts, cards)
+
+    assert {
+        value: {fact["assigned_sample_id"] for fact in out if fact["value"] == value}
+        for value in {"11.79", "19.27"}
+    } == {
+        "11.79": {"glass_fiber_2wtSiO2"},
+        "19.27": {"glass_fiber_4wtSiO2"},
     }
 
 

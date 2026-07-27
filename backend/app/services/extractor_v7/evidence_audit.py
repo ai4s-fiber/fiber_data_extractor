@@ -317,6 +317,10 @@ def audit_fact_against_evidence(fact: dict) -> dict | None:
     """
     if fact.get("fact_type") != "performance":
         return fact
+    if "loading_list_positional_alignment" in str(
+        fact.get("assignment_reason") or ""
+    ):
+        return fact
     if (
         fact.get("extraction_method") in {
             "AI_holistic_table", "rule_table_performance",

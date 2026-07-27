@@ -141,6 +141,31 @@ def test_material_sample_filter_rejects_property_peak_and_joined_ids():
     )
 
 
+def test_material_sample_filter_rejects_confirmed_narrative_fragments():
+    for sample_id in (
+        "double that of the control group",
+        "11.5% from",
+        "machined fibers in one layer",
+        "cut fibers",
+        "cut fibers for case D",
+        "fibers placed here",
+    ):
+        assert not is_material_sample_id(sample_id)
+
+
+def test_material_sample_filter_rejects_model_and_generic_system_labels():
+    assert not is_material_sample_id(
+        "BF_reinforced_geopolymer_composite_unified_model"
+    )
+    assert not is_material_sample_id("BF_reinforced_geopolymer_composites")
+
+
+def test_anaphoric_matrix_reference_remains_a_valid_sample_after_cleanup():
+    from app.services.extractor_v7.sample_id_rules import sanitize_sample_id
+
+    assert sanitize_sample_id("that of epoxy resin matrix")[0] == "epoxy resin matrix"
+
+
 def test_build_sample_cards_ignores_pseudo_samples_and_deferred_background():
     mentions = [{
         "normalized_sample_id": "PCL/AA",
@@ -168,6 +193,25 @@ def test_build_sample_cards_ignores_pseudo_samples_and_deferred_background():
     assert [card["sample_id"] for card in cards] == ["PCL/AA"]
     assert not cards[0]["process_route"]
     assert not cards[0]["process_parameters"]
+
+
+def test_build_sample_cards_uses_fact_provenance_for_fact_only_sample():
+    facts = [{
+        "fact_type": "performance",
+        "assigned_sample_id": "bF-0.6 %",
+        "metric_or_parameter": "tensile_strength",
+        "value": "3.86 +/- 0.43",
+        "source_location": "Table 4",
+        "evidence_text": "[row 6] bF-0.6 % 3.86 +/- 0.43",
+        "confidence": 0.97,
+    }]
+
+    cards = build_sample_cards([], [], [], facts)
+
+    assert len(cards) == 1
+    assert cards[0]["sample_id"] == "bF-0.6 %"
+    assert cards[0]["source_location"] == "Table 4"
+    assert "bF-0.6 %" in cards[0]["evidence_text"]
 
 
 def test_spinning_method_uses_value_for_route_and_method():

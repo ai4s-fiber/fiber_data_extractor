@@ -50,7 +50,7 @@ _COMPARED_PAREN_RE = re.compile(
 
 _RESULT_UNIT_PATTERN = (
     r"%|MPa|GPa|kPa|Pa|g\s*/\s*g(?:\s+of\s+sorbent)?|mg\s*/\s*g|"
-    r"g\s*g[⁻-]?1|W\s*/\s*mK|W\s*m[⁻-]?1\s*K[⁻-]?1|S\s*/\s*(?:m|cm)|"
+    r"g\s*g[⁻−-]?1|W\s*/\s*mK|W\s*m[⁻−-]?1\s*K[⁻−-]?1|S\s*/\s*(?:m|cm)|"
     r"V|mV|µV|μV|A|mA|µA|μA|nA|nm|µm|μm|mm|cm|cm[⁻-]?1|eV|°"
 )
 
@@ -76,6 +76,24 @@ _RESPECTIVE_TWO_LIST_RE = re.compile(
     rf"(?P<sample1>[A-Za-z][A-Za-z0-9µμβγδ/\-_.+% ]{{0,80}}?)\s+and\s+"
     rf"(?P<sample2>[A-Za-z][A-Za-z0-9µμβγδ/\-_.+% ]{{0,80}}?)\s*"
     rf"(?:\(\s*respectively\s*\)|,?\s+respectively)"
+)
+
+_SAMPLE_WITH_FORM_PATTERN = (
+    r"[A-Za-z][A-Za-z0-9µμβγδ/\-_.+% ]{0,60}?\b"
+    r"(?:samples?|specimens?|fibers?|fibres?|films?|membranes?|"
+    r"composites?|aerogels?|hydrogels?|foams?|yarns?|tows?|materials?)\b"
+)
+_UNCERTAINTY_SUFFIX_PATTERN = (
+    rf"(?:\s*(?:±|\+/-)\s*{_NUMBER_PATTERN})?"
+)
+_SAMPLE_LIST_BEFORE_VALUES_RE = re.compile(
+    rf"(?is)\bof\s+(?P<sample1>{_SAMPLE_WITH_FORM_PATTERN})\s+and\s+"
+    rf"(?P<sample2>{_SAMPLE_WITH_FORM_PATTERN})\s+"
+    rf"(?:are|were|is|was)\s+(?P<value1>{_NUMBER_PATTERN})"
+    rf"{_UNCERTAINTY_SUFFIX_PATTERN}\s*(?:{_RESULT_UNIT_PATTERN})?\s+and\s+"
+    rf"(?P<value2>{_NUMBER_PATTERN}){_UNCERTAINTY_SUFFIX_PATTERN}\s*"
+    rf"(?:{_RESULT_UNIT_PATTERN})?(?:\s*\([^)]{{0,80}}\))?\s*,?\s*"
+    rf"respectively\b"
 )
 
 _TREATMENT_SAMPLE_RE = re.compile(
@@ -158,11 +176,44 @@ _MODIFIED_EVIDENCE_RE = re.compile(
 _RELATIVE_CHANGE_METRIC_RE = re.compile(
     r"(?i)(?:reduction|decrease|increase|improvement|enhancement|change)"
 )
+_RELATIVE_BASELINE_RE = re.compile(
+    rf"(?is)(?P<values>{_NUMBER_PATTERN}\s*%"
+    rf"(?:(?:\s*,\s*|\s+and\s+){_NUMBER_PATTERN}\s*%)*)\s*"
+    r"(?P<direction>higher|lower|greater|less|more|fewer)\s+than\s+"
+    r"(?:that|those)\s+of\s+(?P<baselines>.+?)"
+    r"(?=,\s*respectively\b|[.;](?!\d)|$)"
+)
+_RELATIVE_METRIC_LIST_RE = re.compile(
+    rf"(?is)(?P<metrics>[^.;]{{3,220}}?)\s+"
+    r"(?:increased|improved|enhanced|decreased|reduced)\s+by\s+"
+    rf"(?P<values>{_NUMBER_PATTERN}\s*%"
+    rf"(?:(?:\s*,\s*(?:and\s+)?|\s+and\s+){_NUMBER_PATTERN}\s*%)+)"
+    r"\s*,?\s*respectively\b"
+)
+_COORDINATED_STRENGTH_CHANGE_RE = re.compile(
+    rf"(?is)\b(?P<first>tensile|compressive|flexural|bending)"
+    r"(?:\s+strength)?\s+and\s+"
+    r"(?P<second>tensile|compressive|flexural|bending)\s+strength\b"
+    r".{0,180}?\b(?:increased|improved|enhanced|decreased|reduced)\s+by\s+"
+    rf"(?:more\s+than\s+)?(?P<first_value>{_NUMBER_PATTERN})\s*%\s+and\s+"
+    rf"(?:more\s+than\s+)?(?P<second_value>{_NUMBER_PATTERN})\s*%\s*,?\s*"
+    r"respectively\b"
+)
+
+
+def _case_sensitive_sample_pattern(name: str) -> str:
+    parts = [
+        part
+        for part in re.split(r"[\s_/-]+", normalize_sample_id(name))
+        if part
+    ]
+    return r"[\s_/-]*".join(re.escape(part) for part in parts)
 
 
 def _catalog_sample_order(evidence: str, sample_cards: list[dict] | None) -> tuple[str, ...]:
     """Resolve explicitly contrasted base samples in their evidence order."""
     cards: list[tuple[str, tuple[str, ...]]] = []
+    raw_names_by_sid: dict[str, tuple[str, ...]] = {}
     seen_ids: set[str] = set()
     for card in sample_cards or []:
         sid = normalize_sample_id(card.get("sample_id") or "")
@@ -178,6 +229,11 @@ def _catalog_sample_order(evidence: str, sample_cards: list[dict] | None) -> tup
         ))
         if normalized_names:
             cards.append((sid, normalized_names))
+            raw_names_by_sid[sid] = tuple(dict.fromkeys(
+                normalize_sample_id(name)
+                for name in names
+                if normalize_sample_id(name)
+            ))
             seen_ids.add(sid)
     if len(cards) < 2:
         return ()
@@ -190,7 +246,35 @@ def _catalog_sample_order(evidence: str, sample_cards: list[dict] | None) -> tup
 
     normalized_evidence = normalize_for_match(evidence)
     exact_positions: list[tuple[int, int, str]] = []
+    raw_name_owners: dict[str, set[str]] = defaultdict(set)
+    for sid, names in raw_names_by_sid.items():
+        for name in names:
+            if len(name) >= 2:
+                raw_name_owners[name].add(sid)
+    case_positioned_ids: set[str] = set()
+    for sid, raw_names in raw_names_by_sid.items():
+        best: tuple[int, int] | None = None
+        for raw_name in sorted(raw_names, key=len, reverse=True):
+            if len(raw_name_owners.get(raw_name, ())) != 1:
+                continue
+            pattern = _case_sensitive_sample_pattern(raw_name)
+            if not pattern:
+                continue
+            match = re.search(
+                rf"(?<![A-Za-z0-9]){pattern}(?![A-Za-z0-9])",
+                evidence,
+            )
+            if match:
+                candidate = (match.start(), -len(raw_name))
+                if best is None or candidate < best:
+                    best = candidate
+        if best is not None:
+            exact_positions.append((best[0], best[1], sid))
+            case_positioned_ids.add(sid)
+
     for sid, names in cards:
+        if sid in case_positioned_ids:
+            continue
         best: tuple[int, int] | None = None
         for name in sorted(names, key=len, reverse=True):
             if len(name_owners.get(name, ())) != 1:
@@ -514,6 +598,36 @@ def _value_from_paren_content(inner: str) -> str | None:
     return num.group(1)
 
 
+def _is_xrd_miller_index_parenthesis(
+    evidence: str,
+    match: re.Match[str],
+) -> bool:
+    inner = re.sub(r"\s+", "", match.group(1))
+    if not re.fullmatch(r"\d{2,4}", inner):
+        return False
+    local = evidence[max(0, match.start() - 24):match.end() + 32]
+    if re.search(
+        r"(?i)\bI\s*\(\s*\d{2,4}\s*\)\s*/\s*I\s*\(\s*\d{2,4}\s*\)",
+        local,
+    ):
+        return True
+    if not re.search(
+        r"(?i)\b(?:xrd|x-ray\s+diffraction|miller|intensity\s+ratio|peaks?)\b",
+        evidence,
+    ):
+        return False
+    return bool(
+        re.search(
+            rf"(?i)\bI\s*\(\s*{re.escape(inner)}\s*\)",
+            evidence,
+        )
+        or re.search(
+            r"(?i)\b(?:miller|diffraction|xrd|peaks?)\b",
+            evidence[max(0, match.start() - 80):match.end() + 80],
+        )
+    )
+
+
 def parse_sample_value_pairs(evidence: str) -> list[tuple[str, str]]:
     """Extract explicit sample→value pairs from common scientific prose forms."""
     pairs: list[tuple[str, str]] = []
@@ -533,6 +647,18 @@ def parse_sample_value_pairs(evidence: str) -> list[tuple[str, str]]:
 
     from app.services.extractor_v7.hard_validation import refine_sample_name_before_paren
 
+    has_sample_first_respective_pairs = False
+    for match in _SAMPLE_LIST_BEFORE_VALUES_RE.finditer(evidence):
+        sample1 = match.group("sample1")
+        sample2 = match.group("sample2")
+        if (
+            _is_plausible_sample_label(sample1, strict=True)
+            and _is_plausible_sample_label(sample2, strict=True)
+        ):
+            add(sample1, match.group("value1"))
+            add(sample2, match.group("value2"))
+            has_sample_first_respective_pairs = True
+
     for match in _RESPECTIVE_TWO_LIST_RE.finditer(evidence):
         sample1 = match.group("sample1")
         sample2 = match.group("sample2")
@@ -544,6 +670,8 @@ def parse_sample_value_pairs(evidence: str) -> list[tuple[str, str]]:
             add(sample2, match.group("value2"))
 
     for match in _PAREN_BLOCK_RE.finditer(evidence):
+        if _is_xrd_miller_index_parenthesis(evidence, match):
+            continue
         inner = match.group(1)
         value = _value_from_paren_content(inner)
         if not value:
@@ -566,6 +694,11 @@ def parse_sample_value_pairs(evidence: str) -> list[tuple[str, str]]:
 
     for match in _SAMPLE_BEFORE_RESULT_RE.finditer(evidence):
         name = match.group("sample")
+        if (
+            has_sample_first_respective_pairs
+            and re.search(r"(?i)\band\b", name)
+        ):
+            continue
         if _is_plausible_sample_label(name, strict=True):
             add(name, match.group("value"))
     return pairs
@@ -587,6 +720,52 @@ def parse_metric_value_pairs(evidence: str) -> list[tuple[str, str]]:
     """Extract metric→value pairs from explicit metric phrases."""
     pairs: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
+
+    for match in _COORDINATED_STRENGTH_CHANGE_RE.finditer(evidence):
+        for raw_metric, value in (
+            (match.group("first"), match.group("first_value")),
+            (match.group("second"), match.group("second_value")),
+        ):
+            metric_name = find_metric_canonical(f"{raw_metric} strength")
+            if not metric_name:
+                continue
+            key = (metric_name, _normalize_number(value))
+            if key not in seen:
+                seen.add(key)
+                pairs.append((metric_name, value))
+
+    for match in _RELATIVE_METRIC_LIST_RE.finditer(evidence):
+        metrics_text = re.split(
+            r"(?i)\b(?:with|showed|showing|including|namely)\b",
+            match.group("metrics"),
+        )[-1]
+        raw_metrics = [
+            part.strip(" ,")
+            for part in re.split(
+                r"\s*,\s*|\s*,?\s+and\s+",
+                metrics_text,
+            )
+            if part.strip(" ,")
+        ]
+        metrics = [
+            find_metric_canonical(raw_metric)
+            for raw_metric in raw_metrics
+        ]
+        values = re.findall(
+            rf"({_NUMBER_PATTERN})\s*%",
+            match.group("values"),
+        )
+        if (
+            len(metrics) == len(values)
+            and len(metrics) >= 2
+            and all(metrics)
+        ):
+            for metric_name, value in zip(metrics, values):
+                key = (str(metric_name), _normalize_number(value))
+                if key not in seen:
+                    seen.add(key)
+                    pairs.append((str(metric_name), value))
+
     for pattern, metric in _METRIC_VALUE_PATTERNS:
         for match in pattern.finditer(evidence):
             value = _value_after_metric_match(match, evidence)
@@ -691,6 +870,38 @@ def expand_multi_entity_facts(facts: list[dict]) -> list[dict]:
         (int(re.sub(r"\D", "", f.get("fact_id", "")) or "0") for f in facts),
         default=0,
     ) + 1
+    metric_pairs_by_evidence: dict[str, list[tuple[str, str]]] = {}
+    present_metric_pairs: dict[str, set[tuple[str, str]]] = defaultdict(set)
+
+    for source_fact in facts:
+        if source_fact.get("fact_type") != "performance":
+            continue
+        source_evidence = str(source_fact.get("evidence_text") or "")
+        if not source_evidence:
+            continue
+        metric_pairs = metric_pairs_by_evidence.setdefault(
+            source_evidence,
+            parse_metric_value_pairs(source_evidence),
+        )
+        if len(metric_pairs) < 2:
+            continue
+        source_value = str(source_fact.get("value") or "").strip()
+        if not _NUMBER_RE.search(source_value):
+            continue
+        matched = [
+            pair for pair in metric_pairs
+            if _numbers_equal(pair[1], source_value)
+        ]
+        if len(matched) == 1:
+            metric_name, metric_value = matched[0]
+            present_metric_pairs[source_evidence].add(
+                (metric_name, _normalize_number(metric_value))
+            )
+
+    emitted_metric_pairs = {
+        evidence: set(pairs)
+        for evidence, pairs in present_metric_pairs.items()
+    }
 
     for fact in facts:
         if fact.get("fact_type") != "performance":
@@ -699,7 +910,9 @@ def expand_multi_entity_facts(facts: list[dict]) -> list[dict]:
 
         evidence = str(fact.get("evidence_text") or "")
         sample_pairs = parse_sample_value_pairs(evidence)
-        metric_pairs = parse_metric_value_pairs(evidence)
+        metric_pairs = metric_pairs_by_evidence.get(evidence)
+        if metric_pairs is None:
+            metric_pairs = parse_metric_value_pairs(evidence)
         current_value = str(fact.get("value") or "").strip()
         has_numeric = bool(_NUMBER_RE.search(current_value))
 
@@ -710,7 +923,8 @@ def expand_multi_entity_facts(facts: list[dict]) -> list[dict]:
                 fact["metric_or_parameter"] = metric_name
                 expanded.append(fact)
                 for other_metric, other_value in metric_pairs:
-                    if other_metric == metric_name:
+                    pair_key = (other_metric, _normalize_number(other_value))
+                    if pair_key in emitted_metric_pairs.setdefault(evidence, set()):
                         continue
                     clone = copy.deepcopy(fact)
                     clone["metric_or_parameter"] = other_metric
@@ -719,9 +933,13 @@ def expand_multi_entity_facts(facts: list[dict]) -> list[dict]:
                     new_id, id_counter = _next_fact_id(expanded + facts, id_counter)
                     clone["fact_id"] = new_id
                     expanded.append(clone)
+                    emitted_metric_pairs[evidence].add(pair_key)
                 continue
             if not has_numeric or len(matched) != 1:
                 for metric_name, metric_value in metric_pairs:
+                    pair_key = (metric_name, _normalize_number(metric_value))
+                    if pair_key in emitted_metric_pairs.setdefault(evidence, set()):
+                        continue
                     clone = copy.deepcopy(fact)
                     clone["metric_or_parameter"] = metric_name
                     clone["value"] = metric_value
@@ -729,6 +947,7 @@ def expand_multi_entity_facts(facts: list[dict]) -> list[dict]:
                     new_id, id_counter = _next_fact_id(expanded + facts, id_counter)
                     clone["fact_id"] = new_id
                     expanded.append(clone)
+                    emitted_metric_pairs[evidence].add(pair_key)
                 continue
 
         if sample_pairs:
@@ -888,6 +1107,409 @@ def align_contrastive_sample_value_facts(
                 fact.get("assignment_reason"), "contrast_clause_value_alignment"
             )
             fact.pop("_alignment_review_required", None)
+    return facts
+
+
+_LOADING_VARIABLE_RE = re.compile(
+    r"(?i)\b(?:loading|content|fraction|concentration|dosage)\b"
+)
+_LOADING_IN_SAMPLE_ID_RE = re.compile(
+    r"(?i)(?<![\d.])(?P<value>\d+(?:\.\d+)?)\s*"
+    r"(?P<unit>volpct|wtpct|molpct|vol\.?\s*%|wt\.?\s*%|mol\.?\s*%|%)"
+)
+_LOADING_MATERIAL_STOPWORDS = frozenset({
+    "case", "composite", "composites", "content", "fiber", "fibers",
+    "fibre", "fibres", "formulation", "frgc", "group", "loading",
+    "material", "materials", "mixture", "molpct", "sample", "samples",
+    "specimen", "specimens", "volpct", "wtpct",
+})
+
+
+def _normalized_loading_unit(unit: Any) -> str:
+    normalized = re.sub(r"[\s._-]+", "", str(unit or "").lower())
+    if "vol" in normalized:
+        return "vol%"
+    if "wt" in normalized:
+        return "wt%"
+    if "mol" in normalized:
+        return "mol%"
+    return "%" if "%" in normalized or "pct" in normalized else ""
+
+
+def _sample_card_loading(card: dict) -> tuple[str, str] | None:
+    variable_name = str(card.get("variable_name") or "")
+    variable_value = _normalize_number(card.get("variable_value"))
+    if variable_value and _LOADING_VARIABLE_RE.search(variable_name):
+        return variable_value, _normalized_loading_unit(card.get("variable_unit"))
+
+    names = [
+        str(card.get("sample_id") or ""),
+        *parse_sample_aliases(card.get("sample_aliases")),
+    ]
+    for name in names:
+        match = _LOADING_IN_SAMPLE_ID_RE.search(name)
+        if match:
+            return (
+                _normalize_number(match.group("value")),
+                _normalized_loading_unit(match.group("unit")),
+            )
+    return None
+
+
+def _sample_card_material_tokens(card: dict, fallback: str = "") -> set[str]:
+    names = [
+        str(card.get("sample_id") or fallback or ""),
+        *parse_sample_aliases(card.get("sample_aliases")),
+    ]
+    tokens: set[str] = set()
+    for name in names:
+        without_loading = _LOADING_IN_SAMPLE_ID_RE.sub(" ", name)
+        tokens.update(
+            token
+            for token in re.findall(r"(?i)[a-z][a-z0-9]{1,15}", without_loading)
+            if token.lower() not in _LOADING_MATERIAL_STOPWORDS
+        )
+    return {token.lower() for token in tokens}
+
+
+def _context_mentions_loading(context: str, value: str, unit: str) -> bool:
+    if not value:
+        return False
+    if unit == "vol%":
+        unit_pattern = r"(?:vol(?:ume)?\.?\s*%|volpct|%)"
+    elif unit == "wt%":
+        unit_pattern = r"(?:wt(?:eight)?\.?\s*%|wtpct|%)"
+    elif unit == "mol%":
+        unit_pattern = r"(?:mol\.?\s*%|molpct|%)"
+    else:
+        unit_pattern = r"(?:(?:wt|vol|mol)\.?\s*)?%"
+    return bool(re.search(
+        rf"(?i)(?<![\d.]){re.escape(value)}(?![\d.])\s*{unit_pattern}",
+        context or "",
+    ))
+
+
+def _prefer_loading_specific_sample(
+    sample_id: str,
+    context: str,
+    sample_cards: list[dict] | None,
+) -> str:
+    """Upgrade a raw-material card only when one loaded card is fully grounded."""
+    sid = normalize_sample_id(sample_id)
+    cards = sample_cards or []
+    current_card = next(
+        (
+            card for card in cards
+            if normalize_for_match(card.get("sample_id") or "")
+            == normalize_for_match(sid)
+        ),
+        {"sample_id": sid},
+    )
+    material_tokens = _sample_card_material_tokens(current_card, sid)
+    if not material_tokens:
+        return sid
+
+    def leading_material_code(value: str) -> str:
+        match = re.match(r"([A-Za-z]{2,8})(?=[_\s/\-]|\d|$)", value)
+        return match.group(1) if match else ""
+
+    codes_by_folded: dict[str, set[str]] = defaultdict(set)
+    for card in cards:
+        code = leading_material_code(
+            normalize_sample_id(card.get("sample_id") or "")
+        )
+        if code:
+            codes_by_folded[code.lower()].add(code)
+    protected_case_codes = {
+        folded: codes
+        for folded, codes in codes_by_folded.items()
+        if len(codes) > 1
+        and any(
+            any(char.islower() for char in code)
+            and any(char.isupper() for char in code)
+            for code in codes
+        )
+    }
+    current_code = leading_material_code(sid)
+
+    ranked_candidates: list[tuple[tuple[int, int, int], str]] = []
+    for card in cards:
+        candidate_id = normalize_sample_id(card.get("sample_id") or "")
+        if not candidate_id:
+            continue
+        candidate_code = leading_material_code(candidate_id)
+        if (
+            current_code
+            and candidate_code
+            and current_code != candidate_code
+            and current_code.lower() == candidate_code.lower()
+            and current_code in protected_case_codes.get(current_code.lower(), set())
+            and candidate_code in protected_case_codes.get(current_code.lower(), set())
+        ):
+            continue
+        if not material_tokens.intersection(_sample_card_material_tokens(card)):
+            continue
+        loading = _sample_card_loading(card)
+        if not loading or not _context_mentions_loading(context, *loading):
+            continue
+        structured_loading = bool(
+            _normalize_number(card.get("variable_value"))
+            and _LOADING_VARIABLE_RE.search(str(card.get("variable_name") or ""))
+        )
+        encoded_loading = bool(re.search(
+            r"(?i)(?:volpct|wtpct|molpct)",
+            candidate_id,
+        ))
+        ranked_candidates.append((
+            (
+                int(structured_loading),
+                int(encoded_loading),
+                len(candidate_id),
+            ),
+            candidate_id,
+        ))
+    if not ranked_candidates:
+        return sid
+    best_rank = max(rank for rank, _ in ranked_candidates)
+    best_ids = {
+        candidate_id
+        for rank, candidate_id in ranked_candidates
+        if rank == best_rank
+    }
+    return next(iter(best_ids)) if len(best_ids) == 1 else sid
+
+
+def _prefer_loading_specific_samples(
+    sample_ids: tuple[str, ...],
+    context: str,
+    sample_cards: list[dict] | None,
+) -> tuple[str, ...]:
+    resolved = [
+        _prefer_loading_specific_sample(sample_id, context, sample_cards)
+        for sample_id in sample_ids
+    ]
+    return tuple(dict.fromkeys(resolved))
+
+
+_LOADING_LIST_RE = re.compile(
+    rf"(?is)(?P<values>{_NUMBER_PATTERN}"
+    rf"(?:(?:\s*,\s*(?:and\s+)?|\s+and\s+){_NUMBER_PATTERN})+)\s*"
+    r"(?P<unit>wt|vol|mol)\.?\s*%"
+)
+
+
+def _loading_list_samples(
+    evidence: str,
+    group: list[dict],
+    sample_cards: list[dict] | None,
+) -> list[tuple[list[str], list[str]]]:
+    current_tokens: set[str] = set()
+    for fact in group:
+        current_id = normalize_sample_id(fact.get("assigned_sample_id") or "")
+        if current_id:
+            current_tokens.update(_sample_card_material_tokens({"sample_id": current_id}))
+
+    resolved_lists: list[tuple[list[str], list[str]]] = []
+    for match in _LOADING_LIST_RE.finditer(evidence):
+        window = evidence[max(0, match.start() - 90):match.end() + 90]
+        if not re.search(
+            r"(?i)\b(?:coat|treat|loading|content|fraction|concentration|"
+            r"fib(?:er|re)|filler|reinforcement)\w*\b",
+            window,
+        ):
+            continue
+        values = re.findall(_NUMBER_PATTERN, match.group("values"))
+        unit = _normalized_loading_unit(f"{match.group('unit')}%")
+        targets: list[str] = []
+        for value in values:
+            ranked: list[tuple[tuple[int, int, int, int], str]] = []
+            for card in sample_cards or []:
+                loading = _sample_card_loading(card)
+                if not loading or loading != (_normalize_number(value), unit):
+                    continue
+                sample_id = normalize_sample_id(card.get("sample_id") or "")
+                if not sample_id:
+                    continue
+                material_tokens = _sample_card_material_tokens(card)
+                token_overlap = len(current_tokens & material_tokens)
+                evidence_form_match = int(bool(
+                    re.search(r"(?i)\b(?:GFRP|composite|laminate)\b", evidence)
+                    and re.search(r"(?i)\b(?:GFRP|composite|laminate)\b", sample_id)
+                ))
+                structured = int(bool(
+                    _normalize_number(card.get("variable_value"))
+                    and _LOADING_VARIABLE_RE.search(
+                        str(card.get("variable_name") or "")
+                    )
+                ))
+                compact_identity = int(bool(
+                    re.match(r"^[A-Za-z0-9]+(?:_[A-Za-z0-9.+%-]+)+$", sample_id)
+                ))
+                ranked.append((
+                    (token_overlap, evidence_form_match, structured, compact_identity),
+                    sample_id,
+                ))
+            if not ranked:
+                targets = []
+                break
+            best_rank = max(rank for rank, _ in ranked)
+            best_ids = {
+                sample_id for rank, sample_id in ranked if rank == best_rank
+            }
+            if len(best_ids) != 1:
+                targets = []
+                break
+            targets.append(next(iter(best_ids)))
+        if len(targets) == len(values):
+            resolved_lists.append((values, targets))
+    return resolved_lists
+
+
+def align_loading_respectively_facts(
+    facts: list[dict], sample_cards: list[dict] | None = None,
+) -> list[dict]:
+    """Bind ordered result lists to explicit wt%/vol% material variants."""
+    grouped: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    for fact in facts:
+        if fact.get("fact_type") != "performance":
+            continue
+        evidence = str(fact.get("evidence_text") or "")
+        metric = find_metric_canonical(
+            str(fact.get("metric_or_parameter") or "")
+        ) or str(fact.get("metric_or_parameter") or "")
+        if evidence:
+            grouped[(evidence, metric)].append(fact)
+
+    for (evidence, _metric), group in grouped.items():
+        value_groups: dict[str, list[dict]] = defaultdict(list)
+        for fact in group:
+            if not _NUMBER_RE.search(str(fact.get("value") or "")):
+                continue
+            normalized_value = _normalize_number(fact.get("value"))
+            if normalized_value:
+                value_groups[normalized_value].append(fact)
+        if len(value_groups) < 2:
+            continue
+        if any(
+            not _value_occurrences(evidence, facts_for_value[0].get("value"))
+            for facts_for_value in value_groups.values()
+        ):
+            continue
+        ordered_values = sorted(
+            value_groups,
+            key=lambda value: _value_occurrences(
+                evidence,
+                value_groups[value][0].get("value"),
+            )[0].start(),
+        )
+        for loading_values, targets in _loading_list_samples(
+            evidence,
+            group,
+            sample_cards,
+        ):
+            if len(targets) != len(ordered_values):
+                continue
+            result_values = set(ordered_values)
+            if result_values == {_normalize_number(value) for value in loading_values}:
+                continue
+            value_targets = dict(zip(ordered_values, targets))
+            for normalized_value, matching_facts in value_groups.items():
+                sample_id = value_targets.get(normalized_value)
+                if not sample_id:
+                    continue
+                for fact in matching_facts:
+                    fact["assigned_sample_id"] = sample_id
+                    fact["candidate_sample_ids"] = [sample_id]
+                    fact["assignment_status"] = "assigned"
+                    fact["assignment_confidence"] = max(
+                        float(fact.get("assignment_confidence") or 0), 0.98
+                    )
+                    fact["assignment_reason"] = _append_reason(
+                        fact.get("assignment_reason"),
+                        "loading_list_positional_alignment",
+                    )
+                    fact.pop("_alignment_review_required", None)
+            break
+    return facts
+
+
+def align_relative_change_subject_facts(
+    facts: list[dict], sample_cards: list[dict] | None = None,
+) -> list[dict]:
+    """Bind comparative percentages to the improved subject, not baselines."""
+    grouped: dict[str, list[dict]] = defaultdict(list)
+    for fact in facts:
+        if fact.get("fact_type") == "performance":
+            evidence = str(fact.get("evidence_text") or "")
+            if evidence:
+                grouped[evidence].append(fact)
+
+    for evidence, group in grouped.items():
+        alignment_context = " ".join([
+            evidence,
+            *(str(fact.get("condition") or "") for fact in group),
+        ])
+        mentioned_samples = _prefer_loading_specific_samples(
+            _catalog_sample_order(evidence, sample_cards),
+            alignment_context,
+            sample_cards,
+        )
+        if len(mentioned_samples) < 2:
+            continue
+        for match in _RELATIVE_BASELINE_RE.finditer(evidence):
+            values = re.findall(
+                rf"({_NUMBER_PATTERN})\s*%",
+                match.group("values"),
+            )
+            baseline_samples = _prefer_loading_specific_samples(
+                _catalog_sample_order(match.group("baselines"), sample_cards),
+                alignment_context,
+                sample_cards,
+            )
+            if not values or len(values) != len(baseline_samples):
+                continue
+            baseline_keys = {
+                normalize_sample_id(sample_id)
+                for sample_id in baseline_samples
+            }
+            subject_candidates = [
+                sample_id
+                for sample_id in mentioned_samples
+                if normalize_sample_id(sample_id) not in baseline_keys
+            ]
+            if len(subject_candidates) != 1:
+                continue
+            subject = subject_candidates[0]
+            value_to_baseline = {
+                _normalize_number(value): baseline
+                for value, baseline in zip(values, baseline_samples)
+            }
+            for fact in group:
+                if re.sub(r"\s+", "", str(fact.get("unit") or "")) != "%":
+                    continue
+                baseline = value_to_baseline.get(_normalize_number(fact.get("value")))
+                if not baseline:
+                    continue
+                fact["assigned_sample_id"] = subject
+                fact["candidate_sample_ids"] = [subject]
+                fact["assignment_status"] = "assigned"
+                fact["assignment_confidence"] = max(
+                    float(fact.get("assignment_confidence") or 0),
+                    0.96,
+                )
+                condition = str(fact.get("condition") or "").strip()
+                comparison = f"{match.group('direction').lower()} than {baseline}"
+                if comparison.lower() not in condition.lower():
+                    fact["condition"] = (
+                        f"{condition}; {comparison}".strip("; ")
+                        if condition
+                        else comparison
+                    )
+                fact["assignment_reason"] = _append_reason(
+                    fact.get("assignment_reason"),
+                    "relative_change_subject_alignment",
+                )
+                fact.pop("_alignment_review_required", None)
     return facts
 
 
@@ -1423,7 +2045,9 @@ def apply_sample_value_alignment(
     """Expand multi-entity evidence and mark facts that fail reverse alignment."""
     facts = expand_multi_entity_facts(facts)
     facts = align_contrastive_sample_value_facts(facts, sample_cards)
+    facts = align_relative_change_subject_facts(facts, sample_cards)
     facts = align_contrastive_relative_change_facts(facts, sample_cards)
+    facts = align_loading_respectively_facts(facts, sample_cards)
     facts = align_partial_explicit_pairs(facts, sample_cards)
     facts = align_anaphoric_respectively_facts(facts, sample_cards)
     facts = expand_compressive_stress_from_to(facts)

@@ -103,6 +103,43 @@ _PROPERTY_ONLY_SAMPLE_RE = re.compile(
 )
 
 
+def is_narrative_sample_phrase(sample_id: str) -> bool:
+    """Reject prose fragments that describe an operation or comparison."""
+    normalized = normalize_for_match(sample_id)
+    if not normalized:
+        return False
+    if re.search(
+        r"(?i)\b(?:double|twice|half|halved|three\s+times|"
+        r"higher|lower|greater|less)\s+that\s+of\b",
+        normalized,
+    ):
+        return True
+    if re.fullmatch(r"(?i)\d+(?:\.\d+)?\s*%\s+from(?:\s+.*)?", normalized):
+        return True
+    if re.fullmatch(
+        r"(?i)(?:machined|cut|chopped|uncut)\s+fib(?:er|re)s?"
+        r"(?:\s+(?:in|for|under|at|with)\s+.*)?",
+        normalized,
+    ):
+        return True
+    if re.fullmatch(
+        r"(?i).+\b(?:unified|constitutive|prediction|predictive)\s+model",
+        normalized,
+    ):
+        return True
+    if re.fullmatch(
+        r"(?i)[a-z0-9.+%-]{1,16}\s+reinforced\s+"
+        r"[a-z0-9.+%-]+(?:\s+[a-z0-9.+%-]+){0,5}\s+composites",
+        normalized,
+    ):
+        return True
+    return bool(re.fullmatch(
+        r"(?i)fib(?:er|re)s?\s+(?:placed|put|located|positioned)\s+"
+        r"(?:here|there)(?:\s+.*)?",
+        normalized,
+    ))
+
+
 def _is_joined_sample_list(sample_id: str) -> bool:
     """Identify model-created ``full_id/full_id`` aggregate labels."""
     parts = [part.strip() for part in sample_id.split("/") if part.strip()]
@@ -131,6 +168,8 @@ def is_material_sample_id(sample_id: str) -> bool:
     if not re.search(r"[A-Za-z]", sid):
         return False
     if len(sid.split()) > 8 or re.search(r"[.!?]\s", sid):
+        return False
+    if is_narrative_sample_phrase(sid):
         return False
     if _is_generic_sample_name(sid) or _PROPERTY_ONLY_SAMPLE_RE.fullmatch(sid):
         return False
@@ -570,12 +609,26 @@ def build_sample_cards(
 ) -> list[dict]:
     """Build sample cards from deterministic intermediate artifacts."""
     sample_ids = _sample_ids_from_mentions(sample_mentions)
+    fact_meta_by_sample: dict[str, dict] = {}
     for fact in fact_candidates:
         if fact.get("_background_only"):
             continue
         sid = normalize_sample_id(fact.get("assigned_sample_id") or fact.get("sample_id"))
         if sid and sid not in sample_ids and is_material_sample_id(sid):
             sample_ids.append(sid)
+        if not sid or not is_material_sample_id(sid):
+            continue
+        current = fact_meta_by_sample.get(sid)
+        current_score = (
+            bool(current and current.get("evidence_text")),
+            float(current.get("confidence") or 0) if current else 0.0,
+        )
+        candidate_score = (
+            bool(fact.get("evidence_text")),
+            float(fact.get("confidence") or 0),
+        )
+        if current is None or candidate_score > current_score:
+            fact_meta_by_sample[sid] = fact
 
     group_by_sample: dict[str, dict] = {}
     for group in sample_groups:
@@ -600,14 +653,29 @@ def build_sample_cards(
     for sid in sample_ids:
         group = group_by_sample.get(sid, {})
         mention = mention_meta.get(sid, {})
+        fact_meta = fact_meta_by_sample.get(sid, {})
+        identity_confidence = mention.get("confidence")
+        if identity_confidence in (None, ""):
+            identity_confidence = fact_meta.get("confidence", 0.55)
         cards[sid] = {field: "" for field in SAMPLE_CARD_FIELDS}
         cards[sid].update({
             "sample_id": sid,
             "sample_aliases": json.dumps(sorted(aliases_by_sample[sid]), ensure_ascii=False) if aliases_by_sample[sid] else "",
             "sample_group_id": group.get("sample_group_id", "G000"),
-            "source_location": mention.get("source_location", ""),
-            "evidence_text": mention.get("context_text", ""),
-            "confidence": min(float(mention.get("confidence", 0.55) or 0.55), float(group.get("confidence", 0.55) or 0.55)),
+            "source_location": (
+                mention.get("source_location")
+                or fact_meta.get("source_location")
+                or ""
+            ),
+            "evidence_text": (
+                mention.get("context_text")
+                or fact_meta.get("evidence_text")
+                or ""
+            ),
+            "confidence": min(
+                float(identity_confidence or 0.55),
+                float(group.get("confidence", 0.55) or 0.55),
+            ),
             "_group_confidence": group.get("confidence", 0.0),
             "_group_evidence": group.get("group_evidence", ""),
             "_group_provisional": group.get("is_provisional", True),

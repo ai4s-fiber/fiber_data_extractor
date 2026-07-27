@@ -23,6 +23,8 @@ METRIC_MAP: dict[str, str] = {
     "拉伸强度": "tensile_strength",
     "breaking strength": "tensile_strength",
     "ultimate tensile strength": "tensile_strength",
+    "tensile strength improvement": "tensile_strength_improvement",
+    "tensile strength increase": "tensile_strength_improvement",
     # Compressive
     "compressive strength": "compressive_strength",
     "compression strength": "compressive_strength",
@@ -36,6 +38,8 @@ METRIC_MAP: dict[str, str] = {
     "断裂伸长率": "elongation_at_break",
     "断裂伸长": "elongation_at_break",
     "strain at break": "elongation_at_break",
+    "ultimate strain": "ultimate_strain",
+    "ultimate strain improvement": "ultimate_strain_improvement",
     "knee strain": "knee_strain",
     "strain at knee": "knee_strain",
     "damage transition strain": "damage_transition_strain",
@@ -125,9 +129,23 @@ def normalize_unit(unit: str) -> str:
     bracketed = re.fullmatch(r"\[\s*([^\[\]]+?)\s*\]", text)
     if bracketed:
         text = bracketed.group(1)
-    lower = text.lower().replace(" ", "")
+    lower_text = text.lower()
+    if re.match(
+        r"^\s*\[?%\]?\s*(?:higher|lower|greater|less|more|fewer|"
+        r"increas\w*|decreas\w*|improv\w*|enhanc\w*|reduc\w*|"
+        r"rais\w*|growth|gain|drop|relative|compar\w*|than)\b",
+        lower_text,
+    ):
+        return "%"
+    lower = re.sub(r"\s+", "", lower_text)
     lower = lower.replace("·", "").replace("−", "-").replace("–", "-")
     lower = lower.replace("**2", "²").replace("^2", "²")
+    lower = lower.replace("**3", "3").replace("^3", "3").replace("³", "3")
+    lower = re.sub(
+        r"(?i)\((?:diameter|particle(?:size)?|length|width|height)\)$",
+        "",
+        lower,
+    )
     mapping = {
         "mpa": "mpa",
         "gpa": "gpa",
@@ -137,6 +155,17 @@ def normalize_unit(unit: str) -> str:
         "%strain": "%",
         "strain%": "%",
         "percentstrain": "%",
+        "με": "microstrain",
+        "µε": "microstrain",
+        "microstrain": "microstrain",
+        "microstrains": "microstrain",
+        "ue": "microstrain",
+        "µe": "microstrain",
+        "μe": "microstrain",
+        "j/m3": "j/m3",
+        "kj/m3": "kj/m3",
+        "j/m²": "j/m²",
+        "kj/m²": "kj/m²",
         "s/m": "s/m",
         "sm-1": "s/m",
         "s/cm": "s/cm",
@@ -145,6 +174,7 @@ def normalize_unit(unit: str) -> str:
         "w/(mk)": "w/mk",
         "w/mk": "w/mk",
         "wm-1k-1": "w/mk",
+        "wm^-1k^-1": "w/mk",
         "mw/mk": "mw/mk",
         "mwm-1k-1": "mw/mk",
         "degree": "degree",
@@ -155,6 +185,8 @@ def normalize_unit(unit: str) -> str:
         "ph": "ph",
         "mgcm-3": "mg/cm3",
         "mg/cm3": "mg/cm3",
+        "g/cc": "g/cm3",
+        "gcm-3": "g/cm3",
         "g/cm3": "g/cm3",
         "g/cm³": "g/cm3",
         "kg/m3": "kg/m3",
@@ -163,11 +195,48 @@ def normalize_unit(unit: str) -> str:
         "kgm^-3": "kg/m3",
         "kgm-3": "kg/m3",
         "kgm⁻³": "kg/m3",
+        "m²/s": "m2/s",
+        "m2/s": "m2/s",
+        "m²s-1": "m2/s",
+        "m2s-1": "m2/s",
+        "1/√s": "1/√s",
+        "s-0.5": "1/√s",
+        "days": "days",
+        "day": "days",
+        "d": "days",
+        "h": "h",
         "°c": "°c",
         "℃": "°c",
         "cn/dtex": "cn/dtex",
+        "gdenier^-1": "g/denier",
+        "gdenier-1": "g/denier",
+        "g/denier": "g/denier",
+        "n/tex": "n/tex",
+        "nmg^-1": "n\u00b7m/g",
+        "nmg-1": "n\u00b7m/g",
+        "knmg^-1": "kn\u00b7m/g",
+        "knmg-1": "kn\u00b7m/g",
+        "jg^-1": "j/g",
+        "jg-1": "j/g",
+        "j/g": "j/g",
+        "kjg^-1": "kj/g",
+        "kjg-1": "kj/g",
+        "kj/g": "kj/g",
+        "vol.%": "%",
+        "vol%": "%",
+        "pas": "pa·s",
+        "pa*s": "pa·s",
         "n/mm2": "mpa",
         "n/mm²": "mpa",
+        "times": "times",
+        "timesenhancement": "times",
+        "timesimprovement": "times",
+        "timesincrease": "times",
+        "fold": "fold",
+        "foldenhancement": "fold",
+        "foldimprovement": "fold",
+        "foldincrease": "fold",
+        "×": "times",
     }
     return mapping.get(lower, lower)
 
@@ -178,11 +247,26 @@ def normalize_unit(unit: str) -> str:
 
 UNIT_RULES: dict[str, set[str]] = {
     "tensile_strength": {"mpa", "gpa", "kpa", "pa", "cn/dtex"},
+    "specific_tensile_strength": {
+        "cn/dtex", "n/tex", "g/denier", "n\u00b7m/g",
+    },
+    "specific_tensile_modulus": {
+        "cn/dtex", "n/tex", "g/denier", "kn\u00b7m/g", "mpa", "gpa",
+    },
+    "extension_at_break": {"mm", "cm", "m"},
+    "cold_crystallization_temperature": {"\u00b0c", "k"},
+    "cold_crystallization_enthalpy": {"j/g", "kj/g"},
+    "melting_enthalpy": {"j/g", "kj/g"},
+    "tensile_strength_improvement": {"%"},
     "compressive_strength": {"mpa", "gpa", "kpa", "pa"},
+    "compressive_strength_improvement": {"%"},
     "compressive_stress": {"mpa", "gpa", "kpa", "pa"},
     "breaking_strength": {"mpa", "gpa", "kpa", "pa", "cn/dtex"},
     "Youngs_modulus": {"mpa", "gpa", "kpa", "pa"},
+    "Youngs_modulus_improvement": {"%"},
     "storage_modulus": {"mpa", "gpa", "kpa", "pa"},
+    "storage_modulus_power_law_index": {"-", "dimensionless"},
+    "loss_modulus_power_law_index": {"-", "dimensionless"},
     "storage_modulus_improvement": {"%"},
     "Poissons_ratio": {"-", "dimensionless"},
     "inelastic_threshold_stress": {"mpa", "gpa", "kpa", "pa"},
@@ -190,6 +274,8 @@ UNIT_RULES: dict[str, set[str]] = {
     "flexural_strength": {"mpa", "gpa", "kpa", "pa"},
     "flexural_strength_improvement": {"%"},
     "flexural_modulus": {"mpa", "gpa", "kpa", "pa"},
+    "flexural_modulus_improvement": {"%"},
+    "in_plane_property_reduction": {"%"},
     "impact_strength": {"j/m²", "j/m2", "kj/m²", "kj/m2"},
     "fracture_toughness": {
         "j/m²", "j/m2", "kj/m²", "kj/m2", "mpa·m^0.5", "mpam^0.5",
@@ -198,6 +284,8 @@ UNIT_RULES: dict[str, set[str]] = {
     "mode_I_interlaminar_fracture_toughness": {"j/m²", "j/m2", "kj/m²", "kj/m2"},
     "mode_II_interlaminar_fracture_toughness": {"j/m²", "j/m2", "kj/m²", "kj/m2"},
     "fracture_toughness_improvement": {"%"},
+    "fracture_energy": {"j/m3", "kj/m3"},
+    "fracture_energy_improvement": {"%"},
     "mode_I_interlaminar_fracture_toughness_improvement": {"%"},
     "mode_II_interlaminar_fracture_toughness_improvement": {"%"},
     "interlaminar_shear_strength": {"mpa", "gpa", "kpa", "pa"},
@@ -207,11 +295,16 @@ UNIT_RULES: dict[str, set[str]] = {
     "maximum_deformation": {"mm", "cm", "m", "%"},
     "deformation_speed": {"mm/s", "cm/s", "m/s"},
     "elongation_at_break": {"%"},
+    "ultimate_strain": {"%", "microstrain"},
+    "ultimate_strain_improvement": {"%"},
     "knee_strain": {"%"},
     "damage_transition_strain": {"%"},
     "stiffness_recovery_strain": {"%"},
     "electrical_conductivity": {"s/m", "s/cm", "ms/m"},
     "thermal_conductivity": {"w/mk", "mw/mk"},
+    "thermal_conductivity_improvement": {
+        "%", "times", "fold", "dimensionless", "-",
+    },
     "water_contact_angle": {"degree"},
     "pH": {"ph", "-", "dimensionless"},
     "density": {"mg/cm3", "g/cm3", "kg/m3"},
@@ -232,7 +325,9 @@ UNIT_RULES: dict[str, set[str]] = {
     "degradation_rate": {"%"},
     "surface_temperature": {"°c", "k"},
     "glass_transition_temperature": {"°c", "k"},
+    "melting_temperature": {"°c", "k"},
     "decomposition_temperature": {"°c", "k"},
+    "crystallinity_Xc": {"%", "dimensionless", "-"},
     "austenite_start_temperature": {"°c", "k"},
     "austenite_finish_temperature": {"°c", "k"},
     "martensite_start_temperature": {"°c", "k"},
@@ -248,6 +343,13 @@ UNIT_RULES: dict[str, set[str]] = {
     "eigenfrequency": {"hz", "khz", "mhz"},
     "maximum_acceleration": {"-", "dimensionless", "m/s2", "m/s²"},
     "acceleration_reduction": {"%"},
+    "equilibrium_water_content": {"%"},
+    "equilibrium_water_content_change": {"%"},
+    "equilibrium_immersion_duration": {"days", "h"},
+    "initial_water_sorption_slope": {"1/√s"},
+    "water_diffusion_coefficient": {"m2/s"},
+    "water_diffusion_coefficient_change": {"%"},
+    "water_diffusion_coefficient_reduction": {"%"},
 }
 
 _DENSITY_UNITS = {"mg/cm3", "g/cm3", "kg/m3", "mg cm^-3", "g cm^-3", "kg m^-3"}
@@ -284,6 +386,12 @@ def metric_unit_compatible(metric: str, unit: str) -> bool:
         return False
 
     lower_metric = normalized_metric.lower()
+    relative_units = {"%", "times", "fold", "dimensionless", "-"}
+
+    if lower_metric.endswith((
+        "_improvement", "_growth_rate", "_change", "_reduction",
+    )) and normalized_unit in relative_units:
+        return True
 
     # Spectroscopy peak metrics: wavenumber or eV only
     if _looks_like_spectroscopy_peak_metric(lower_metric):

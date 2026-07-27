@@ -128,3 +128,25 @@ def test_known_bandgap_frequency_is_a_result_not_a_test_condition():
     }
 
     assert classify_data_source_type(fact) == "paper_core_result"
+
+
+def test_measured_current_values_are_not_background_due_to_caption_tail():
+    fact = {
+        "fact_type": "performance",
+        "_chunk_section": "results",
+        "assigned_sample_id": "C-BN fiber",
+        "metric_or_parameter": "thermal_conductivity",
+        "value": "53.9",
+        "unit": "W m^-1 K^-1",
+        "evidence_text": (
+            "The measured kappa of P-BN fiber and C-BN fiber are 39.5 +/- 1.6 "
+            "and 53.9 +/- 1.4 W m-1 K-1, respectively. "
+            "[figure caption] The pure BN fibers in this work are compared "
+            "with previously reported composite material fibers."
+        ),
+    }
+
+    classified = apply_data_source_classification([fact])[0]
+
+    assert classified["_data_source_type"] == "paper_core_result"
+    assert classified["_explicit_background_reference"] is False

@@ -61,6 +61,128 @@ def test_numbered_run_variants_are_not_merged_with_each_other_or_base():
     assert alias_map["acetylated jute 2"] == "acetylated jute 2"
 
 
+def test_letter_case_variants_are_not_merged():
+    mentions = [
+        {"normalized_sample_id": "case A", "aliases": ["A case"]},
+        {"normalized_sample_id": "case B", "aliases": ["B case"]},
+        {"normalized_sample_id": "case C", "aliases": []},
+    ]
+
+    alias_map = build_sample_alias_map(mentions)
+
+    assert alias_map["case A"] == alias_map["A case"]
+    assert alias_map["case B"] == alias_map["B case"]
+    assert len({alias_map["case A"], alias_map["case B"], alias_map["case C"]}) == 3
+
+
+def test_conflicting_model_aliases_do_not_cross_loadings_or_materials():
+    samples = [
+        {
+            "sample_id": "BF",
+            "aliases": ["BF-0.3 %", "BF-0.9 %", "BF-1.2 %"],
+            "variable_name": "BF loading",
+            "variable_value": "0.3",
+            "variable_unit": "vol%",
+        },
+        {
+            "sample_id": "CF",
+            "aliases": ["CF-0.6 %", "PVA-0.6 %", "PVA"],
+            "variable_name": "CF loading",
+            "variable_value": "0.6",
+            "variable_unit": "vol%",
+        },
+    ]
+
+    alias_map = build_sample_alias_map([], holistic_samples=samples)
+
+    assert alias_map["BF-0.3 %"] == "BF"
+    assert alias_map["BF-0.9 %"] != "BF"
+    assert alias_map["BF-1.2 %"] != "BF"
+    assert alias_map["CF-0.6 %"] == "CF"
+    assert alias_map["PVA-0.6 %"] != "CF"
+    assert alias_map["PVA"] != "CF"
+
+
+def test_case_distinct_primary_material_codes_do_not_merge_but_case_only_aliases_do():
+    mentions = [
+        {"normalized_sample_id": "BF", "aliases": []},
+        {"normalized_sample_id": "bF", "aliases": []},
+        {"normalized_sample_id": "CF", "aliases": ["cf"]},
+    ]
+    samples = [{
+        "sample_id": "BF_fiber",
+        "aliases": ["BF", "bF"],
+    }]
+
+    alias_map = build_sample_alias_map(mentions, holistic_samples=samples)
+
+    assert alias_map["BF"] != alias_map["bF"]
+    assert alias_map["CF"] == alias_map["cf"]
+    assert not (
+        alias_map["BF_fiber"] == alias_map["BF"] == alias_map["bF"]
+    )
+
+
+def test_table_loading_labels_merge_into_structured_cards_without_crossing_case():
+    holistic = [
+        {
+            "sample_id": "BF_0.6volpct_FRGC",
+            "variable_name": "BF loading",
+            "variable_value": "0.6",
+            "variable_unit": "vol%",
+        },
+        {
+            "sample_id": "CF_0.6volpct_FRGC",
+            "variable_name": "CF loading",
+            "variable_value": "0.6",
+            "variable_unit": "vol%",
+        },
+    ]
+    cards = [
+        {"sample_id": "BF-0.6 %"},
+        {"sample_id": "bF-0.6 %"},
+        {"sample_id": "CF-0.6 %"},
+    ]
+
+    alias_map = build_sample_alias_map(
+        [],
+        holistic_samples=holistic,
+        sample_cards=cards,
+    )
+
+    assert alias_map["BF-0.6 %"] == "BF_0.6volpct_FRGC"
+    assert alias_map["CF-0.6 %"] == "CF_0.6volpct_FRGC"
+    assert alias_map["bF-0.6 %"] != "BF_0.6volpct_FRGC"
+
+
+def test_respectively_named_loading_labels_merge_with_fraction_samples():
+    evidence = (
+        "The produced composites with different loading of F-CNCs "
+        "(2%, 5%, 10% named C1, C2, C3, respectively) were printed."
+    )
+    mentions = [
+        {
+            "normalized_sample_id": sample_id,
+            "aliases": [],
+            "evidence_text": evidence,
+        }
+        for sample_id in (
+            "PLA_F-CNC_2wt%",
+            "PLA_F-CNC_5wt%",
+            "PLA_F-CNC_10wt%",
+            "C1",
+            "C2",
+            "C3",
+        )
+    ]
+
+    alias_map = build_sample_alias_map(mentions)
+
+    assert alias_map["C1"] == alias_map["PLA_F-CNC_2wt%"]
+    assert alias_map["C2"] == alias_map["PLA_F-CNC_5wt%"]
+    assert alias_map["C3"] == alias_map["PLA_F-CNC_10wt%"]
+
+
 def test_conflicting_explicit_variables_block_cross_alias_merge():
     samples = [
         {
@@ -427,6 +549,50 @@ def test_multiple_active_fraction_variants_remain_distinct():
 
     assert {fact["assigned_sample_id"] for fact in merged_facts} == {five, ten}
     assert {card["sample_id"] for card in merged_cards} == {base, five, ten}
+
+
+def test_single_letter_prefixed_material_variants_remain_distinct():
+    mentions = [
+        {"normalized_sample_id": "P-BN fiber", "aliases": []},
+        {"normalized_sample_id": "C-BN fiber", "aliases": []},
+        {"normalized_sample_id": "BN fiber", "aliases": []},
+    ]
+    cards = [
+        {"sample_id": "P-BN fiber", "sample_aliases": ""},
+        {"sample_id": "C-BN fiber", "sample_aliases": ""},
+        {"sample_id": "BN fiber", "sample_aliases": ""},
+    ]
+    facts = [
+        {
+            "fact_type": "performance",
+            "assigned_sample_id": sample_id,
+            "candidate_sample_ids": [sample_id],
+            "metric_or_parameter": "thermal_conductivity",
+            "value": value,
+            "unit": "W m^-1 K^-1",
+            "evidence_text": (
+                "The measured kappa of P-BN fiber and C-BN fiber are "
+                "39.5 and 53.9 W m-1 K-1, respectively."
+            ),
+        }
+        for sample_id, value in (("P-BN fiber", "39.5"), ("C-BN fiber", "53.9"))
+    ]
+
+    _, merged_facts, merged_cards = merge_sample_identities(
+        mentions,
+        facts,
+        cards,
+    )
+
+    assert {fact["assigned_sample_id"] for fact in merged_facts} == {
+        "P-BN fiber",
+        "C-BN fiber",
+    }
+    assert {card["sample_id"] for card in merged_cards} == {
+        "P-BN fiber",
+        "C-BN fiber",
+        "BN fiber",
+    }
 
 
 def test_compact_vol_variants_merge_and_prefer_descriptive_identity():
@@ -834,6 +1000,36 @@ def test_system_results_move_to_unique_metamaterial_without_fraction_id():
     assert repaired[2]["assigned_sample_id"] == "TPU"
 
 
+def test_contextual_repair_preserves_grounded_table_row_identity():
+    cards = [
+        {
+            "sample_id": "control sample",
+            "sample_aliases": [
+                "standard_cured_fiber_reinforced_geopolymer_control"
+            ],
+        },
+        {"sample_id": "WS_fiber", "sample_aliases": ["WS"]},
+    ]
+    facts = [{
+        "fact_type": "performance",
+        "assigned_sample_id": "WS_fiber",
+        "candidate_sample_ids": ["WS_fiber"],
+        "metric_or_parameter": "density",
+        "value": "2.8",
+        "unit": "g/cm3",
+        "evidence_text": (
+            "Table 2 Physical and mechanical properties of PP, PVA and WS.\n"
+            "[columns]\tFiber\tDensity/(g/cm3)\n[row 3]\tWS\t2.8"
+        ),
+        "_source_table_row": 3,
+        "_source_table_column": 1,
+    }]
+
+    repaired = repair_contextual_fact_assignments(facts, cards)
+
+    assert repaired[0]["assigned_sample_id"] == "WS_fiber"
+
+
 def test_system_result_moves_from_unsupported_base_to_unique_active_variant():
     holistic = [{"sample_id": "TPU_matrix", "aliases": ["matrix material"]}]
     cards = [
@@ -964,3 +1160,88 @@ def test_explicit_subject_roles_correct_sample_assignment_without_evidence_overr
     assert out[2]["assigned_sample_id"] == "TPU_T300_composite"
     assert "evidence_role_sample_assignment" in out[0]["assignment_reason"]
     assert "evidence_role_sample_assignment" in out[1]["assignment_reason"]
+
+
+def test_unique_single_insert_short_code_becomes_evidence_alias_only():
+    facts = [
+        {
+            "fact_type": "performance",
+            "assigned_sample_id": "F-NC",
+            "metric_or_parameter": "decomposition_temperature",
+            "value": "263",
+            "unit": "°C",
+            "evidence_text": "F-CNC had the lowest degradation temperature of 263 °C.",
+        },
+        {
+            "fact_type": "performance",
+            "assigned_sample_id": "F-NC",
+            "metric_or_parameter": "yield_experimental",
+            "value": "66.3",
+            "unit": "",
+            "evidence_text": (
+                "Table 3 Validation experiments under optimum conditions.\n"
+                "[columns]\tRun\tYield / Experimental\n[row 1]\t1\t66.3"
+            ),
+        },
+    ]
+    cards = [
+        {"sample_id": "F-NC", "sample_aliases": []},
+        {"sample_id": "PLA_control", "sample_aliases": ["PLA"]},
+    ]
+
+    _, merged_facts, merged_cards = merge_sample_identities([], facts, cards)
+
+    aliases_by_id = {
+        card["sample_id"]: set(parse_sample_aliases(card.get("sample_aliases")))
+        for card in merged_cards
+    }
+    assert "F-CNC" in aliases_by_id["F-NC"]
+    assert "F-CNC" in merged_facts[0]["_sample_aliases"]
+
+    from app.services.extractor_v7.final_checklist import run_final_checklist
+
+    checked = run_final_checklist(merged_facts)
+    assert "sample_id_not_found_in_evidence" not in checked[0].get(
+        "_checklist_failures", []
+    )
+    assert "sample_id_not_found_in_evidence" in checked[1].get(
+        "_checklist_failures", []
+    )
+
+
+def test_short_code_alias_rule_does_not_merge_substitutions_or_existing_cards():
+    facts = [
+        {
+            "fact_type": "performance",
+            "assigned_sample_id": "P-BN",
+            "metric_or_parameter": "thermal_conductivity",
+            "value": "39.5",
+            "unit": "W/mK",
+            "evidence_text": "P-BN measured 39.5 W/mK while C-BN measured 53.9 W/mK.",
+        },
+        {
+            "fact_type": "performance",
+            "assigned_sample_id": "F-NC",
+            "metric_or_parameter": "decomposition_temperature",
+            "value": "263",
+            "unit": "°C",
+            "evidence_text": "F-CNC had a degradation temperature of 263 °C.",
+        },
+    ]
+    cards = [
+        {"sample_id": "P-BN", "sample_aliases": []},
+        {"sample_id": "C-BN", "sample_aliases": []},
+        {"sample_id": "F-NC", "sample_aliases": []},
+        {"sample_id": "F-CNC", "sample_aliases": []},
+    ]
+
+    _, merged_facts, merged_cards = merge_sample_identities([], facts, cards)
+
+    aliases_by_id = {
+        card["sample_id"]: set(parse_sample_aliases(card.get("sample_aliases")))
+        for card in merged_cards
+    }
+    assert merged_facts[0]["assigned_sample_id"] == "P-BN"
+    assert merged_facts[1]["assigned_sample_id"] == "F-NC"
+    assert "C-BN" not in aliases_by_id["P-BN"]
+    assert "F-CNC" not in aliases_by_id["F-NC"]

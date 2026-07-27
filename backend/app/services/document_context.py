@@ -173,18 +173,49 @@ class ReusableMinerUArtifact:
     source_run: DocumentParseRun | None = None
 
 
+@dataclass(slots=True)
+class _HTMLTableCell:
+    text: str
+    rowspan: int = 1
+    colspan: int = 1
+    is_header: bool = False
+
+
+@dataclass(slots=True)
+class _ExpandedHTMLTable:
+    values: list[list[str]]
+    anchors: list[list[bool]]
+
+
 class _TableHTMLParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
-        self.rows: list[list[str]] = []
-        self._row: list[str] | None = None
+        self.rows: list[list[_HTMLTableCell]] = []
+        self._row: list[_HTMLTableCell] | None = None
         self._cell_parts: list[str] | None = None
+        self._cell_rowspan = 1
+        self._cell_colspan = 1
+        self._cell_is_header = False
+
+    @staticmethod
+    def _span_value(attrs: list[tuple[str, str | None]], name: str) -> int:
+        raw = next((value for key, value in attrs if key.lower() == name), None)
+        try:
+            return min(max(int(raw or 1), 1), 256)
+        except (TypeError, ValueError):
+            return 1
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag.lower() == "tr":
+        lower = tag.lower()
+        if lower == "tr":
             self._row = []
-        elif tag.lower() in {"td", "th"} and self._row is not None:
+        elif lower in {"td", "th"} and self._row is not None:
             self._cell_parts = []
+            self._cell_rowspan = self._span_value(attrs, "rowspan")
+            self._cell_colspan = self._span_value(attrs, "colspan")
+            self._cell_is_header = lower == "th"
+        elif lower == "br" and self._cell_parts is not None:
+            self._cell_parts.append(" ")
 
     def handle_data(self, data: str) -> None:
         if self._cell_parts is not None:
@@ -194,13 +225,101 @@ class _TableHTMLParser(HTMLParser):
         lower = tag.lower()
         if lower in {"td", "th"} and self._row is not None and self._cell_parts is not None:
             value = re.sub(r"\s+", " ", " ".join(self._cell_parts)).strip()
-            self._row.append(value)
+            self._row.append(_HTMLTableCell(
+                text=value,
+                rowspan=self._cell_rowspan,
+                colspan=self._cell_colspan,
+                is_header=self._cell_is_header,
+            ))
             self._cell_parts = None
         elif lower == "tr" and self._row is not None:
-            if any(cell for cell in self._row):
+            if self._row:
                 self.rows.append(self._row)
             self._row = None
             self._cell_parts = None
+
+
+def _expand_html_table(rows: list[list[_HTMLTableCell]]) -> _ExpandedHTMLTable:
+    values: list[list[str]] = []
+    anchors: list[list[bool]] = []
+    active_rowspans: dict[int, tuple[str, int]] = {}
+
+    for source_row in rows:
+        row_values: list[str] = []
+        row_anchors: list[bool] = []
+        next_rowspans: dict[int, tuple[str, int]] = {}
+        column = 0
+
+        def append_active_span() -> None:
+            nonlocal column
+            text, remaining = active_rowspans[column]
+            row_values.append(text)
+            row_anchors.append(False)
+            if remaining > 1:
+                next_rowspans[column] = (text, remaining - 1)
+            column += 1
+
+        for cell in source_row:
+            while column in active_rowspans:
+                append_active_span()
+            for offset in range(cell.colspan):
+                while column in active_rowspans:
+                    append_active_span()
+                row_values.append(cell.text)
+                row_anchors.append(offset == 0)
+                if cell.rowspan > 1:
+                    next_rowspans[column] = (cell.text, cell.rowspan - 1)
+                column += 1
+
+        if active_rowspans:
+            last_active_column = max(active_rowspans)
+            while column <= last_active_column:
+                if column in active_rowspans:
+                    append_active_span()
+                else:
+                    row_values.append("")
+                    row_anchors.append(False)
+                    column += 1
+
+        values.append(row_values)
+        anchors.append(row_anchors)
+        active_rowspans = next_rowspans
+
+    width = max((len(row) for row in values), default=0)
+    for row_values, row_anchors in zip(values, anchors):
+        missing = width - len(row_values)
+        if missing > 0:
+            row_values.extend([""] * missing)
+            row_anchors.extend([False] * missing)
+    return _ExpandedHTMLTable(values=values, anchors=anchors)
+
+
+def _table_header_row_count(rows: list[list[_HTMLTableCell]]) -> int:
+    if not rows:
+        return 0
+    explicit_header_rows = 0
+    for row in rows:
+        if row and all(cell.is_header for cell in row):
+            explicit_header_rows += 1
+        else:
+            break
+    first_row_span_depth = max((cell.rowspan for cell in rows[0]), default=1)
+    return min(max(1, explicit_header_rows, first_row_span_depth), len(rows))
+
+
+def _flatten_table_headers(values: list[list[str]], header_rows: int) -> list[str]:
+    if not values or header_rows <= 0:
+        return []
+    width = len(values[0])
+    headers: list[str] = []
+    for column in range(width):
+        parts: list[str] = []
+        for row in values[:header_rows]:
+            part = row[column].strip()
+            if part and (not parts or part != parts[-1]):
+                parts.append(part)
+        headers.append(" / ".join(parts))
+    return headers
 
 
 def table_html_to_tsv(html: str) -> str:
@@ -216,12 +335,16 @@ def table_html_to_tsv(html: str) -> str:
     if not parser.rows:
         return re.sub(r"<[^>]+>", " ", html).strip()
 
-    width = max(len(row) for row in parser.rows)
-    rows = [row + [""] * (width - len(row)) for row in parser.rows]
-    header = "\t".join(rows[0])
+    expanded = _expand_html_table(parser.rows)
+    header_rows = _table_header_row_count(parser.rows)
+    header = "\t".join(_flatten_table_headers(expanded.values, header_rows))
     lines = [f"[columns]\t{header}"]
-    for index, row in enumerate(rows[1:], start=1):
-        lines.append(f"[row {index}]\t" + "\t".join(row))
+    for index, (row, row_anchors) in enumerate(
+        zip(expanded.values[header_rows:], expanded.anchors[header_rows:]),
+        start=1,
+    ):
+        display_row = [value if anchor else "" for value, anchor in zip(row, row_anchors)]
+        lines.append(f"[row {index}]\t" + "\t".join(display_row))
     return "\n".join(lines)
 
 

@@ -6,7 +6,7 @@ from app.services.extractor_v7.metric_normalize import (
     normalize_metrics_in_facts,
     normalize_spectroscopy_peaks,
 )
-from app.services.validation import normalize_unit
+from app.services.validation import metric_unit_compatible, normalize_unit
 from app.services.metrics_dictionary import (
     find_metric_canonical,
     find_process_parameter_canonical,
@@ -25,6 +25,195 @@ def test_ph_unit_and_evidence_override_unrelated_metric_label():
         evidence="The pH trend increased up to 7.60 after immersion.",
         unit="pH",
     ) == "pH"
+
+
+def test_relative_tensile_strength_is_a_separate_metric():
+    assert canonicalize_metric_name(
+        "tensile strength",
+        unit="%",
+        evidence="The tensile strength increased by 17.3% over the control.",
+    ) == "tensile_strength_improvement"
+
+
+def test_relative_thermal_conductivity_is_a_separate_metric():
+    assert canonicalize_metric_name(
+        "thermal conductivity",
+        unit="%",
+        evidence="The thermal conductivity increased by 29.7%.",
+    ) == "thermal_conductivity_improvement"
+
+
+def test_scientific_thermal_headers_and_specific_tensile_metrics_are_canonical():
+    assert canonicalize_metric_name("$T_g$") == "glass_transition_temperature"
+    assert canonicalize_metric_name("$T_{m1}$") == "melting_temperature"
+    assert (
+        canonicalize_metric_name("$T_{cc}$")
+        == "cold_crystallization_temperature"
+    )
+    assert (
+        canonicalize_metric_name("$\\Delta H_{cc}$")
+        == "cold_crystallization_enthalpy"
+    )
+    assert canonicalize_metric_name("$\\Delta H_m$") == "melting_enthalpy"
+    assert canonicalize_metric_name("$T_{-5%}$") == "decomposition_temperature"
+    assert canonicalize_metric_name("$X_c$") == "crystallinity_Xc"
+    assert (
+        canonicalize_metric_name("Specific tensile strength")
+        == "specific_tensile_strength"
+    )
+    assert (
+        canonicalize_metric_name("Specific tensile modulus")
+        == "specific_tensile_modulus"
+    )
+
+
+def test_raised_tensile_strength_is_a_relative_metric():
+    assert canonicalize_metric_name(
+        "tensile strength",
+        unit="%",
+        evidence=(
+            "The ultimate strength has been raised by 17.8 and 28.7% for "
+            "2 and 4 wt % silica concentrations, respectively."
+        ),
+    ) == "tensile_strength_improvement"
+
+
+def test_relative_interlaminar_toughness_uses_improvement_metric():
+    assert canonicalize_metric_name(
+        "interlaminar fracture toughness",
+        unit="% reduction",
+        evidence="Tufting caused a 15-20% reduction in interlaminar fracture toughness.",
+    ) == "fracture_toughness_improvement"
+    assert canonicalize_metric_name(
+        "interlaminar fracture toughness",
+        unit="times enhancement",
+        evidence="The interlaminar fracture toughness showed a 10 times enhancement.",
+    ) == "fracture_toughness_improvement"
+
+
+def test_ultimate_strain_and_fracture_energy_keep_their_dimensions():
+    assert canonicalize_metric_name(
+        "ultimate strain",
+        unit="με",
+        evidence="The ultimate strain reached 600.8 με.",
+    ) == "ultimate_strain"
+    assert canonicalize_metric_name(
+        "fracture toughness",
+        unit="J/m³",
+        evidence="The fracture energy was 12 J/m³.",
+    ) == "fracture_energy"
+
+
+def test_microstrain_and_relative_strain_capacity_map_to_ultimate_strain():
+    assert canonicalize_metric_name(
+        "elongation at break",
+        unit="με",
+        evidence="CF resulted in a lower strain capacity of 380.7 με.",
+    ) == "ultimate_strain"
+    assert canonicalize_metric_name(
+        "elongation at break",
+        unit="%",
+        evidence="PVA strain capacity was 13.4% higher than that of BF.",
+    ) == "ultimate_strain_improvement"
+
+
+def test_respective_metric_list_does_not_cross_contaminate_metric_names():
+    evidence = (
+        "Tensile strength, ultimate strain, and fracture energy increased "
+        "by 119%, 104%, and 349%, respectively."
+    )
+
+    assert canonicalize_metric_name(
+        "tensile_strength", unit="%", evidence=evidence
+    ) == "tensile_strength_improvement"
+    assert canonicalize_metric_name(
+        "ultimate_strain", unit="%", evidence=evidence
+    ) == "ultimate_strain_improvement"
+    assert canonicalize_metric_name(
+        "fracture_energy", unit="%", evidence=evidence
+    ) == "fracture_energy_improvement"
+
+
+def test_registered_relative_metric_is_not_overwritten_by_neighbor_clause():
+    evidence = (
+        "Tufting reduced in-plane properties by 15-20% whereas mode-1 "
+        "interlaminar fracture toughness was enhanced by 10 times."
+    )
+
+    assert canonicalize_metric_name(
+        "in_plane_property_reduction",
+        unit="%",
+        evidence=evidence,
+    ) == "in_plane_property_reduction"
+    assert canonicalize_metric_name(
+        "mode_I_interlaminar_fracture_toughness_improvement",
+        unit="times",
+        evidence=evidence,
+    ) == "mode_I_interlaminar_fracture_toughness_improvement"
+
+
+def test_units_strip_qualifiers_and_normalize_microstrain():
+    assert normalize_unit("nm (diameter)") == "nm"
+    assert normalize_unit("με") == "microstrain"
+    assert normalize_unit("% higher than control") == "%"
+
+
+def test_scientific_units_normalize_to_supported_canonical_forms():
+    assert normalize_unit("g/cc") == "g/cm3"
+    assert normalize_unit("g cm-3") == "g/cm3"
+    assert normalize_unit("W m^-1 K^-1") == "w/mk"
+    assert normalize_unit("vol.%") == "%"
+    assert normalize_unit("vol%") == "%"
+    assert normalize_unit("g denier^-1") == "g/denier"
+    assert normalize_unit("N m g-1") == "n·m/g"
+    assert normalize_unit("kN m g-1") == "kn·m/g"
+    assert normalize_unit("Jg-1") == "j/g"
+    assert normalize_unit("Pa·s") == "pa·s"
+
+
+def test_specific_tensile_units_drive_metric_canonicalization():
+    assert canonicalize_metric_name(
+        "tensile strength",
+        unit="g denier-1",
+        evidence="The filament tensile strength was 4.11 g denier-1.",
+    ) == "specific_tensile_strength"
+    assert canonicalize_metric_name(
+        "Young's modulus",
+        unit="kN m g-1",
+        evidence="The specific modulus was 2.80 kN m g-1.",
+    ) == "specific_tensile_modulus"
+    assert metric_unit_compatible("specific_tensile_strength", "N m g-1")
+    assert metric_unit_compatible("specific_tensile_modulus", "kN m g-1")
+
+
+def test_absolute_elongation_uses_extension_at_break_metric():
+    assert canonicalize_metric_name(
+        "elongation at break",
+        unit="mm",
+        evidence="Elongation at break was 0.37 mm.",
+    ) == "extension_at_break"
+    assert metric_unit_compatible("extension_at_break", "mm")
+
+
+def test_dual_tensile_table_cell_expands_to_specific_and_stress_values():
+    facts = normalize_metrics_in_facts([{
+        "fact_type": "performance",
+        "assigned_sample_id": "PLA",
+        "metric_or_parameter": "tensile_strength",
+        "value": "4.11 (453.3)",
+        "unit": "g denier-1 (MPa)",
+        "extraction_method": "AI_holistic_table",
+        "_source_table_column_name": "Tensile strength (g denier-1) (MPa)",
+        "evidence_text": "PLA had tensile strength 4.11 g denier-1 (453.3 MPa).",
+    }])
+
+    assert {
+        (fact["metric_or_parameter"], fact["value"], fact["unit"])
+        for fact in facts
+    } == {
+        ("specific_tensile_strength", "4.11", "g/denier"),
+        ("tensile_strength", "453.3", "MPa"),
+    }
 
 
 def test_short_metric_symbol_does_not_use_substring_lookup():
@@ -181,6 +370,12 @@ def test_process_parameter_matching_prefers_specific_flow_and_electrospinning_na
     assert find_process_parameter_canonical("Flowrate per needle (mL/hr)") == "flow_rate_per_needle"
     assert find_process_parameter_canonical("Distance between needles (mm)") == "needle_spacing"
     assert find_process_parameter_canonical("Electric field strength (kV/cm)") == "electric_field_strength"
+    assert find_process_parameter_canonical(
+        "optimum_tufting_robot_speed"
+    ) == "tufting_robot_speed"
+    assert find_process_parameter_canonical(
+        "optimum_tufting_speed"
+    ) == "tufting_robot_speed"
 
 
 def test_mechanical_table_symbols_map_to_canonical_metrics():
@@ -503,3 +698,20 @@ def test_poisson_alias_and_ph_unit_variants_are_canonicalized():
 
     assert facts[0]["metric_or_parameter"] == "pH"
     assert facts[0]["unit"] == "pH"
+
+def test_bare_rheology_symbols_use_absolute_modulus_metrics():
+    evidence = (
+        "At 100 rad s-1, G' was 4206 Pa and G″ was 15496 Pa for PLA."
+    )
+
+    assert canonicalize_metric_name(
+        "G'",
+        evidence=evidence,
+        unit="Pa",
+    ) == "storage_modulus"
+    assert canonicalize_metric_name(
+        "G″",
+        evidence=evidence,
+        unit="Pa",
+    ) == "loss_modulus"
+    assert metric_unit_compatible("loss_modulus", "Pa")

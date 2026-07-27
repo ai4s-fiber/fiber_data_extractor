@@ -28,6 +28,8 @@ from app.services.extractor_v7.holistic_extract import (
     table_rows_to_facts,
     is_material_sample_id,
     _run_performance_sweep,
+    _table_expected_result_cells,
+    _table_row_map,
     _table_row_shards,
 )
 
@@ -191,6 +193,75 @@ def test_merge_preserves_same_value_under_different_conditions():
     ]
 
     merged = merge_holistic_and_atomic_facts([], facts)
+
+    assert len(merged) == 2
+
+
+def test_merge_collapses_conflicting_duplicate_table_paths_into_review_row():
+    table = (
+        "TABLE 3. Validation experiments.\n"
+        "[columns]\tRun\tYield / Experimental\tYield / % Error\n"
+        "[row 1]\t1\t66.3\t2.6"
+    )
+    atomic = [{
+        "fact_type": "performance",
+        "assigned_sample_id": "F-NC",
+        "metric_or_parameter": "yield_error",
+        "value": "2.6",
+        "unit": "%",
+        "condition": "Run: 1",
+        "evidence_text": table,
+        "extraction_method": "AI_table",
+        "_source_block_id": "B000100",
+    }]
+    holistic = [{
+        "fact_type": "performance",
+        "assigned_sample_id": "CNCs",
+        "metric_or_parameter": "yield_error",
+        "value": "2.6",
+        "unit": "",
+        "condition": "Run: 1",
+        "evidence_text": (
+            "The experiments validated the predicted NC yield.\n" + table
+        ),
+        "extraction_method": "AI_holistic_table",
+        "_source_block_id": "B000100",
+    }]
+
+    merged = merge_holistic_and_atomic_facts(atomic, holistic)
+
+    assert len(merged) == 1
+    assert merged[0]["assigned_sample_id"] == "CNCs"
+    assert merged[0]["extraction_method"] == "AI_holistic_table"
+    assert merged[0]["unit"] == "%"
+    assert merged[0]["_table_assignment_conflict"] is True
+    assert merged[0]["_table_conflicting_sample_ids"] == ["CNCs", "F-NC"]
+    assert merged[0]["_alignment_review_required"] is True
+
+
+def test_merge_keeps_same_table_value_when_evidence_does_not_overlap():
+    atomic = [{
+        "fact_type": "performance",
+        "assigned_sample_id": "S1",
+        "metric_or_parameter": "tensile_strength",
+        "value": "100",
+        "condition": "23 °C",
+        "evidence_text": "[row 1] S1 100 MPa",
+        "extraction_method": "AI_table",
+        "_source_block_id": "B1",
+    }]
+    holistic = [{
+        "fact_type": "performance",
+        "assigned_sample_id": "S2",
+        "metric_or_parameter": "tensile_strength",
+        "value": "100",
+        "condition": "23 °C",
+        "evidence_text": "[row 2] S2 100 MPa under a separate loading axis",
+        "extraction_method": "AI_holistic_table",
+        "_source_block_id": "B1",
+    }]
+
+    merged = merge_holistic_and_atomic_facts(atomic, holistic)
 
     assert len(merged) == 2
 
@@ -979,6 +1050,78 @@ def test_deterministic_mechanical_table_preserves_composition_rows_and_symbols()
     }
 
 
+def test_deterministic_dsc_table_covers_scientific_headers_without_llm():
+    table = r"""Table 2. DSC analysis results.
+[columns]	Sample	$T_g$ (°C)	$T_{cc}$ (°C)	$T_{m1}$ (°C)	$T_{m2}$ (°C)	$\Delta H_{cc}$ (Jg-1)	$\Delta H_m$ (Jg-1)	$X_c$ (%)
+[row 1]	PLA	56.4	98.02	165.04	—	26.16	39.42	14.26
+[row 2]	PLA/FR 2%	55.2	100.82	164.25	154.93	21.61	29.62	8.44"""
+
+    facts = deterministic_performance_table_facts(
+        table_text=table,
+        source_location="p.8, Table 2",
+        known_sample_ids=["PLA", "PLA/FR 2%"],
+    )
+
+    assert len(facts) == 13
+    assert {fact["metric_or_parameter"] for fact in facts} == {
+        "glass_transition_temperature",
+        "cold_crystallization_temperature",
+        "melting_temperature",
+        "cold_crystallization_enthalpy",
+        "melting_enthalpy",
+        "crystallinity_Xc",
+    }
+
+
+def test_deterministic_groups_table_preserves_real_mineru_sample_rows():
+    table = """[columns]\tGroups\tTensile properties / Tensile strength, sigma_tu (MPa)\tTensile properties / Ultimate strain, epsilon_tu (microstrain)\tFracture energy, G_tu (J/m3)
+[row 1]\tControl\t1.75 +/- 0.01 (Reference)\t295.19 +/- 14.28 (Reference)\t329.96 +/- 14.94 (Reference)
+[row 2]\tBF-0.3 %\t2.61 +/- 0.20 (p = 0.046*)\t382.79 +/- 22.50 (p = 0.010**)\t539.73 +/- 119.34 (p = 0.170)
+[row 3]\tBF-0.6 %\t3.29 +/- 0.34 (p = 0.003**)\t406.25 +/- 15.22 (p = 0.001**)\t677.46 +/- 106.11 (p = 0.007**)
+[row 4]\tBF-0.9 %\t3.15 +/- 0.21 (p = 0.004**)\t401.78 +/- 8.99 (p = 0.002**)\t689.93 +/- 118.78 (p = 0.006**)
+[row 5]\tBF-1.2 %\t3.84 +/- 0.46 (p < 0.001**)\t600.83 +/- 36.16 (p < 0.001**)\t1481.76 +/- 192.30 (p < 0.001**)
+[row 6]\tbF-0.6 %\t3.86 +/- 0.43 (p < 0.001**)\t414.62 +/- 4.29 (p < 0.001**)\t856.51 +/- 85.39 (p < 0.001**)
+[row 7]\tCF-0.6 %\t3.23 +/- 0.12 (p = 0.003**)\t380.67 +/- 29.50 (p = 0.012*)\t653.37 +/- 58.74 (p = 0.012*)
+[row 8]\tPVA-0.6 %\t3.06 +/- 0.35 (p = 0.008**)\t468.95 +/- 74.94 (p < 0.001**)\t815.87 +/- 116.51 (p = 0.001**)"""
+
+    facts = deterministic_performance_table_facts(
+        table_text=table,
+        source_location="real MinerU tensile table",
+    )
+
+    assert len(facts) == 24
+    by_sample = {}
+    for fact in facts:
+        by_sample.setdefault(fact["assigned_sample_id"], set()).add(
+            fact["metric_or_parameter"]
+        )
+    assert set(by_sample) == {
+        "Control",
+        "BF-0.3 %",
+        "BF-0.6 %",
+        "BF-0.9 %",
+        "BF-1.2 %",
+        "bF-0.6 %",
+        "CF-0.6 %",
+        "PVA-0.6 %",
+    }
+    assert all(
+        metrics == {"tensile_strength", "ultimate_strain", "fracture_energy"}
+        for metrics in by_sample.values()
+    )
+    assert all("(p " not in str(fact["value"]).lower() for fact in facts)
+    assert all(
+        "(reference)" in fact["condition"].lower()
+        for fact in facts
+        if fact["assigned_sample_id"] == "Control"
+    )
+    assert all(
+        "(p " in fact["condition"].lower()
+        for fact in facts
+        if fact["assigned_sample_id"] != "Control"
+    )
+
+
 def test_characterization_descriptions_are_not_material_samples():
     assert not is_material_sample_id("stretching peak")
     assert not is_material_sample_id("symmetric CH2 stretching")
@@ -1152,6 +1295,30 @@ def test_catalog_sanitizer_removes_anaphoric_and_metric_name_prefixes():
     ]
 
 
+def test_catalog_sanitizer_removes_equipment_and_incomplete_prose_samples():
+    cleaned = sanitize_catalog_samples([
+        {"sample_id": "tufting_needle"},
+        {"sample_id": "TN2.3_needle"},
+        {"sample_id": "C channel width [mm"},
+        {"sample_id": "specimens coated with 2"},
+        {"sample_id": "of organic fiber"},
+        {"sample_id": "crushed specimens"},
+        {"sample_id": "17 wt% of hybrid fiber"},
+        {"sample_id": "fiber reinforced geopolymer composites obtained in this study"},
+        {"sample_id": "unaged GFRP composite laminates (all coating concentrations"},
+        {"sample_id": "PAN_nanofiber_single_needle", "material_system": "PAN"},
+        {"sample_id": "A3"},
+        {"sample_id": "A1/ B1"},
+    ])
+
+    assert {sample["sample_id"] for sample in cleaned} == {
+        "PAN_nanofiber_single_needle",
+        "A1",
+        "B1",
+        "A3",
+    }
+
+
 def test_context_only_tables_do_not_spend_performance_extraction_calls():
     assert classify_table_role(
         "Table 2. Norm and dimension of FRPs for characterization.\n"
@@ -1168,6 +1335,51 @@ def test_context_only_tables_do_not_spend_performance_extraction_calls():
         "[columns]\tSolution type\tDensity (g/cm3)\tSurface tension (mN/m)\n"
         "[row 1]\tWater\t1.01\t68.38"
     ) == "context"
+    assert classify_table_role(
+        "Table 1. Specification of needles.\n"
+        "[columns]\tNeedle Type\tTufting needle EB11 NM 230\t"
+        "Sewing needle-1 MA11 NM 180 Size 24\n"
+        "[row 1]\tNeedle Code\tTN2.3\tSN1.8\n"
+        "[row 2]\tNeedle diameter [mm]\t2.3\t1.8\n"
+        "[row 3]\tC channel width [mm]\t1.0\t0.7"
+    ) == "context"
+
+
+def test_mixed_mixture_table_only_tracks_measured_result_cells():
+    table = (
+        "Table 3 Mixture proportions and mechanical properties for the "
+        "FRGCs (kg/m3).\n"
+        "[columns]\tGroups\tPrecursors / GBFS\tPrecursors / FA\t"
+        "Activators / Na2SiO3\tActivators / NaOH\tSeawater\tSea-sand\t"
+        "Fiber (vol%) / BF\tFiber (vol%) / bF\tFiber (vol%) / CF\t"
+        "Fiber (vol%) / PVA\tMechanical properties / Compressive strength "
+        "(MPa)\tMechanical properties / Flexural strength (MPa)\n"
+        "[row 1]\tControl\t560\t560\t107.21\t42.05\t425.6\t336\t-\t-\t-\t-\t"
+        "74.4 +/- 1.0\t7.0 +/- 0.05\n"
+        "[row 2]\tBF-0.3 %\t560\t560\t107.21\t42.05\t425.6\t336\t0.3\t-\t-\t-\t"
+        "69.1 +/- 1.0\t7.9 +/- 0.01\n"
+        "[row 3]\tBF-0.6 %\t560\t560\t107.21\t42.05\t425.6\t336\t0.6\t-\t-\t-\t"
+        "68.8 +/- 1.9\t8.7 +/- 0.07\n"
+        "[row 4]\tBF-0.9 %\t560\t560\t107.21\t42.05\t425.6\t336\t0.9\t-\t-\t-\t"
+        "67.9 +/- 1.3\t8.2 +/- 0.25\n"
+        "[row 5]\tBF-1.2 %\t560\t560\t107.21\t42.05\t425.6\t336\t1.2\t-\t-\t-\t"
+        "65.8 +/- 1.6\t8.4 +/- 0.04\n"
+        "[row 6]\tbF-0.6 %\t560\t560\t107.21\t42.05\t425.6\t336\t-\t0.6\t-\t-\t"
+        "70.0 +/- 2.1\t8.6 +/- 0.09\n"
+        "[row 7]\tCF-0.6 %\t560\t560\t107.21\t42.05\t425.6\t336\t-\t-\t0.6\t-\t"
+        "72.8 +/- 2.4\t7.3 +/- 0.16\n"
+        "[row 8]\tPVA-0.6 %\t560\t560\t107.21\t42.05\t425.6\t336\t-\t-\t-\t0.6\t"
+        "77.1 +/- 1.8\t7.4 +/- 0.05"
+    )
+
+    header, rows = _table_row_map(table)
+    expected = _table_expected_result_cells(header, rows)
+
+    assert len(expected) == 16
+    assert {column for column, _value in expected.values()} == {
+        "Mechanical properties / Compressive strength (MPa)",
+        "Mechanical properties / Flexural strength (MPa)",
+    }
 
 
 def test_transposed_mechanical_table_is_extracted_deterministically():
@@ -1215,6 +1427,347 @@ def test_transposed_mechanical_table_is_extracted_deterministically():
     assert tensile_warp["unit"] == "MPa"
     assert "standard_deviation=10.18 MPa" in tensile_warp["condition"]
     assert all(fact["extraction_method"] == "rule_table_performance" for fact in facts)
+
+
+WATER_DIFFUSION_TABLE = (
+    "Table II. The Equilibrium Water Content (M_s), Equilibrium Immersion "
+    "Duration (t_s), Modulus of Water Absorption (S_L) and Water Diffusion "
+    "Coefficient (D) for GFRP Composite Specimens with Three Coating "
+    "Concentrations and Three Temperatures\n"
+    "[columns]\tSpecimen\tTemperature (°C)\t$M_s$ (%)\t$t_s$ (days)\t"
+    "$S_L$ (1/ $\\sqrt{s}$ )\t$D$ ( $m^2 s^{-1}$ )\n"
+    "[row 1]\tUncoated\t30\t0.43\t90\t0.000251\t$5.2425 \\times 10^{-13}$\n"
+    "[row 2]\tCoated (2 wt %)\t30\t0.35\t90\t0.000192\t$4.6301 \\times 10^{-13}$\n"
+    "[row 3]\tCoated (4 wt %)\t30\t0.23\t70\t0.000121\t$4.2583 \\times 10^{-13}$\n"
+    "[row 4]\tuncoated\t60\t1.99\t69\t0.001393\t$7.5391 \\times 10^{-13}$\n"
+    "[row 5]\tCoated (2 wt %)\t60\t1.47\t59\t0.000991\t$6.9926 \\times 10^{-13}$\n"
+    "[row 6]\tCoated (4 wt %)\t60\t1.07\t64\t0.000695\t$6.4921 \\times 10^{-13}$\n"
+    "[row 7]\tUncoated\t90\t3.83\t36\t0.003221\t$1.0875 \\times 10^{-12}$\n"
+    "[row 8]\tCoated (2 wt %)\t90\t3.16\t39\t0.002641\t$1.0747 \\times 10^{-12}$\n"
+    "[row 9]\tCoated (4 wt %)\t90\t1.98\t39\t0.001642\t$1.0581 \\times 10^{-12}$"
+)
+
+
+def test_real_mineru_water_diffusion_table_preserves_all_values_and_conditions():
+    facts = deterministic_performance_table_facts(
+        table_text=WATER_DIFFUSION_TABLE,
+        source_location="p.7, Table II",
+        known_sample_ids=[
+            "uncoated_glass_fiber",
+            "glass_fiber_2wtSiO2",
+            "glass_fiber_4wtSiO2",
+            "GFRP_uncoated",
+            "GFRP_2wtSiO2",
+            "GFRP_4wtSiO2",
+            "Uncoated",
+            "Coated",
+        ],
+    )
+
+    assert len(facts) == 36
+    assert {fact["assigned_sample_id"] for fact in facts} == {
+        "GFRP_uncoated",
+        "GFRP_2wtSiO2",
+        "GFRP_4wtSiO2",
+    }
+    diffusion = [
+        fact
+        for fact in facts
+        if fact["metric_or_parameter"] == "water_diffusion_coefficient"
+    ]
+    assert len(diffusion) == 9
+    assert {fact["unit"] for fact in diffusion} == {"m²/s"}
+    assert {fact["value"] for fact in diffusion} == {
+        "5.2425e-13",
+        "4.6301e-13",
+        "4.2583e-13",
+        "7.5391e-13",
+        "6.9926e-13",
+        "6.4921e-13",
+        "1.0875e-12",
+        "1.0747e-12",
+        "1.0581e-12",
+    }
+    assert all("Temperature=" in fact["condition"] for fact in facts)
+
+
+THREAD_ATTRIBUTE_TABLE = (
+    "Table 2. Attributes of threads selected for tufting.\n"
+    "[columns]\tThread type\tGlass\tGlass\tGlass\tCarbon\tCarbon\tKevlar\tKevlar\tKevlar\n"
+    "[row 1]\tThread Specification\tMN40\t7513/84TPI\t7513/88TPI\tT300\tT300\tTKT45\tTKT30\tTKT20\n"
+    "[row 2]\tThread Code\tG1\tG2\tG3\tC1\tC2\tK1\tK2\tK3\n"
+    "[row 3]\tDensity [g/cm3]\t2.5\t2.55\t2.55\t1.77\t1.74\t1.39\t1.39\t1.39\n"
+    "[row 4]\tDry Thread dia. [mm]\t0.3\t0.3\t0.3\t0.2\t0.3\t0.2\t0.3\t0.4\n"
+    "[row 5]\tLinear weight [Tex]\t207\t213\t213\t134\t205\t66\t107\t145\n"
+    "[row 6]\tTwist per meter [T/m]\t340\t160\t340\t160\t160\t340\t340\t340\n"
+    "[row 7]\tTensile strength [MPa]\t2160\t2360\t2330\t4100\t2900\t2265\t1780\t1790\n"
+    "[row 8]\tTensile modulus [GPa]\t70\t63\t69\t240\t210\t81\t79\t79"
+)
+
+
+THREAD_SAMPLE_IDS = [
+    "Glass_MN40_G1",
+    "Glass_7513_84TPI_G2",
+    "Glass_7513_88TPI_G3",
+    "Carbon_T300_134tex_C1",
+    "Carbon_T300_205tex_C2",
+    "Kevlar_TKT45_K1",
+    "Kevlar_TKT30_K2",
+    "Kevlar_TKT20_K3",
+]
+
+
+def test_real_mineru_thread_table_binds_each_column_to_specific_thread():
+    facts = deterministic_transposed_performance_table_facts(
+        table_text=THREAD_ATTRIBUTE_TABLE,
+        source_location="p.3, Table 2",
+        known_sample_ids=THREAD_SAMPLE_IDS,
+    )
+
+    mechanical = [
+        fact
+        for fact in facts
+        if fact["metric_or_parameter"] in {"tensile_strength", "Youngs_modulus"}
+    ]
+    assert len(mechanical) == 16
+    assert {fact["assigned_sample_id"] for fact in mechanical} == set(THREAD_SAMPLE_IDS)
+    by_key = {
+        (fact["assigned_sample_id"], fact["metric_or_parameter"]): fact
+        for fact in mechanical
+    }
+    assert by_key[("Glass_MN40_G1", "tensile_strength")]["value"] == "2160"
+    assert by_key[("Carbon_T300_205tex_C2", "Youngs_modulus")]["value"] == "210"
+
+
+TUFTING_TRIAL_TABLE = (
+    "Preform, threads and needles combination used for various trials.\n"
+    "[columns]\tExperiment No.\tPreform Thickness & Type\tThread Used\t"
+    "Needle Used\tNo. of Needle Thread Combination\n"
+    "[row 1]\t1\t2.04 UD\tG1, G2, G3\tTN2.3, SN1.8, SN2.5\t9\n"
+    "[row 2]\t2\t2.04 UD\tC1, C2\tTN2.3, SN1.8, SN2.5\t6"
+)
+
+TUFTING_TRIAL_TABLE_FULL = (
+    "Table 3. Preform, threads and needles combination used for various trials.\n"
+    "[columns]\tExperiment No.\tPreform Thickness & Type\tThread Used\t"
+    "Needle Used\tNo. of Needle Thread Combination\n"
+    "[row 1]\t1\t2.04 UD\tG1, G2, G3\tTN2.3, SN1.8, SN2.5\t9\n"
+    "[row 2]\t2\t2.04 UD\tC1, C2\tTN2.3, SN1.8, SN2.5\t6\n"
+    "[row 3]\t3\t2.04 UD\tK1, K2, K3\tTN2.3, SN1.8, SN2.5\t9\n"
+    "[row 4]\t4\t2.72 QI\tG1, G2, G3\tTN2.3, SN1.8, SN2.5\t9\n"
+    "[row 5]\t5\t2.72 QI\tC1, C2\tTN2.3, SN1.8, SN2.5\t6\n"
+    "[row 6]\t6\t2.72 QI\tK1, K2, K3\tTN2.3, SN1.8, SN2.5\t9\n"
+    "[row 7]\t7\t4.08 QI\tG3\tSN1.8, SN2.5\t2\n"
+    "[row 8]\t8\t4.08 QI\tC2\tSN1.8, SN2.5\t2\n"
+    "[row 9]\t9\t4.08 QI\tK2\tSN1.8, SN2.5\t2\n"
+    "[row 10]\t10\t6.8 QI\tG3\tSN1.8, SN2.5\t2\n"
+    "[row 11]\t11\t6.8 QI\tC2\tSN1.8, SN2.5\t2\n"
+    "[row 12]\t12\t6.8 QI\tK2\tSN1.8, SN2.5\t2\n"
+    "[row 13]\t13\t12.24 QI\tK2\tSN2.5\t1\n"
+    "[row 14]\t14\t20.06 QI\tK2\tSN2.5\t1"
+)
+
+MIX_PROPORTION_TABLE = (
+    "Table 3. Mix proportion of hybrid fiber reinforced geopolymer composites.\n"
+    "[columns]\tCode\tMK/wt %\tFiber/wt% / PP\tFiber/wt% / PVA\t"
+    "Fiber/wt% / WS\tAlkaline activator/wt%\tWater/wt %\n"
+    "[row 1]\tA1/ B1\t100\t0\t0\t-\t120\t11.67\n"
+    "[row 2]\tA2\t99\t0\t1\t-\t120\t11.67\n"
+    "[row 3]\tA3\t98\t1\t1\t-\t120\t11.67\n"
+    "[row 4]\tA6\t98\t2\t0\t-\t120\t11.67\n"
+    "[row 5]\tA7\t98\t0\t2\t-\t120\t11.67"
+)
+
+
+def test_real_mineru_tufting_trial_table_routes_to_specific_process_samples():
+    samples = [
+        {
+            "sample_id": "TuftedPreform_Exp1_2.04UD_G1G2G3",
+            "variable_name": "experiment_number",
+            "variable_value": "1",
+        },
+        {
+            "sample_id": "TuftedPreform_Exp2_2.04UD_C1C2",
+            "variable_name": "experiment_number",
+            "variable_value": "2",
+        },
+        {
+            "sample_id": "Preform_2.04mm_UD",
+            "variable_name": "preform_thickness",
+            "variable_value": "2.04",
+        },
+    ]
+
+    assert classify_table_role(TUFTING_TRIAL_TABLE) == "process"
+    assert deterministic_performance_table_facts(
+        table_text=TUFTING_TRIAL_TABLE,
+        source_location="p.3, Table 3",
+        known_sample_ids=[sample["sample_id"] for sample in samples],
+    ) == []
+    facts = process_table_to_facts(
+        table_text=TUFTING_TRIAL_TABLE,
+        known_samples=samples,
+        source_location="p.3, Table 3",
+    )
+
+    assert len(facts) == 4
+    assert {fact["assigned_sample_id"] for fact in facts} == {
+        "TuftedPreform_Exp1_2.04UD_G1G2G3",
+        "TuftedPreform_Exp2_2.04UD_C1C2",
+    }
+    assert {fact["metric_or_parameter"] for fact in facts} == {
+        "preform_thickness",
+        "needle_thread_combination_count",
+    }
+
+
+def test_real_mineru_tufting_table_builds_all_experiment_samples():
+    samples = augment_catalog_samples_from_process_tables(
+        [{
+            "source_type": "table_text",
+            "raw_text": TUFTING_TRIAL_TABLE_FULL,
+            "source_location": "p.3, Table 3",
+        }],
+        [],
+    )
+    experiment_samples = [
+        sample for sample in samples
+        if sample.get("variable_name") == "experiment_number"
+    ]
+
+    assert len(experiment_samples) == 14
+    assert {
+        "TuftedPreform_Exp1_2.04UD_G1G2G3",
+        "TuftedPreform_Exp14_20.06QI_K2",
+    } <= {sample["sample_id"] for sample in experiment_samples}
+
+    facts = process_table_to_facts(
+        table_text=TUFTING_TRIAL_TABLE_FULL,
+        known_samples=samples,
+        source_location="p.3, Table 3",
+    )
+
+    assert len(facts) == 28
+    assert {fact["assigned_sample_id"] for fact in facts} == {
+        sample["sample_id"] for sample in experiment_samples
+    }
+
+
+def test_mix_proportion_table_builds_compact_codes_and_loading_variables():
+    samples = augment_catalog_samples_from_process_tables(
+        [{
+            "source_type": "table_text",
+            "raw_text": MIX_PROPORTION_TABLE,
+            "source_location": "p.4, Table 3",
+        }],
+        [],
+    )
+    by_id = {sample["sample_id"]: sample for sample in samples}
+
+    assert {"A1", "B1", "A2", "A3", "A6", "A7"} <= set(by_id)
+    assert by_id["A3"]["variable_name"] == "hybrid organic fiber content"
+    assert by_id["A3"]["variable_value"] == "2"
+    assert by_id["A3"]["variable_unit"] == "wt%"
+    assert "PP=1 wt%" in by_id["A3"]["composition"]
+    assert "PVA=1 wt%" in by_id["A3"]["composition"]
+
+
+def test_mix_proportion_code_column_overrides_wrong_llm_sample_id():
+    table = (
+        "Table 3. Mix proportion of hybrid fiber reinforced geopolymer composites.\n"
+        "[columns]\tCode\tMK/wt %\tFiber/wt% / PP\tFiber/wt% / PVA\t"
+        "Fiber/wt% / WS\tAlkaline activator/wt%\tWater/wt %\n"
+        "[row 3]\tA3\t98\t1\t1\t-\t120\t11.67\n"
+        "[row 4]\tA4\t97\t2\t1\t-\t120\t11.67\n"
+        "[row 7]\tA7\t98\t0\t2\t-\t120\t11.67"
+    )
+    rows = [
+        {"row": 3, "sample_id": "A2", "metric": "mk_wt", "value": "98", "unit": "wt %"},
+        {"row": 3, "sample_id": "A2", "metric": "fiber_wt_pp", "value": "1", "unit": "wt%"},
+        {"row": 4, "sample_id": "A2", "metric": "fiber_wt_pp", "value": "2", "unit": "wt%"},
+        {"row": 7, "sample_id": "A2", "metric": "fiber_wt_pva", "value": "2", "unit": "wt%"},
+    ]
+
+    facts = table_rows_to_facts(
+        rows,
+        table_text=table,
+        source_location="p.4, Table 3",
+        known_sample_ids=["A2", "A3", "A4", "A7"],
+    )
+
+    assert [fact["assigned_sample_id"] for fact in facts] == [
+        "A3",
+        "A3",
+        "A4",
+        "A7",
+    ]
+
+
+def test_fiber_property_table_routes_ws_row_to_ws_fiber_catalog_sample():
+    table = (
+        "Table 2. Physical and mechanical properties of PP, PVA and WS.\n"
+        "[columns]\tFiber\tDensity/(g/cm3)\tLength/mm\tDiameter/um\t"
+        "Elastic modulus/GPa\tTensile strength/MPa\tLength/Diameter\n"
+        "[row 3]\tWS\t2.8\t0.4-0.6\t2-15\t300-530\t2700-4100\t15-20"
+    )
+    rows = [
+        {
+            "row": 3,
+            "sample_id": "A2",
+            "metric": "density",
+            "value": "2.8",
+            "unit": "g/cm3",
+        },
+        {
+            "row": 3,
+            "sample_id": "A2",
+            "metric": "Youngs_modulus",
+            "value": "300",
+            "unit": "GPa",
+        },
+    ]
+
+    facts = table_rows_to_facts(
+        rows,
+        table_text=table,
+        source_location="p.3, Table 2",
+        known_sample_ids=["A2", "PP_fiber", "PVA_fiber", "WS_fiber"],
+    )
+
+    assert [fact["assigned_sample_id"] for fact in facts] == [
+        "WS_fiber",
+        "WS_fiber",
+    ]
+
+    deterministic = deterministic_performance_table_facts(
+        table_text=table,
+        source_location="p.3, Table 2",
+        known_sample_ids=["A2", "PP_fiber", "PVA_fiber", "WS_fiber"],
+    )
+    by_metric = {
+        fact["metric_or_parameter"]: fact
+        for fact in deterministic
+        if fact["assigned_sample_id"] == "WS_fiber"
+    }
+    assert by_metric["density"]["unit"] == "g/cm3"
+    assert by_metric["Youngs_modulus"]["unit"] == "GPa"
+    assert by_metric["tensile_strength"]["unit"] == "MPa"
+
+
+def test_real_mineru_qualification_table_is_process_only():
+    table = (
+        "Table 4. Preforms manufactured for qualification.\n"
+        "[columns]\tSl. No.\tPreform Thickness (mm)\tLayup Details\tNeedles used\t"
+        "Threads used\tTufting pitch in mm\tIntended tests\n"
+        "[row 1]\t1\t2.04\t$[0]_{12}$\tTN2.3\tK1, K2, K3\t10\tTS, TM, FS, ILSS"
+    )
+
+    assert classify_table_role(table) == "process"
+    assert deterministic_performance_table_facts(
+        table_text=table,
+        source_location="p.6, Table 4",
+        known_sample_ids=["Preform_2.04mm_UD"],
+    ) == []
 
 
 ELECTROSPINNING_PROCESS_TABLE = (
@@ -1590,6 +2143,179 @@ async def test_holistic_table_sweep_marks_structured_table_covered():
 
 
 @pytest.mark.asyncio
+async def test_timed_out_table_shard_retries_as_smaller_row_shards(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.extractor_v7.holistic_extract."
+        "deterministic_performance_table_facts",
+        lambda **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        "app.services.extractor_v7.holistic_extract."
+        "deterministic_transposed_performance_table_facts",
+        lambda **_kwargs: [],
+    )
+    chunks = [{
+        "page_number": 3,
+        "order_index": 1,
+        "section_name": "results",
+        "source_type": "table_text",
+        "source_location": "Table 1",
+        "source_block_id": "B-timeout",
+        "raw_text": (
+            "Table 1. Results\n"
+            "[columns]\tSample\tWPG (%)\n"
+            "[row 1]\t1\t6.55\n"
+            "[row 2]\t2\t8.76\n"
+            "[row 3]\t3\t10.24\n"
+            "[row 4]\t4\t12.10"
+        ),
+    }]
+    calls: list[str] = []
+    row_values = {1: "6.55", 2: "8.76", 3: "10.24", 4: "12.10"}
+
+    async def fake_llm_json(_system, user, *, stage, **_kwargs):
+        calls.append(stage)
+        if stage == "holistic_samples":
+            return {"samples": [{"sample_id": "treated fiber"}]}, ""
+        if stage == "holistic_table_1_of_1":
+            raise TimeoutError("table shard timed out after 5s")
+        if stage.startswith("holistic_table_1_of_1_retry_part_"):
+            rows = [
+                {
+                    "row": row,
+                    "sample_id": f"treated fiber specimen {row}",
+                    "metric": "WPG",
+                    "value": value,
+                    "unit": "%",
+                    "condition": "",
+                }
+                for row, value in row_values.items()
+                if f"[row {row}]" in user
+            ]
+            return {"rows": rows}, ""
+        return {}, ""
+
+    result = await run_holistic_extraction(
+        chunks=chunks,
+        llm_json=fake_llm_json,
+        llm_timeout=5,
+        table_timeout=5,
+        sensing_enabled=False,
+    )
+
+    retry_calls = [
+        stage for stage in calls
+        if stage.startswith("holistic_table_1_of_1_retry_part_")
+    ]
+    assert calls.count("holistic_table_1_of_1") == 1
+    assert len(retry_calls) == 2
+    assert result.covered_table_block_ids == ["B-timeout"]
+    assert {fact["value"] for fact in result.performance_facts} == set(
+        row_values.values()
+    )
+    assert any("retried as 2 smaller shards" in warning for warning in result.warnings)
+
+
+@pytest.mark.asyncio
+async def test_timed_out_table_repair_retries_as_smaller_row_shards(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.extractor_v7.holistic_extract."
+        "deterministic_performance_table_facts",
+        lambda **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        "app.services.extractor_v7.holistic_extract."
+        "deterministic_transposed_performance_table_facts",
+        lambda **_kwargs: [],
+    )
+    chunks = [{
+        "page_number": 4,
+        "order_index": 1,
+        "section_name": "results",
+        "source_type": "table_text",
+        "source_location": "Table 2",
+        "source_block_id": "B-repair-timeout",
+        "raw_text": (
+            "Table 2. Static tensile properties\n"
+            "[columns]\tSpecimen #\tE1 [GPa]\tsigma_u [MPa]\tepsilon_u [%]\n"
+            "[row 1]\t1\t21.3\t246.0\t1.42\n"
+            "[row 2]\t2\t20.8\t238.5\t1.36\n"
+            "[row 3]\t3\t20.2\t231.0\t1.31\n"
+            "[row 4]\t4\t19.7\t225.5\t1.27"
+        ),
+    }]
+    calls: list[str] = []
+    row_values = {
+        1: ("21.3", "246.0", "1.42"),
+        2: ("20.8", "238.5", "1.36"),
+        3: ("20.2", "231.0", "1.31"),
+        4: ("19.7", "225.5", "1.27"),
+    }
+
+    async def fake_llm_json(_system, user, *, stage, **_kwargs):
+        calls.append(stage)
+        if stage == "holistic_samples":
+            return {"samples": [{"sample_id": "UD FFRP"}]}, ""
+        if stage == "holistic_table_1_of_1":
+            rows = []
+            for row, (modulus, strength, _strain) in row_values.items():
+                rows.extend([
+                    {
+                        "row": row,
+                        "sample_id": f"specimen {row}",
+                        "metric": "E1",
+                        "value": modulus,
+                        "unit": "GPa",
+                    },
+                    {
+                        "row": row,
+                        "sample_id": f"specimen {row}",
+                        "metric": "sigma_u",
+                        "value": strength,
+                        "unit": "MPa",
+                    },
+                ])
+            return {"rows": rows}, ""
+        if stage == "holistic_table_repair_1_of_1":
+            raise TimeoutError("repair shard timed out after 5s")
+        if stage.startswith("holistic_table_repair_1_of_1_retry_part_"):
+            rows = [
+                {
+                    "row": row,
+                    "sample_id": f"specimen {row}",
+                    "metric": "epsilon_u",
+                    "value": strain,
+                    "unit": "%",
+                }
+                for row, (_modulus, _strength, strain) in row_values.items()
+                if f"[row {row}]" in user
+            ]
+            return {"rows": rows}, ""
+        return {}, ""
+
+    result = await run_holistic_extraction(
+        chunks=chunks,
+        llm_json=fake_llm_json,
+        llm_timeout=5,
+        table_timeout=5,
+        sensing_enabled=False,
+    )
+
+    retry_calls = [
+        stage for stage in calls
+        if stage.startswith("holistic_table_repair_1_of_1_retry_part_")
+    ]
+    assert calls.count("holistic_table_repair_1_of_1") == 1
+    assert len(retry_calls) == 2
+    assert result.covered_table_block_ids == ["B-repair-timeout"]
+    assert len(result.performance_facts) == 12
+    assert any(
+        "repair part 1/1 retried as 2 smaller shards" in warning
+        for warning in result.warnings
+    )
+
+
+@pytest.mark.asyncio
 async def test_holistic_table_fast_path_covers_rows_without_partial_llm_output():
     chunks = [{
         "page_number": 3,
@@ -1724,3 +2450,84 @@ def test_deterministic_table_preserves_mean_and_standard_deviation_cells():
     assert {fact["value"] for fact in means} == {
         "21.3 (1.15)", "221(18)", "1.61 (0.15)",
     }
+
+
+def test_anova_and_predicted_model_tables_are_context_only():
+    anova_table = (
+        "Table 6. Analysis of variance (ANOVA) for CNC yield.\n"
+        "[columns]\tSource\tDF\tSum of squares\tMean square\tF value\tP value\n"
+        "[row 1]\tModel\t9\t155.2\t17.24\t42.1\t0.0001"
+    )
+    model_table = (
+        "Table 7. Predicted results from existing stress-strain models.\n"
+        "[columns]\tModel\tTensile strength (MPa)\tR2\n"
+        "[row 1]\tModel 1\t122.4\t0.98"
+    )
+
+    assert classify_table_role(anova_table) == "context"
+    assert classify_table_role(model_table) == "context"
+
+
+def test_ccd_parameter_range_table_extracts_six_process_bounds_for_cncs():
+    table = (
+        "Table 2. Parameters with their ranges for preparation of CNCs.\n"
+        "[columns]\tFactor\tParameter\tUnits\tLow actual\tHigh actual\t"
+        "Low coded\tHigh coded\n"
+        "[row 1]\tA\tReaction temperature\t°C\t45\t65\t-1\t1\n"
+        "[row 2]\tB\tUltrasonic magnitude\t%\t20\t80\t-1\t1\n"
+        "[row 3]\tC\tUltrasonic time\tmin\t5\t15\t-1\t1"
+    )
+
+    assert classify_table_role(table) == "process"
+    facts = process_table_to_facts(
+        table_text=table,
+        known_samples=[{
+            "sample_id": "CNCs",
+            "material_system": "nanocellulose",
+            "aliases": ["cellulose nanocrystals"],
+        }],
+        source_location="p.4, Table 2",
+        source_block_id="B000052",
+        source_page=4,
+    )
+
+    assert len(facts) == 6
+    assert {fact["assigned_sample_id"] for fact in facts} == {"CNCs"}
+    assert {fact["metric_or_parameter"] for fact in facts} == {
+        "reaction_temperature",
+        "ultrasonication_amplitude",
+        "ultrasonication_time",
+    }
+    assert {fact["condition"].split(";", 1)[0] for fact in facts} == {
+        "range_bound=low",
+        "range_bound=high",
+    }
+
+
+def test_structure_columns_and_summary_rows_are_not_expected_results():
+    table = (
+        "Table 5. Kinetic parameters of F-CNCs.\n"
+        "[columns]\tSubstrate\tModel\tActivation energy (kJ/mol)\tR2\n"
+        "[row 1]\tF-CNC\t1\t145.50\t0.9962\n"
+        "[row 2]\tStandard deviation\t2\t1.20\t0.0021"
+    )
+
+    header, rows = _table_row_map(table)
+    expected = _table_expected_result_cells(header, rows)
+
+    assert set(expected) == {(1, 2), (1, 3)}
+    assert {column for column, _value in expected.values()} == {
+        "Activation energy (kJ/mol)",
+        "R2",
+    }
+
+def test_constituent_aggregate_property_table_is_context_only():
+    table = (
+        "Table 1 Main physical properties of fine aggregates.\n"
+        "[columns]\tAggregate\tBulk density (kg/m3)\t"
+        "Apparent density (kg/m3)\t1h Water absorption (%)\t"
+        "Void content (%)\tFineness\n"
+        "[row 1]\tSea-sand\t1502\t2652\t5.7\t42\t2.55"
+    )
+
+    assert classify_table_role(table) == "context"

@@ -12,6 +12,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import shutil
 import sys
 import time
@@ -58,7 +59,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--project-name", default="Bulk literature extraction")
     parser.add_argument("--api-key-env", default="AIGW_API_KEY")
     parser.add_argument("--base-url", default="https://aigw.sotatts.online/v1")
-    parser.add_argument("--model", default="gpt-5.6-luna")
+    parser.add_argument("--model", default="gpt-5.5")
     parser.add_argument("--provider", default="openai")
     parser.add_argument("--database-url", default="")
     parser.add_argument("--limit", type=int, default=0, help="0 means all PDFs.")
@@ -96,6 +97,15 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--no-preparse", action="store_true")
     parser.add_argument("--no-recursive", action="store_true")
     parser.add_argument(
+        "--exclude-dir",
+        action="append",
+        default=[],
+        help=(
+            "Directory to exclude from PDF discovery; relative paths are resolved "
+            "under --pdf-dir. Repeat for multiple directories."
+        ),
+    )
+    parser.add_argument(
         "--skip-remote-preflight",
         action="store_true",
         help="Skip read-only MinerU and low-token LLM connectivity checks.",
@@ -107,6 +117,12 @@ def _parse_args() -> argparse.Namespace:
         help="Reserve this multiple of source PDF bytes for parse/database artifacts.",
     )
     parser.add_argument("--minimum-free-gb", type=float, default=2.0)
+    parser.add_argument(
+        "--max-output-gb",
+        type=float,
+        default=30.0,
+        help="Abort before remote calls when estimated run artifacts exceed this size.",
+    )
     parser.add_argument(
         "--allow-resume-config-change",
         action="store_true",
@@ -157,6 +173,72 @@ def _utcnow() -> datetime:
 def _chunks(items: list, size: int):
     for index in range(0, len(items), size):
         yield items[index : index + size]
+
+
+def _enforce_output_limit(storage, max_output_gb: float) -> int:
+    """Return estimated run artifacts, excluding the reserved free-space floor."""
+    if max_output_gb <= 0:
+        raise ValueError("max_output_gb must be positive")
+    estimated_run_output = max(
+        0,
+        int(storage.estimated_output_bytes) - int(storage.minimum_free_bytes),
+    )
+    limit_bytes = int(max_output_gb * 1024**3)
+    if estimated_run_output > limit_bytes:
+        estimated_gib = estimated_run_output / 1024**3
+        raise RuntimeError(
+            "Estimated bulk extraction artifacts exceed the configured limit: "
+            f"about {estimated_gib:.1f} GiB > {max_output_gb:.1f} GiB"
+        )
+    return estimated_run_output
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _bulk_excluded_roots(
+    args: argparse.Namespace,
+    settings,
+    pdf_root: Path,
+) -> list[Path]:
+    candidates = [
+        pdf_root / "_fiber_extraction_output",
+        Path(getattr(args, "report_dir", "") or ".").expanduser().resolve(),
+        Path(settings.UPLOAD_DIR).expanduser().resolve(),
+        Path(settings.PARSE_ARTIFACT_DIR).expanduser().resolve(),
+    ]
+    for raw_path in getattr(args, "exclude_dir", []) or []:
+        path = Path(raw_path).expanduser()
+        candidates.append(
+            path.resolve() if path.is_absolute() else (pdf_root / path).resolve()
+        )
+
+    unique = {
+        path
+        for path in candidates
+        if path != pdf_root and _is_within(path, pdf_root)
+    }
+    return sorted(unique, key=lambda path: str(path).casefold())
+
+
+def _discover_pdf_paths(
+    pdf_root: Path,
+    *,
+    recursive: bool,
+    excluded_roots: list[Path],
+) -> list[Path]:
+    pattern = "**/*.pdf" if recursive else "*.pdf"
+    return sorted(
+        path
+        for path in pdf_root.glob(pattern)
+        if path.is_file()
+        and not any(_is_within(path.resolve(), root) for root in excluded_roots)
+    )
 
 
 def _id_chunks(items: set[int], size: int = 500):
@@ -287,7 +369,6 @@ def _materialize_pdf(
 
 async def _get_or_create_project(
     args: argparse.Namespace,
-    api_key: str,
     *,
     update_configuration: bool = True,
 ) -> int:
@@ -318,9 +399,11 @@ async def _get_or_create_project(
             db.add(project)
             await db.flush()
 
+        # Dedicated bulk workers use a process-local key. Clear any legacy
+        # plaintext value left by older versions of this runner.
+        project.llm_api_key = None
         if update_configuration:
             project.llm_provider = args.provider
-            project.llm_api_key = api_key
             project.llm_base_url = args.base_url
             project.llm_model = args.model
             project.updated_at = _utcnow()
@@ -531,6 +614,114 @@ async def _terminal_counts(job_ids: set[int]) -> dict[str, int]:
     return dict(counts)
 
 
+def _review_comment_field(comment: str, field_name: str) -> str:
+    pattern = re.compile(
+        rf"(?:^|;\s*){re.escape(field_name)}=([^;]*)",
+        re.IGNORECASE,
+    )
+    match = pattern.search(comment or "")
+    return match.group(1).strip() if match else ""
+
+
+def _qa_reason_tokens(reviewer_comment: str) -> set[str]:
+    comment = str(reviewer_comment or "")
+    marker = re.search(r"(?i)(?:^|;\s*)qa_reason=", comment)
+    if not marker:
+        return set()
+    reasons: set[str] = set()
+    for raw_reason in comment[marker.end():].split(";"):
+        reason = raw_reason.strip().lower()
+        if not reason:
+            continue
+        if reason.startswith("group_evidence="):
+            break
+        if reason.startswith("fact_type="):
+            reasons.add(reason)
+            continue
+        if reason.startswith("checklist:"):
+            reasons.add(reason)
+            continue
+        if re.fullmatch(r"[a-z0-9_.%+/-]+", reason):
+            reasons.add(reason)
+    return reasons
+
+
+def _qa_review_is_blocking(reviewer_comment: str) -> bool:
+    """Return True only for QA findings that make a bulk run unsafe."""
+    comment = str(reviewer_comment or "")
+    reasons = _qa_reason_tokens(comment)
+    if not reasons:
+        return False
+
+    direct_blockers = {
+        "metric_unit_mismatch",
+        "alignment_review_required",
+        "evidence_audit_failed",
+    }
+    if reasons & direct_blockers:
+        return True
+
+    nonperformance = bool(reasons & {
+        "fact_type=process",
+        "fact_type=structure",
+        "fact_type=composition",
+        "condition_parameter",
+        "experimental_condition",
+        "method_parameter",
+    })
+    benign_routing_reasons = {
+        "condition_parameter",
+        "experimental_condition",
+        "method_parameter",
+        "rough_source_location",
+        "export_tier_b_review",
+        "export_tier_c",
+        "characterization_feature",
+        "structure_feature",
+        "formula_or_method_parameter",
+        "comparison_literature",
+        "background_or_reference",
+        "background_reference",
+    }
+    checklist_failures = {
+        reason.removeprefix("checklist:")
+        for reason in reasons
+        if reason.startswith("checklist:")
+    }
+    benign_checklist_failures = {
+        "background_reference_data_in_core",
+        "characterization_peak_in_core_table",
+        "paper_direction_conflict",
+    }
+    if checklist_failures - benign_checklist_failures:
+        return not nonperformance
+
+    priority = _review_comment_field(comment, "metric_priority").lower()
+    is_secondary = priority in {"secondary", "narrative"}
+    range_or_approximate = bool(
+        re.search(r"范围|近似|不等号|approximately|estimated", comment, re.IGNORECASE)
+        or _review_comment_field(comment, "value_operator") not in {"", "="}
+    )
+    if "checklist_failed" in reasons:
+        if nonperformance:
+            return False
+        if checklist_failures <= benign_checklist_failures and is_secondary:
+            return False
+        if is_secondary and range_or_approximate:
+            return False
+        return True
+
+    ignored = benign_routing_reasons | {
+        "fact_type=process", "fact_type=structure", "fact_type=composition",
+    }
+    remaining = {
+        reason
+        for reason in reasons
+        if reason not in ignored and not reason.startswith("checklist:")
+    }
+    return bool(remaining)
+
+
 async def _collect_result_summary(
     job_ids: set[int],
     *,
@@ -557,6 +748,7 @@ async def _collect_result_summary(
         "total_facts": 0,
         "total_candidates": 0,
         "qa_flagged_candidates": 0,
+        "blocking_qa_candidates": 0,
         "missing_evidence_candidates": 0,
         "exact_duplicate_rows": 0,
         "failed_jobs": 0,
@@ -567,6 +759,7 @@ async def _collect_result_summary(
         "skipped_review_papers": 0,
         "review_required_papers": 0,
         "quality_failed_papers": 0,
+        "quality_gate_blocking_papers": 0,
         "attention_required_papers": 0,
     }
     if not job_ids:
@@ -617,6 +810,7 @@ async def _collect_result_summary(
         )
         candidate_counts: dict[int, int] = {}
         qa_counts: dict[int, int] = {}
+        blocking_qa_counts: dict[int, int] = defaultdict(int)
         missing_evidence_counts: dict[int, int] = {}
         duplicate_counts: dict[int, int] = defaultdict(int)
         for paper_id_chunk in _id_chunks(paper_ids):
@@ -636,6 +830,20 @@ async def _collect_result_summary(
                 candidate_counts[int(paper_id)] = int(count or 0)
                 qa_counts[int(paper_id)] = int(qa_count or 0)
                 missing_evidence_counts[int(paper_id)] = int(missing_count or 0)
+
+            qa_comment_result = await db.execute(
+                select(
+                    CandidateRecord.source_paper_id,
+                    CandidateRecord.reviewer_comment,
+                )
+                .where(
+                    CandidateRecord.source_paper_id.in_(paper_id_chunk),
+                    CandidateRecord.reviewer_comment.like("%qa_reason=%"),
+                )
+            )
+            for paper_id, reviewer_comment in qa_comment_result.all():
+                if _qa_review_is_blocking(str(reviewer_comment or "")):
+                    blocking_qa_counts[int(paper_id)] += 1
 
             duplicate_result = await db.execute(
                 select(
@@ -662,6 +870,7 @@ async def _collect_result_summary(
         status = str(job.status or "")
         candidate_count = candidate_counts.get(paper.id, 0)
         qa_count = qa_counts.get(paper.id, 0)
+        blocking_qa_count = blocking_qa_counts.get(paper.id, 0)
         missing_count = missing_evidence_counts.get(paper.id, 0)
         duplicate_count = duplicate_counts.get(paper.id, 0)
         document_type = str(getattr(paper, "document_type", "") or "")
@@ -695,12 +904,30 @@ async def _collect_result_summary(
                 quality_reasons.append("unexpected_zero_candidates")
             if qa_count:
                 quality_reasons.append("qa_review_required")
+            if blocking_qa_count:
+                quality_reasons.append("blocking_qa_review")
             if expected_model and str(job.model_name or "") != expected_model:
                 quality_reasons.append("model_mismatch")
             if expected_parser and str(job.parser_strategy or "") != expected_parser:
                 quality_reasons.append("parser_mismatch")
             quality_status = "review" if quality_reasons else "pass"
 
+        blocking_reasons = {
+            reason
+            for reason in quality_reasons
+            if (
+                reason.startswith("job_")
+                or reason in {
+                    "missing_evidence",
+                    "exact_duplicates",
+                    "unexpected_zero_candidates",
+                    "blocking_qa_review",
+                    "model_mismatch",
+                    "parser_mismatch",
+                }
+            )
+        }
+        quality_gate_blocking = bool(blocking_reasons)
         needs_attention = quality_status in {"review", "fail"}
         papers.append({
             "paper_id": paper.id,
@@ -709,6 +936,8 @@ async def _collect_result_summary(
             "status": status,
             "quality_status": quality_status,
             "quality_reasons": quality_reasons,
+            "quality_gate_blocking": quality_gate_blocking,
+            "quality_gate_blocking_reasons": sorted(blocking_reasons),
             "document_type": document_type,
             "extraction_skip_reason": skip_reason,
             "model": job.model_name or "",
@@ -719,6 +948,7 @@ async def _collect_result_summary(
             "facts": fact_counts.get(paper.id, 0),
             "candidates": candidate_count,
             "qa_flagged_candidates": qa_count,
+            "blocking_qa_candidates": blocking_qa_count,
             "missing_evidence_candidates": missing_count,
             "exact_duplicate_rows": duplicate_count,
             "needs_attention": needs_attention,
@@ -732,6 +962,9 @@ async def _collect_result_summary(
         "total_candidates": sum(item["candidates"] for item in papers),
         "qa_flagged_candidates": sum(
             item["qa_flagged_candidates"] for item in papers
+        ),
+        "blocking_qa_candidates": sum(
+            item["blocking_qa_candidates"] for item in papers
         ),
         "missing_evidence_candidates": sum(
             item["missing_evidence_candidates"] for item in papers
@@ -763,16 +996,20 @@ async def _collect_result_summary(
         "quality_failed_papers": sum(
             item["quality_status"] == "fail" for item in papers
         ),
+        "quality_gate_blocking_papers": sum(
+            item["quality_gate_blocking"] for item in papers
+        ),
         "attention_required_papers": sum(
             item["needs_attention"] for item in papers
         ),
     })
     summary["healthy"] = (
         summary["quality_failed_papers"] == 0
+        and summary["quality_gate_blocking_papers"] == 0
         and not summary["missing_job_ids"]
     )
     summary["quality_gate_passed"] = (
-        summary["attention_required_papers"] == 0
+        summary["quality_gate_blocking_papers"] == 0
         and not summary["missing_job_ids"]
     )
     return summary
@@ -794,6 +1031,9 @@ async def _wait_for_jobs(job_ids: set[int], report, report_path: Path) -> None:
 def _runtime_config_payload(args: argparse.Namespace, settings, pdf_root: Path) -> dict:
     return {
         "source_root": str(pdf_root),
+        "excluded_input_roots": [
+            str(path) for path in _bulk_excluded_roots(args, settings, pdf_root)
+        ],
         "selected_pdf_names": sorted(set(args.pdf_name)),
         "provider": args.provider,
         "base_url": args.base_url.rstrip("/"),
@@ -810,6 +1050,7 @@ def _runtime_config_payload(args: argparse.Namespace, settings, pdf_root: Path) 
         "max_pending_jobs": args.max_pending_jobs,
         "sample_size": args.sample_size,
         "sample_seed": args.sample_seed,
+        "max_output_gb": getattr(args, "max_output_gb", 30.0),
         "relevance_prefilter": args.relevance_prefilter,
         "include_prefilter_rejected": args.include_prefilter_rejected,
         "llm_global_limit": settings.LLM_GLOBAL_MAX_CONCURRENT_CALLS,
@@ -1001,11 +1242,16 @@ async def _run(args: argparse.Namespace) -> dict:
         stable_config_fingerprint,
         validate_storage_capacity,
     )
+    from app.services.runtime_llm_credentials import (
+        bind_runtime_llm_api_key,
+        reset_runtime_llm_api_key,
+    )
 
     started = time.monotonic()
     extraction_job_backend = None
     close_database = None
     close_redis = None
+    runtime_llm_token = None
     api_key = (os.environ.get(args.api_key_env) or "").strip()
     if not args.dry_run and not api_key:
         raise SystemExit(f"Missing API key environment variable: {args.api_key_env}")
@@ -1023,12 +1269,19 @@ async def _run(args: argparse.Namespace) -> dict:
         raise SystemExit("Hash and upload concurrency must be at least 1")
     if args.disk_artifact_factor < 0 or args.minimum_free_gb < 0:
         raise SystemExit("Disk reserve settings cannot be negative")
+    if args.max_output_gb <= 0:
+        raise SystemExit("--max-output-gb must be positive")
 
     pdf_root = Path(args.pdf_dir).expanduser().resolve()
     if not pdf_root.is_dir():
         raise SystemExit(f"PDF directory does not exist: {pdf_root}")
-    pattern = "*.pdf" if args.no_recursive else "**/*.pdf"
-    paths = sorted(path for path in pdf_root.glob(pattern) if path.is_file())
+    report_root = Path(args.report_dir).expanduser().resolve()
+    excluded_roots = _bulk_excluded_roots(args, settings, pdf_root)
+    paths = _discover_pdf_paths(
+        pdf_root,
+        recursive=not args.no_recursive,
+        excluded_roots=excluded_roots,
+    )
     if args.pdf_name:
         requested_names = {name.casefold() for name in args.pdf_name}
         paths = [
@@ -1040,7 +1293,6 @@ async def _run(args: argparse.Namespace) -> dict:
     if not paths:
         raise SystemExit(f"No PDF files found under {pdf_root}")
 
-    report_root = Path(args.report_dir).expanduser().resolve()
     report_path = report_root / (
         "bulk_dry_run_summary.json" if args.dry_run else "bulk_summary.json"
     )
@@ -1053,6 +1305,7 @@ async def _run(args: argparse.Namespace) -> dict:
         ),
         "run_state": "preflight",
         "source_root": str(pdf_root),
+        "excluded_input_roots": [str(path) for path in excluded_roots],
         "model": args.model,
         "model_mode": "strong",
         "parser_strategy": "mineru_cloud",
@@ -1092,51 +1345,6 @@ async def _run(args: argparse.Namespace) -> dict:
     }
 
     try:
-        storage = await asyncio.to_thread(
-            validate_storage_capacity,
-            source_paths=paths,
-            output_directories=[
-                report_root,
-                Path(settings.UPLOAD_DIR),
-                Path(settings.PARSE_ARTIFACT_DIR),
-            ],
-            upload_directory=Path(settings.UPLOAD_DIR),
-            copy_mode=args.copy_mode,
-            artifact_factor=args.disk_artifact_factor,
-            minimum_free_bytes=int(args.minimum_free_gb * 1024**3),
-        )
-        report["storage_preflight"] = storage.as_dict()
-
-        if not args.dry_run:
-            import app.models  # noqa: F401
-
-            from app.core.database import close_database as close_database_impl
-            from app.core.redis_client import close_redis as close_redis_impl
-            from app.core.schema_repair import ensure_runtime_schema
-            from app.services.document_context import (
-                load_shared_mineru_artifact,
-                persist_shared_mineru_artifact,
-            )
-            from app.services.extraction_jobs import (
-                extraction_job_backend as extraction_backend_impl,
-            )
-            from app.services.mineru_client import MinerUClient
-
-            close_database = close_database_impl
-            close_redis = close_redis_impl
-            extraction_job_backend = extraction_backend_impl
-            report["database_preflight"] = await _database_preflight()
-            await ensure_runtime_schema()
-            if args.skip_remote_preflight:
-                report["remote_preflight"] = {"skipped": True}
-            else:
-                report["remote_preflight"] = await _preflight_remote_services(
-                    args,
-                    api_key=api_key,
-                    mineru_token=settings.MINERU_CLOUD_TOKEN,
-                    mineru_trust_env=settings.MINERU_CLOUD_TRUST_ENV,
-                )
-
         documents = await _hash_documents(
             paths,
             args.hash_concurrency,
@@ -1221,6 +1429,37 @@ async def _run(args: argparse.Namespace) -> dict:
             seed=args.sample_seed,
         )
         report["selected_files"] = len(documents)
+        if not documents:
+            report["run_state"] = "failed_preflight"
+            report["healthy"] = False
+            report["fatal_error"] = "No PDFs passed local bulk preflight"
+            report["elapsed_seconds"] = round(time.monotonic() - started, 1)
+            report["finished_at"] = _utcnow().isoformat()
+            await asyncio.to_thread(_write_json_atomic, report_path, report)
+            return report
+
+        storage = await asyncio.to_thread(
+            validate_storage_capacity,
+            source_paths=[item.path for item in documents],
+            output_directories=[
+                report_root,
+                Path(settings.UPLOAD_DIR),
+                Path(settings.PARSE_ARTIFACT_DIR),
+            ],
+            upload_directory=Path(settings.UPLOAD_DIR),
+            copy_mode=args.copy_mode,
+            artifact_factor=args.disk_artifact_factor,
+            minimum_free_bytes=int(args.minimum_free_gb * 1024**3),
+        )
+        estimated_run_output = _enforce_output_limit(
+            storage,
+            args.max_output_gb,
+        )
+        report["storage_preflight"] = {
+            **storage.as_dict(),
+            "estimated_run_output_bytes": estimated_run_output,
+            "max_output_bytes": int(args.max_output_gb * 1024**3),
+        }
         selection_fingerprint = stable_config_fingerprint({
             "source_root": str(pdf_root),
             "documents": [
@@ -1248,6 +1487,37 @@ async def _run(args: argparse.Namespace) -> dict:
         )
         report["selection_manifest_path"] = str(selection_manifest_path)
         report["selection_manifest_fingerprint"] = selection_fingerprint
+
+        if not args.dry_run:
+            import app.models  # noqa: F401
+
+            from app.core.database import close_database as close_database_impl
+            from app.core.redis_client import close_redis as close_redis_impl
+            from app.core.schema_repair import ensure_runtime_schema
+            from app.services.document_context import (
+                load_shared_mineru_artifact,
+                persist_shared_mineru_artifact,
+            )
+            from app.services.extraction_jobs import (
+                extraction_job_backend as extraction_backend_impl,
+            )
+            from app.services.mineru_client import MinerUClient
+
+            close_database = close_database_impl
+            close_redis = close_redis_impl
+            extraction_job_backend = extraction_backend_impl
+            report["database_preflight"] = await _database_preflight()
+            await ensure_runtime_schema()
+            if args.skip_remote_preflight:
+                report["remote_preflight"] = {"skipped": True}
+            else:
+                report["remote_preflight"] = await _preflight_remote_services(
+                    args,
+                    api_key=api_key,
+                    mineru_token=settings.MINERU_CLOUD_TOKEN,
+                    mineru_trust_env=settings.MINERU_CLOUD_TRUST_ENV,
+                )
+
         report["run_state"] = "dry_run_completed" if args.dry_run else "running"
         await asyncio.to_thread(_write_json_atomic, report_path, report)
 
@@ -1257,20 +1527,11 @@ async def _run(args: argparse.Namespace) -> dict:
             report["finished_at"] = _utcnow().isoformat()
             await asyncio.to_thread(_write_json_atomic, report_path, report)
             return report
-        if not documents:
-            report["run_state"] = "failed_preflight"
-            report["healthy"] = False
-            report["fatal_error"] = "No PDFs passed MinerU Cloud preflight limits"
-            report["elapsed_seconds"] = round(time.monotonic() - started, 1)
-            report["finished_at"] = _utcnow().isoformat()
-            await asyncio.to_thread(_write_json_atomic, report_path, report)
-            return report
-
         project_id = await _get_or_create_project(
             args,
-            api_key,
             update_configuration=False,
         )
+        runtime_llm_token = bind_runtime_llm_api_key(project_id, api_key)
         report_path = (
             report_root / f"bulk_project_{project_id}_summary.json"
         )
@@ -1326,7 +1587,6 @@ async def _run(args: argparse.Namespace) -> dict:
             previous_report = {}
         await _get_or_create_project(
             args,
-            api_key,
             update_configuration=True,
         )
         report["project_id"] = project_id
@@ -1598,12 +1858,16 @@ async def _run(args: argparse.Namespace) -> dict:
             pass
         raise
     finally:
-        if extraction_job_backend is not None:
-            await extraction_job_backend.shutdown()
-        if close_redis is not None:
-            await close_redis()
-        if close_database is not None:
-            await close_database()
+        try:
+            if extraction_job_backend is not None:
+                await extraction_job_backend.shutdown()
+            if close_redis is not None:
+                await close_redis()
+            if close_database is not None:
+                await close_database()
+        finally:
+            if runtime_llm_token is not None:
+                reset_runtime_llm_api_key(runtime_llm_token)
 
 
 def main() -> None:

@@ -27,6 +27,10 @@ _RUN_VARIANT_RE = re.compile(
     r"(?i)(?:\b(?:sample|specimen|run|no\.?)\s*[-#:]?\s*(\d+(?:\.\d+)?)\b|"
     r"(?:^|[\s_\-/])([0-9]+(?:\.[0-9]+)?)\s*$)"
 )
+_LETTER_RUN_VARIANT_RE = re.compile(
+    r"(?i)(?:\b(?:case|group|run|sample|specimen)\s*[-#:]?\s*([a-z])\b|"
+    r"\b([a-z])\s+(?:case|group|run|sample|specimen)\b)"
+)
 _NEEDLE_COUNT_IN_ID_RE = re.compile(
     r"(?i)(?:^|[_\s/-])(\d+(?:\.\d+)?)(?:[_\s/-]*needles?\b|(?=[_\s/-]+\d+(?:\.\d+)?\s*mm\b))"
 )
@@ -190,6 +194,10 @@ def _ratio_signature(text: str) -> str | None:
 
 
 def _run_variant_signature(text: str) -> str | None:
+    letter_match = _LETTER_RUN_VARIANT_RE.search(text or "")
+    if letter_match:
+        value = letter_match.group(1) or letter_match.group(2)
+        return f"letter_{value.lower()}"
     match = _RUN_VARIANT_RE.search(text or "")
     if not match:
         return None
@@ -669,6 +677,15 @@ def repair_contextual_fact_assignments(
     for fact in facts:
         metric = str(fact.get("metric_or_parameter") or "").strip()
         current = normalize_sample_id(fact.get("assigned_sample_id") or "")
+        if (
+            current
+            and fact.get("_source_table_row") is not None
+            and fact.get("_source_table_column") is not None
+        ):
+            # A structured MinerU table row has already resolved its explicit
+            # identity column. Narrative system-level heuristics must not
+            # overwrite that stronger source binding.
+            continue
         if current and current not in base_ids:
             continue
         # subject_text is model-generated and must not validate its own assignment.
@@ -724,12 +741,102 @@ def _attach_aliases_to_facts(facts: list[dict], cards: list[dict]) -> list[dict]
     return facts
 
 
+_EVIDENCE_SHORT_CODE_RE = re.compile(
+    r"(?<![A-Za-z0-9])([A-Z]{1,3}-[A-Z]{2,6}s?)(?![A-Za-z0-9.%])"
+)
+
+
+def _short_material_code_key(value: Any) -> str:
+    raw = str(value or "").strip().replace("–", "-").replace("—", "-")
+    if raw.endswith("s") and re.fullmatch(r"[A-Z]{1,3}-[A-Z]{2,6}", raw[:-1]):
+        raw = raw[:-1]
+    key = raw.upper()
+    return key if re.fullmatch(r"[A-Z]{1,3}-[A-Z]{2,6}", key) else ""
+
+
+def _is_single_insert_short_code_variant(left: str, right: str) -> bool:
+    left_key = _short_material_code_key(left)
+    right_key = _short_material_code_key(right)
+    if not left_key or not right_key or abs(len(left_key) - len(right_key)) != 1:
+        return False
+    longer, shorter = (
+        (left_key, right_key)
+        if len(left_key) > len(right_key)
+        else (right_key, left_key)
+    )
+    return any(
+        char != "-" and longer[:index] + longer[index + 1:] == shorter
+        for index, char in enumerate(longer)
+    )
+
+
+def _enrich_short_code_evidence_aliases(
+    facts: list[dict],
+    cards: list[dict],
+) -> list[dict]:
+    """Attach unique one-character spelling variants grounded in fact evidence."""
+    names_by_id: dict[str, tuple[str, ...]] = {}
+    exact_code_keys: set[str] = set()
+    for card in cards:
+        sid = normalize_sample_id(card.get("sample_id") or "")
+        if not sid:
+            continue
+        names = tuple(dict.fromkeys([
+            sid,
+            *parse_sample_aliases(card.get("sample_aliases")),
+        ]))
+        names_by_id[sid] = names
+        exact_code_keys.update(
+            key for name in names
+            if (key := _short_material_code_key(name))
+        )
+
+    additions: dict[str, set[str]] = defaultdict(set)
+    for fact in facts:
+        assigned = normalize_sample_id(fact.get("assigned_sample_id") or "")
+        if assigned not in names_by_id:
+            continue
+        evidence = str(fact.get("evidence_text") or "")
+        for raw_alias in dict.fromkeys(_EVIDENCE_SHORT_CODE_RE.findall(evidence)):
+            alias_key = _short_material_code_key(raw_alias)
+            if not alias_key or alias_key in exact_code_keys:
+                continue
+            owners = {
+                sid
+                for sid, names in names_by_id.items()
+                if any(
+                    _is_single_insert_short_code_variant(raw_alias, name)
+                    for name in names
+                )
+            }
+            if owners == {assigned}:
+                additions[assigned].add(raw_alias)
+
+    if not additions:
+        return cards
+
+    updated_cards: list[dict] = []
+    for card in cards:
+        item = dict(card)
+        sid = normalize_sample_id(item.get("sample_id") or "")
+        aliases = set(parse_sample_aliases(item.get("sample_aliases")))
+        aliases.update(additions.get(sid, set()))
+        aliases.discard(sid)
+        item["sample_aliases"] = (
+            json.dumps(sorted(aliases), ensure_ascii=False) if aliases else ""
+        )
+        updated_cards.append(item)
+    return updated_cards
+
+
 def _pair_similarity(a: str, b: str) -> float:
     na, nb = normalize_for_match(a), normalize_for_match(b)
     if not na or not nb:
         return 0.0
     if na == nb:
         return 1.0
+    if _material_stems_conflict(a, b):
+        return 0.0
     if _composition_chains_conflict(a, b):
         return 0.0
     la, lb = _loading_signature(a), _loading_signature(b)
@@ -802,6 +909,83 @@ def _variant_metadata(sample: dict) -> tuple[str, str] | None:
     return name, f"{value}|{unit}"
 
 
+def _variant_fraction_values(variant: tuple[str, str] | None) -> set[str]:
+    if not variant:
+        return set()
+    name, value = variant
+    if not re.search(
+        r"(?i)\b(?:loading|fraction|content|concentration|dosage)\b",
+        name or "",
+    ):
+        return set()
+    raw_value = str(value or "").split("|", 1)[0]
+    try:
+        return {f"{float(raw_value):g}"}
+    except ValueError:
+        return set()
+
+
+_MATERIAL_STEM_STOPWORDS = frozenset({
+    "case", "composite", "composites", "fiber", "fibers", "fibre", "fibres",
+    "film", "films", "material", "materials", "sample", "samples", "group",
+    "series", "wt", "vol", "mol", "percent", "loaded", "reinforced",
+})
+_TREATMENT_STEM_MARKERS = frozenset({
+    "treated", "modified", "functionalized", "functionalised", "acetylated",
+    "coated", "grafted", "cross", "linked", "annealed", "carbonized",
+    "oxidized", "reduced",
+})
+
+
+def _material_stem(text: str) -> str:
+    normalized = normalize_for_match(text)
+    prefixed_material = re.match(r"^([a-z])-([a-z]{2,6})\b", normalized)
+    if prefixed_material:
+        return "".join(prefixed_material.groups())
+    tokens = re.split(r"[\s_\-/]+", normalized)
+    treatment_adjacent = {
+        index + offset
+        for index, token in enumerate(tokens)
+        if token in _TREATMENT_STEM_MARKERS
+        for offset in (-1, 0)
+        if 0 <= index + offset < len(tokens)
+    }
+    for index, token in enumerate(tokens):
+        token = token.rstrip("%")
+        if (
+            index not in treatment_adjacent
+            and
+            token
+            and token not in _MATERIAL_STEM_STOPWORDS
+            and token not in {"wt", "vol", "mol"}
+            and not re.fullmatch(r"\d+(?:\.\d+)?", token)
+            and not re.fullmatch(r"\d+(?:\.\d+)?%?", token)
+        ):
+            return token
+    return ""
+
+
+def _material_stems_conflict(a: str, b: str) -> bool:
+    stem_a, stem_b = _material_stem(a), _material_stem(b)
+    if not stem_a or not stem_b or stem_a == stem_b:
+        return False
+    # Common acronym/expanded-name pairs are valid aliases.
+    equivalent = (
+        {"cf", "carbon", "carbonfiber", "carbonfibers"},
+        {"bf", "basalt", "basaltfiber", "basaltfibers"},
+        {"gf", "glass", "glassfiber", "glassfibers"},
+        {"cnc", "cncs", "pcf"},
+    )
+    if any({stem_a, stem_b} <= group for group in equivalent):
+        return False
+    # Two short alphabetic stems are usually competing material labels
+    # (e.g. CF vs PVA), not spelling variants of one sample.
+    return bool(
+        re.fullmatch(r"[a-z]{2,6}", stem_a)
+        and re.fullmatch(r"[a-z]{2,6}", stem_b)
+    )
+
+
 def _configuration_metadata_from_id(sample_id: str) -> dict[str, str]:
     normalized = normalize_for_match(sample_id)
     count_match = _NEEDLE_COUNT_IN_ID_RE.search(normalized)
@@ -865,6 +1049,65 @@ def _canonical_needle_sample_id(sample_id: str, needle_count: str) -> str:
     return f"{prefix}{separator}{needle_count}{separator}needles"
 
 
+def _leading_material_code(sample_id: str) -> str:
+    sid = normalize_sample_id(sample_id)
+    match = re.match(r"([A-Za-z]{2,8})(?=[_\s/\-]|\d|$)", sid)
+    if not match:
+        return ""
+    code = match.group(1)
+    if code.lower() in _GENERIC_STOPWORDS:
+        return ""
+    return code
+
+
+_LOADING_ID_GENERIC_TOKENS = frozenset({
+    "composite", "composites", "fiber", "fibers", "fibre", "fibres",
+    "formulation", "frgc", "group", "material", "materials", "mixture",
+    "sample", "samples", "specimen", "specimens",
+})
+
+
+def _loading_base_signature(sample_id: str) -> tuple[str, ...]:
+    normalized = normalize_for_match(sample_id)
+    normalized = re.sub(
+        r"(?i)(?<![\d.])\d+(?:\.\d+)?\s*"
+        r"(?:wtpct|volpct|molpct|(?:wt|vol|mol)\.?\s*%?|%)",
+        " ",
+        normalized,
+    )
+    return tuple(
+        token
+        for token in re.findall(r"[a-z][a-z0-9]*", normalized)
+        if token not in _LOADING_ID_GENERIC_TOKENS
+    )
+
+
+def _named_loading_alias_pairs(evidence: str) -> list[tuple[str, str]]:
+    """Parse explicitly named loading aliases stated in respective order."""
+    pairs: list[tuple[str, str]] = []
+    pattern = re.compile(
+        r"(?is)(?P<values>"
+        r"\d+(?:\.\d+)?\s*%(?:\s*,\s*\d+(?:\.\d+)?\s*%)+"
+        r"(?:\s*,?\s*and\s*\d+(?:\.\d+)?\s*%)?"
+        r")\s*(?:\([^)]*\)\s*)?(?:are\s+|were\s+)?"
+        r"(?:named|labelled|labeled|designated(?:\s+as)?)\s+"
+        r"(?P<labels>[^.;()]+?)\s*,?\s*respectively\b"
+    )
+    for match in pattern.finditer(evidence or ""):
+        values = re.findall(r"\d+(?:\.\d+)?", match.group("values"))
+        labels = [
+            token
+            for token in re.findall(
+                r"\b[A-Za-z][A-Za-z0-9_-]{0,31}\b",
+                match.group("labels"),
+            )
+            if token.lower() not in {"and", "or"}
+        ]
+        if len(values) == len(labels) and len(values) >= 2:
+            pairs.extend(zip(labels, (f"{float(value):g}" for value in values)))
+    return pairs
+
+
 def build_sample_alias_map(
     sample_mentions: list[dict],
     holistic_samples: list[dict] | None = None,
@@ -883,7 +1126,61 @@ def build_sample_alias_map(
     material_forms: dict[str, set[str]] = defaultdict(set)
     composition_chains: dict[str, set[tuple[str, ...]]] = defaultdict(set)
     treatment_states: dict[str, set[bool]] = defaultdict(set)
+    fraction_values: dict[str, set[str]] = defaultdict(set)
+    evidence_texts: list[str] = []
     all_ids: set[str] = set()
+
+    primary_ids = [
+        normalize_sample_id(
+            mention.get("normalized_sample_id") or mention.get("mention_text") or ""
+        )
+        for mention in sample_mentions
+    ]
+    primary_ids.extend(
+        normalize_sample_id(sample.get("sample_id") or "")
+        for sample in holistic_samples or []
+    )
+    primary_ids.extend(
+        normalize_sample_id(card.get("sample_id") or "")
+        for card in sample_cards or []
+    )
+    codes_by_folded: dict[str, set[str]] = defaultdict(set)
+    for primary_id in primary_ids:
+        code = _leading_material_code(primary_id)
+        if code:
+            codes_by_folded[code.lower()].add(code)
+    protected_case_codes = {
+        folded: codes
+        for folded, codes in codes_by_folded.items()
+        if len(codes) > 1
+        and any(
+            any(char.islower() for char in code)
+            and any(char.isupper() for char in code)
+            for code in codes
+        )
+    }
+
+    def case_code_conflict(left: str, right: str) -> bool:
+        left_code = _leading_material_code(left)
+        right_code = _leading_material_code(right)
+        if not left_code or not right_code or left_code == right_code:
+            return False
+        return (
+            left_code.lower() == right_code.lower()
+            and left_code in protected_case_codes.get(left_code.lower(), set())
+            and right_code in protected_case_codes.get(right_code.lower(), set())
+        )
+
+    def collect_evidence(item: dict) -> None:
+        for field in (
+            "evidence_text",
+            "composition_evidence",
+            "process_evidence",
+            "structure_evidence",
+        ):
+            value = str(item.get(field) or "").strip()
+            if value:
+                evidence_texts.append(value)
 
     def register(
         sample_id: str,
@@ -902,39 +1199,91 @@ def build_sample_alias_map(
         if material_form:
             material_forms[sid].add(material_form)
         composition_chains[sid].update(preferred_chains)
+        fraction_values[sid].update(_fraction_values(sid))
+        fraction_values[sid].update(_variant_fraction_values(variant))
         if variant:
             name, value = variant
             variant_values[sid][name].add(value)
         for name, value in _configuration_metadata_from_id(sid).items():
             variant_values[sid][name].add(value)
+        expected_fraction_values = (
+            fraction_values[sid]
+            or {
+                value
+                for alias in parsed_aliases
+                for value in _fraction_values(alias)
+            }
+        )
+        alias_fraction_values = {
+            alias_id: _fraction_values(alias_id)
+            for alias_id in parsed_aliases
+            if normalize_sample_id(alias_id)
+        }
+        explicit_alias_values = {
+            value
+            for values in alias_fraction_values.values()
+            for value in values
+        }
+        conflicting_alias_values = (
+            len(explicit_alias_values) > 1
+            and not fraction_values[sid]
+            and not _variant_fraction_values(variant)
+        )
+
         for alias in parsed_aliases:
             alias_id = normalize_sample_id(alias)
-            if alias_id and alias_id != sid:
-                all_ids.add(alias_id)
-                alias_sets[sid].add(alias_id)
-                alias_owners[alias_id].add(sid)
-                mention_counts[alias_id] += 1
-                treatment_states[alias_id].add(_is_treated_variant(alias_id))
-                alias_chains = _preferred_composition_chains(alias_id)
-                composition_chains[alias_id].update(
-                    alias_chains or preferred_chains
+            if not alias_id or alias_id == sid:
+                continue
+            alias_values = alias_fraction_values.get(alias_id, set())
+            alias_rejected = (
+                case_code_conflict(sid, alias_id)
+                or _material_stems_conflict(sid, alias_id)
+                or (
+                    bool(alias_values)
+                    and bool(expected_fraction_values)
+                    and alias_values.isdisjoint(expected_fraction_values)
                 )
-                if material_form:
-                    material_forms[alias_id].add(material_form)
-                alias_metadata = _configuration_metadata_from_id(alias_id)
-                for name, value in alias_metadata.items():
-                    variant_values[sid][name].add(value)
-                    variant_values[alias_id][name].add(value)
-                    if name == "number of needles":
-                        needle_alias_owners[value.split("|", 1)[0]].add(sid)
+                or (
+                    conflicting_alias_values
+                    and bool(alias_values)
+                )
+                or (
+                    _run_variant_signature(sid)
+                    and _run_variant_signature(alias_id)
+                    and _run_variant_signature(sid)
+                    != _run_variant_signature(alias_id)
+                )
+            )
+            all_ids.add(alias_id)
+            mention_counts[alias_id] += 1
+            treatment_states[alias_id].add(_is_treated_variant(alias_id))
+            fraction_values[alias_id].update(alias_values)
+            if alias_rejected:
+                continue
+            alias_sets[sid].add(alias_id)
+            alias_owners[alias_id].add(sid)
+            alias_chains = _preferred_composition_chains(alias_id)
+            composition_chains[alias_id].update(
+                alias_chains or preferred_chains
+            )
+            if material_form:
+                material_forms[alias_id].add(material_form)
+            alias_metadata = _configuration_metadata_from_id(alias_id)
+            for name, value in alias_metadata.items():
+                variant_values[sid][name].add(value)
+                variant_values[alias_id][name].add(value)
+                if name == "number of needles":
+                    needle_alias_owners[value.split("|", 1)[0]].add(sid)
 
     for mention in sample_mentions:
+        collect_evidence(mention)
         sid = normalize_sample_id(
             mention.get("normalized_sample_id") or mention.get("mention_text") or ""
         )
         register(sid, mention.get("aliases") or [])
 
     for sample in holistic_samples or []:
+        collect_evidence(sample)
         register(
             sample.get("sample_id") or "",
             sample.get("aliases") or [],
@@ -943,6 +1292,7 @@ def build_sample_alias_map(
         )
 
     for card in sample_cards or []:
+        collect_evidence(card)
         register(
             card.get("sample_id") or "",
             parse_sample_aliases(card.get("sample_aliases")),
@@ -969,6 +1319,18 @@ def build_sample_alias_map(
         sid: set(treatment_states.get(sid, {_is_treated_variant(sid)}))
         for sid in ids
     }
+    cluster_fraction_values: dict[str, set[str]] = {
+        sid: set(fraction_values.get(sid, set()))
+        for sid in ids
+    }
+    cluster_case_codes: dict[str, set[str]] = {
+        sid: {
+            code
+            for code in (_leading_material_code(sid),)
+            if code in protected_case_codes.get(code.lower(), set())
+        }
+        for sid in ids
+    }
 
     def find(sid: str) -> str:
         while parent[sid] != sid:
@@ -985,6 +1347,18 @@ def build_sample_alias_map(
         if len(cluster_chains[ra] | cluster_chains[rb]) > 1:
             return False
         if len(cluster_treatment_states[ra] | cluster_treatment_states[rb]) > 1:
+            return False
+        combined_case_codes = cluster_case_codes[ra] | cluster_case_codes[rb]
+        if any(
+            len(combined_case_codes & codes) > 1
+            for codes in protected_case_codes.values()
+        ):
+            return False
+        if (
+            cluster_fraction_values[ra]
+            and cluster_fraction_values[rb]
+            and cluster_fraction_values[ra].isdisjoint(cluster_fraction_values[rb])
+        ):
             return False
         shared_names = set(cluster_variants[ra]) & set(cluster_variants[rb])
         if any(
@@ -1005,6 +1379,8 @@ def build_sample_alias_map(
         cluster_forms[target].update(cluster_forms[source])
         cluster_chains[target].update(cluster_chains[source])
         cluster_treatment_states[target].update(cluster_treatment_states[source])
+        cluster_fraction_values[target].update(cluster_fraction_values[source])
+        cluster_case_codes[target].update(cluster_case_codes[source])
         return True
 
     def same_needle_configuration(a: str, b: str) -> bool:
@@ -1111,6 +1487,84 @@ def build_sample_alias_map(
         for member, canonical in list(mapping.items()):
             if canonical == source:
                 mapping[member] = target
+
+    structured_loading_ids = {
+        mapping.get(sid, sid)
+        for item in [*(holistic_samples or []), *(sample_cards or [])]
+        if (sid := normalize_sample_id(item.get("sample_id") or ""))
+        and _variant_fraction_values(_variant_metadata(item))
+    }
+    fractions_by_canonical: dict[str, set[str]] = defaultdict(set)
+    for sample_id, values in fraction_values.items():
+        fractions_by_canonical[mapping.get(sample_id, sample_id)].update(values)
+
+    loading_identity_groups: dict[
+        tuple[str, tuple[str, ...], tuple[str, ...]], set[str]
+    ] = defaultdict(set)
+    for canonical, values in fractions_by_canonical.items():
+        code = _leading_material_code(canonical)
+        signature = _loading_base_signature(canonical)
+        if not code or len(values) != 1 or not signature:
+            continue
+        loading_identity_groups[(code, tuple(sorted(values)), signature)].add(
+            canonical
+        )
+
+    for candidates in loading_identity_groups.values():
+        if len(candidates) < 2:
+            continue
+        if len({
+            form
+            for candidate in candidates
+            for form in forms_by_canonical.get(candidate, set())
+        }) > 1:
+            continue
+
+        def loading_target_rank(candidate: str) -> tuple[int, int, float]:
+            return (
+                int(candidate in structured_loading_ids),
+                int(bool(re.search(r"(?i)(?:wtpct|volpct|molpct)", candidate))),
+                _canonical_score(
+                    candidate,
+                    mention_counts.get(candidate, 0),
+                    bool(alias_sets.get(candidate)),
+                ),
+            )
+
+        best_rank = max(loading_target_rank(candidate) for candidate in candidates)
+        best_targets = {
+            candidate
+            for candidate in candidates
+            if loading_target_rank(candidate) == best_rank
+        }
+        if len(best_targets) != 1:
+            continue
+        target = next(iter(best_targets))
+        for member, canonical in list(mapping.items()):
+            if canonical in candidates:
+                mapping[member] = target
+
+    targets_by_fraction: dict[str, set[str]] = defaultdict(set)
+    for sample_id, values in fraction_values.items():
+        canonical = mapping.get(sample_id, sample_id)
+        for value in values:
+            targets_by_fraction[value].add(canonical)
+    for evidence in dict.fromkeys(evidence_texts):
+        for alias, fraction in _named_loading_alias_pairs(evidence):
+            alias_id = normalize_sample_id(alias)
+            candidates = {
+                candidate
+                for candidate in targets_by_fraction.get(fraction, set())
+                if candidate != mapping.get(alias_id, alias_id)
+            }
+            if len(candidates) != 1:
+                continue
+            target = next(iter(candidates))
+            source = mapping.get(alias_id, alias_id)
+            mapping[alias_id] = target
+            for member, canonical in list(mapping.items()):
+                if canonical == source:
+                    mapping[member] = target
     return mapping
 
 
@@ -1209,6 +1663,10 @@ def merge_sample_identities(
     )
     if not alias_map:
         repaired_facts = repair_explicit_sample_assignments(facts, sample_cards)
+        sample_cards = _enrich_short_code_evidence_aliases(
+            repaired_facts,
+            sample_cards,
+        )
         return (
             sample_mentions,
             _attach_aliases_to_facts(repaired_facts, sample_cards),
@@ -1228,4 +1686,8 @@ def merge_sample_identities(
     )
     updated_facts = repair_explicit_sample_assignments(updated_facts, updated_cards)
     updated_facts = repair_contextual_fact_assignments(updated_facts, updated_cards)
+    updated_cards = _enrich_short_code_evidence_aliases(
+        updated_facts,
+        updated_cards,
+    )
     return mentions, _attach_aliases_to_facts(updated_facts, updated_cards), updated_cards

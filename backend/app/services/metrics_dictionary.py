@@ -30,6 +30,28 @@ PERFORMANCE_CATEGORIES: dict[str, dict] = {
                              "σr", "σu", "σ_R", "σ_u"],
                 "common_units": ["MPa", "GPa", "cN/dtex"],
             },
+            "specific_tensile_strength": {
+                "synonyms": [
+                    "specific tensile strength",
+                    "tensile strength per linear density",
+                ],
+                "common_units": ["cN/dtex", "N/tex", "g/denier", "N m g-1"],
+            },
+            "specific_tensile_modulus": {
+                "synonyms": [
+                    "specific tensile modulus",
+                    "tensile modulus per linear density",
+                ],
+                "common_units": ["cN/dtex", "N/tex", "g/denier", "kN m g-1"],
+            },
+            "tensile_strength_improvement": {
+                "synonyms": [
+                    "tensile strength improvement",
+                    "tensile strength increase",
+                    "increase in tensile strength",
+                ],
+                "common_units": ["%"],
+            },
             "elongation_at_break": {
                 "synonyms": ["断裂伸长率", "断裂伸长", "elongation", "strain at break",
                              "断裂延伸率", "extension at break", "epsilon_r", "epsilon_u",
@@ -37,6 +59,29 @@ PERFORMANCE_CATEGORIES: dict[str, dict] = {
                              "varepsilon_r", "varepsilon_u", "varepsilon_r_varepsilon_u",
                              "\\varepsilon_R (\\varepsilon_u)",
                              "εr", "εu", "ε_R", "ε_u"],
+                "common_units": ["%"],
+            },
+            "extension_at_break": {
+                "synonyms": [
+                    "absolute extension at break",
+                    "breaking extension",
+                    "extension at fracture",
+                ],
+                "common_units": ["mm", "cm", "m"],
+            },
+            "ultimate_strain": {
+                "synonyms": [
+                    "ultimate strain",
+                    "strain at failure",
+                    "failure strain",
+                ],
+                "common_units": ["%", "microstrain"],
+            },
+            "ultimate_strain_improvement": {
+                "synonyms": [
+                    "ultimate strain improvement",
+                    "ultimate strain increase",
+                ],
                 "common_units": ["%"],
             },
             "Youngs_modulus": {
@@ -48,12 +93,49 @@ PERFORMANCE_CATEGORIES: dict[str, dict] = {
                              "E_1_GPa", "E1_GPa", "e_1_gpa", "e1_gpa"],
                 "common_units": ["MPa", "GPa"],
             },
+            "Youngs_modulus_improvement": {
+                "synonyms": [
+                    "Young's modulus improvement", "Youngs modulus improvement",
+                    "elastic modulus improvement", "elastic modulus increase",
+                ],
+                "common_units": ["%"],
+            },
             "storage_modulus": {
                 "synonyms": [
                     "储能模量", "storage modulus", "energy storage modulus",
                     "dynamic storage modulus",
+                    "G'", "G′", "G prime",
                 ],
                 "common_units": ["MPa", "GPa", "kPa", "Pa"],
+            },
+            "loss_modulus": {
+                "synonyms": [
+                    "损耗模量", "loss modulus", "dynamic loss modulus",
+                    "G''", "G″", "G′′", "G double prime",
+                ],
+                "common_units": ["MPa", "GPa", "kPa", "Pa"],
+            },
+            "storage_modulus_power_law_index": {
+                "synonyms": [
+                    "storage modulus power-law index",
+                    "storage modulus power law index",
+                    "storage modulus power-law exponent",
+                    "G' power-law index",
+                    "G prime power-law index",
+                    "power-law index for G'",
+                ],
+                "common_units": ["-", "dimensionless"],
+            },
+            "loss_modulus_power_law_index": {
+                "synonyms": [
+                    "loss modulus power-law index",
+                    "loss modulus power law index",
+                    "loss modulus power-law exponent",
+                    "G'' power-law index",
+                    "G double prime power-law index",
+                    "power-law index for G''",
+                ],
+                "common_units": ["-", "dimensionless"],
             },
             "storage_modulus_improvement": {
                 "synonyms": [
@@ -89,6 +171,14 @@ PERFORMANCE_CATEGORIES: dict[str, dict] = {
                 "synonyms": ["压缩强度", "compression strength", "抗压强度"],
                 "common_units": ["MPa", "GPa", "kPa"],
             },
+            "compressive_strength_improvement": {
+                "synonyms": [
+                    "compressive strength improvement",
+                    "compressive strength increase",
+                    "increase in compressive strength",
+                ],
+                "common_units": ["%"],
+            },
             "compressive_stress": {
                 "synonyms": ["压缩应力", "compression stress"],
                 "common_units": ["MPa", "kPa"],
@@ -113,6 +203,21 @@ PERFORMANCE_CATEGORIES: dict[str, dict] = {
                 "synonyms": ["弯曲模量", "flexural modulus", "bending modulus"],
                 "common_units": ["MPa", "GPa"],
             },
+            "flexural_modulus_improvement": {
+                "synonyms": [
+                    "flexural modulus improvement", "flexural modulus increase",
+                    "bending modulus improvement", "bending modulus increase",
+                ],
+                "common_units": ["%"],
+            },
+            "in_plane_property_reduction": {
+                "synonyms": [
+                    "in-plane property reduction",
+                    "in-plane properties reduction",
+                    "reduction in in-plane properties",
+                ],
+                "common_units": ["%"],
+            },
             "hardness": {
                 "synonyms": ["硬度", "shore hardness", "microhardness"],
                 "common_units": ["-", "HV", "Shore D"],
@@ -124,6 +229,17 @@ PERFORMANCE_CATEGORIES: dict[str, dict] = {
             "fracture_toughness": {
                 "synonyms": ["fracture toughness"],
                 "common_units": ["J/m²", "kJ/m²", "MPa·m^0.5"],
+            },
+            "fracture_energy": {
+                "synonyms": ["fracture energy", "fracture energy density"],
+                "common_units": ["J/m³", "kJ/m³"],
+            },
+            "fracture_energy_improvement": {
+                "synonyms": [
+                    "fracture energy improvement",
+                    "fracture energy increase",
+                ],
+                "common_units": ["%"],
             },
             "interlaminar_fracture_toughness": {
                 "synonyms": ["interlaminar fracture toughness"],
@@ -255,6 +371,14 @@ PERFORMANCE_CATEGORIES: dict[str, dict] = {
                 "synonyms": ["热导率", "thermal conductivity", "导热系数"],
                 "common_units": ["W/mK", "mW/mK"],
             },
+            "thermal_conductivity_improvement": {
+                "synonyms": [
+                    "thermal conductivity improvement",
+                    "thermal conductivity increase",
+                    "increase in thermal conductivity",
+                ],
+                "common_units": ["%", "times", "fold"],
+            },
             "surface_temperature": {
                 "synonyms": ["表面温度", "surface temperature", "upper surface temperature",
                              "hot-stage surface temperature", "infrared surface temperature"],
@@ -271,6 +395,26 @@ PERFORMANCE_CATEGORIES: dict[str, dict] = {
             "melting_temperature": {
                 "synonyms": ["熔点", "Tm", "melting point", "melting temperature"],
                 "common_units": ["°C"],
+            },
+            "cold_crystallization_temperature": {
+                "synonyms": [
+                    "cold crystallization temperature",
+                    "cold-crystallization temperature",
+                    "Tcc",
+                ],
+                "common_units": ["degC", "K"],
+            },
+            "cold_crystallization_enthalpy": {
+                "synonyms": [
+                    "cold crystallization enthalpy",
+                    "cold-crystallization enthalpy",
+                    "Delta Hcc",
+                ],
+                "common_units": ["J/g", "kJ/g"],
+            },
+            "melting_enthalpy": {
+                "synonyms": ["melting enthalpy", "enthalpy of melting", "Delta Hm"],
+                "common_units": ["J/g", "kJ/g"],
             },
             "crystallinity_Xc": {
                 "synonyms": ["结晶度Xc", "crystallinity Xc", "Xc", "degree of crystallinity", "crystallinity"],
@@ -501,6 +645,50 @@ PERFORMANCE_CATEGORIES: dict[str, dict] = {
             },
             "water_absorption": {
                 "synonyms": ["吸水率", "water absorption", "water uptake", "吸湿率"],
+                "common_units": ["%"],
+            },
+            "equilibrium_water_content": {
+                "synonyms": [
+                    "equilibrium water content", "equilibrium moisture content",
+                    "M_s", "M s",
+                ],
+                "common_units": ["%"],
+            },
+            "equilibrium_water_content_change": {
+                "synonyms": [
+                    "equilibrium water content change",
+                    "change in equilibrium water content",
+                    "equilibrium moisture content change",
+                ],
+                "common_units": ["%"],
+            },
+            "equilibrium_immersion_duration": {
+                "synonyms": [
+                    "equilibrium immersion duration", "time to equilibrium",
+                    "t_s", "t s",
+                ],
+                "common_units": ["days", "h"],
+            },
+            "initial_water_sorption_slope": {
+                "synonyms": [
+                    "initial water sorption slope", "initial water absorption slope",
+                    "S_L", "S L",
+                ],
+                "common_units": ["1/√s", "s^-0.5"],
+            },
+            "water_diffusion_coefficient": {
+                "synonyms": ["water diffusion coefficient", "moisture diffusion coefficient"],
+                "common_units": ["m²/s"],
+            },
+            "water_diffusion_coefficient_change": {
+                "synonyms": ["water diffusion coefficient change"],
+                "common_units": ["%"],
+            },
+            "water_diffusion_coefficient_reduction": {
+                "synonyms": [
+                    "water diffusion coefficient reduction",
+                    "decrease in water diffusion coefficient",
+                ],
                 "common_units": ["%"],
             },
             "oil_absorption_capacity": {
@@ -794,6 +982,23 @@ PROCESS_PARAMETERS: dict[str, dict] = {
                      "挤出温度", "melt temperature"],
         "common_units": ["°C"],
     },
+    "reaction_temperature": {
+        "synonyms": ["reaction temperature", "hydrolysis temperature"],
+        "common_units": ["\u00b0C", "K"],
+    },
+    "ultrasonication_amplitude": {
+        "synonyms": [
+            "ultrasonication amplitude", "ultrasonic amplitude",
+            "ultrasonication power", "ultrasonic power", "ultrasonic magnitude",
+        ],
+        "common_units": ["%", "W"],
+    },
+    "ultrasonication_time": {
+        "synonyms": [
+            "ultrasonication time", "ultrasonic time", "sonication time",
+        ],
+        "common_units": ["h", "min", "s"],
+    },
     "voltage": {
         "synonyms": ["电压", "voltage", "applied voltage", "纺丝电压", "静电纺丝电压"],
         "common_units": ["kV", "V"],
@@ -903,6 +1108,60 @@ PROCESS_PARAMETERS: dict[str, dict] = {
         "synonyms": ["湿度", "humidity", "relative humidity", "RH", "相对湿度"],
         "common_units": ["%"],
     },
+    "preform_thickness": {
+        "synonyms": [
+            "preform thickness", "preform thickness and type",
+            "preform thickness & type",
+        ],
+        "common_units": ["mm", "cm"],
+    },
+    "laminate_thickness": {
+        "synonyms": ["laminate thickness", "composite laminate thickness"],
+        "common_units": ["mm", "cm"],
+    },
+    "tufting_pitch": {
+        "synonyms": ["tufting pitch", "tuft pitch"],
+        "common_units": ["mm", "cm"],
+    },
+    "tufting_robot_speed": {
+        "synonyms": [
+            "tufting robot speed",
+            "tufting speed",
+            "robot speed for tufting",
+            "optimum speed of tufting",
+            "optimum robot speed for tufting",
+            "optimum tufting robot speed",
+        ],
+        "common_units": ["mm/min", "m/min"],
+    },
+    "tufting_test_speed": {
+        "synonyms": [
+            "needle force test speed",
+            "force test speed during tufting",
+            "tufting wear breakage speed",
+            "needle breakage speed",
+            "sewing needle breakage speed",
+            "tufting trial speed",
+        ],
+        "common_units": ["mm/min", "m/min"],
+    },
+    "observation_magnification": {
+        "synonyms": [
+            "damage observation magnification",
+            "digital camera magnification",
+            "digital elite-cam magnification",
+            "microscope magnification",
+        ],
+        "common_units": ["X", "×"],
+    },
+    "needle_thread_combination_count": {
+        "synonyms": [
+            "number of needle thread combinations",
+            "no. of needle thread combination",
+            "needle thread combination count",
+        ],
+        "common_units": ["-"],
+    },
 }
 
 # ---------------------------------------------------------------------------
@@ -920,20 +1179,34 @@ CORE_METRICS: set[str] = {
     "lateral_size",
     "areal_density",
     "thermal_conductivity",
+    "thermal_conductivity_improvement",
     "surface_temperature",
     "tensile_strength",
+    "specific_tensile_strength",
+    "specific_tensile_modulus",
+    "tensile_strength_improvement",
     "elongation_at_break",
+    "extension_at_break",
+    "ultimate_strain",
+    "ultimate_strain_improvement",
     "Youngs_modulus",
+    "Youngs_modulus_improvement",
     "storage_modulus",
     "storage_modulus_improvement",
+    "loss_modulus",
     "degradation_rate",
     "inelastic_threshold_stress",
     "compressive_strength",
+    "compressive_strength_improvement",
     "compressive_stress",
     "flexural_strength",
     "flexural_strength_improvement",
     "flexural_modulus",
+    "flexural_modulus_improvement",
+    "in_plane_property_reduction",
     "fracture_toughness",
+    "fracture_energy",
+    "fracture_energy_improvement",
     "interlaminar_fracture_toughness",
     "mode_I_interlaminar_fracture_toughness",
     "mode_II_interlaminar_fracture_toughness",
@@ -944,6 +1217,13 @@ CORE_METRICS: set[str] = {
     "interlaminar_shear_strength_growth_rate",
     "impact_strength",
     "breaking_energy",
+    "equilibrium_water_content",
+    "equilibrium_water_content_change",
+    "equilibrium_immersion_duration",
+    "initial_water_sorption_slope",
+    "water_diffusion_coefficient",
+    "water_diffusion_coefficient_change",
+    "water_diffusion_coefficient_reduction",
     "water_contact_angle",
     "pH",
     "oil_contact_angle",
@@ -982,7 +1262,10 @@ SECONDARY_METRICS: set[str] = {
     "imidization_degree",
     "thermal_stability",
     "glass_transition_temperature",
+    "cold_crystallization_temperature",
+    "cold_crystallization_enthalpy",
     "melting_temperature",
+    "melting_enthalpy",
     "decomposition_temperature",
     "coefficient_of_thermal_expansion",
     "limiting_oxygen_index",

@@ -24,6 +24,77 @@ def test_grounded_table_run_combines_material_context_and_row_label():
     assert "sample_id_not_found_in_evidence" not in checked.get("_checklist_failures", [])
 
 
+def test_conflicting_table_assignments_are_always_routed_to_review():
+    fact = {
+        "fact_type": "performance",
+        "assigned_sample_id": "CNCs",
+        "metric_or_parameter": "yield_error",
+        "value": "2.6",
+        "unit": "%",
+        "evidence_text": "CNCs had a yield error of 2.6%.",
+        "_table_assignment_conflict": True,
+    }
+
+    checked = run_final_checklist([fact])[0]
+
+    assert "conflicting_table_sample_assignments" in checked[
+        "_checklist_failures"
+    ]
+
+
+def test_relative_multi_metric_values_match_improvement_metrics():
+    evidence = (
+        "The BF-1.2 % specimen exhibited the highest reinforcing efficiency, "
+        "with tensile strength, ultimate strain, and fracture energy increased "
+        "by 119 %, 104 %, and 349 %, respectively, relative to the plain "
+        "geopolymer composite."
+    )
+    facts = [
+        {
+            "fact_type": "performance",
+            "assigned_sample_id": "BF-1.2%",
+            "metric_or_parameter": metric,
+            "value": value,
+            "unit": "%",
+            "evidence_text": evidence,
+        }
+        for metric, value in (
+            ("tensile_strength_improvement", "119"),
+            ("ultimate_strain_improvement", "104"),
+            ("fracture_energy_improvement", "349"),
+        )
+    ]
+
+    checked = run_final_checklist(facts)
+
+    for fact in checked:
+        assert not any(
+            failure.startswith("value_belongs_to_")
+            for failure in fact.get("_checklist_failures", [])
+        )
+
+
+def test_relative_multi_metric_check_still_rejects_wrong_improvement_metric():
+    fact = {
+        "fact_type": "performance",
+        "assigned_sample_id": "BF-1.2%",
+        "metric_or_parameter": "ultimate_strain_improvement",
+        "value": "119",
+        "unit": "%",
+        "evidence_text": (
+            "The BF-1.2 % specimen exhibited tensile strength and ultimate strain "
+            "increased by 119 % and 104 %, respectively."
+        ),
+    }
+
+    checked = run_final_checklist([fact])[0]
+
+    assert (
+        "value_belongs_to_tensile_strength_improvement_not_ultimate_strain_improvement"
+        in checked["_checklist_failures"]
+    )
+
+
 def test_grounded_bare_table_sample_uses_sample_column_and_row_label():
     fact = {
         "fact_type": "performance",
@@ -118,6 +189,75 @@ def test_loading_identity_does_not_match_when_loading_is_absent():
     checked = run_final_checklist([fact])[0]
 
     assert "sample_id_not_found_in_evidence" in checked["_checklist_failures"]
+
+
+def test_incorporated_material_identity_is_grounded_by_bound_phrase_parts():
+    fact = {
+        "fact_type": "performance",
+        "assigned_sample_id": "TPPO-incorporated FR PLA compound chips",
+        "metric_or_parameter": "decomposition_temperature",
+        "value": "349.18",
+        "unit": "°C",
+        "evidence_text": (
+            "Figure 5 illustrates the thermal stability of FR PLA compound chips. "
+            "Upon TPPO incorporation, T-5% decreases to 349.18 °C."
+        ),
+    }
+
+    checked = run_final_checklist([fact])[0]
+
+    assert "sample_id_not_found_in_evidence" not in checked.get(
+        "_checklist_failures", []
+    )
+
+
+def test_incorporated_material_identity_requires_treatment_binding():
+    fact = {
+        "fact_type": "performance",
+        "assigned_sample_id": "TPPO-incorporated FR PLA compound chips",
+        "metric_or_parameter": "decomposition_temperature",
+        "value": "349.18",
+        "unit": "°C",
+        "evidence_text": (
+            "The FR PLA compound chips decomposed at 349.18 °C. "
+            "TPPO was screened in a separate experiment."
+        ),
+    }
+
+    checked = run_final_checklist([fact])[0]
+
+    assert "sample_id_not_found_in_evidence" in checked["_checklist_failures"]
+
+
+def test_cf_c_notation_grounds_carbon_carbon_composite_only():
+    evidence = (
+        "The Cf-C samples were porous, and the porosity was measured "
+        "to be about 40 vol.%."
+    )
+    carbon_carbon = {
+        "fact_type": "performance",
+        "assigned_sample_id": "C/C_composite",
+        "metric_or_parameter": "porosity",
+        "value": "40",
+        "unit": "%",
+        "evidence_text": evidence,
+    }
+    silicon_carbide = {
+        **carbon_carbon,
+        "assigned_sample_id": "C/C-SiC_composite",
+    }
+
+    checked_carbon, checked_silicon = run_final_checklist([
+        carbon_carbon,
+        silicon_carbide,
+    ])
+
+    assert "sample_id_not_found_in_evidence" not in checked_carbon.get(
+        "_checklist_failures", []
+    )
+    assert "sample_id_not_found_in_evidence" in checked_silicon[
+        "_checklist_failures"
+    ]
 
 
 def test_control_suffix_is_supported_by_explicit_base_identity():
@@ -324,6 +464,28 @@ def test_grounded_table_summary_row_validates_parent_sample_identity():
     assert checked.get("_checklist_failed") is False
 
 
+def test_cold_crystallization_temperature_is_not_flagged_as_bare_condition():
+    fact = {
+        "fact_type": "performance",
+        "assigned_sample_id": "PLA/FR 4%",
+        "metric_or_parameter": "cold_crystallization_temperature",
+        "value": "101.63",
+        "unit": "°C",
+        "extraction_method": "rule_table_performance",
+        "_source_table_row": 3,
+        "evidence_text": (
+            "[columns]\tSample\tTcc (°C)\n"
+            "[row 3]\tPLA/FR 4%\t101.63"
+        ),
+    }
+
+    checked = run_final_checklist([fact])[0]
+
+    assert "bare_temperature_as_performance_value" not in checked.get(
+        "_checklist_failures", []
+    )
+
+
 def test_evidence_grounded_alias_validates_canonical_sample_identity():
     fact = {
         "fact_type": "performance",
@@ -338,6 +500,27 @@ def test_evidence_grounded_alias_validates_canonical_sample_identity():
     checked = run_final_checklist([fact])[0]
 
     assert "sample_id_not_found_in_evidence" not in checked.get("_checklist_failures", [])
+
+
+def test_plural_alias_matches_singular_table_identity():
+    fact = {
+        "fact_type": "performance",
+        "assigned_sample_id": "CNCs",
+        "_sample_aliases": ["F-CNCs"],
+        "metric_or_parameter": "activation_energy",
+        "value": "145.50",
+        "unit": "kJ/mol",
+        "evidence_text": (
+            "[columns]\tModel\tF-CNC / E (kJ/mol)\tF-CNC / R2\n"
+            "[row 1]\t1\t145.50\t0.9962"
+        ),
+    }
+
+    checked = run_final_checklist([fact])[0]
+
+    assert "sample_id_not_found_in_evidence" not in checked.get(
+        "_checklist_failures", []
+    )
 
 
 def test_composition_id_matches_across_slash_and_underscore_separators():
@@ -404,3 +587,203 @@ def test_explicit_fraction_supports_compact_variant_identity():
     checked = run_final_checklist([fact])[0]
 
     assert "sample_id_not_found_in_evidence" not in checked.get("_checklist_failures", [])
+
+
+def test_thread_suffix_is_supported_by_table_column_identity():
+    fact = {
+        "fact_type": "performance",
+        "assigned_sample_id": "C1_thread",
+        "metric_or_parameter": "tensile_strength",
+        "value": "4100",
+        "unit": "MPa",
+        "extraction_method": "AI_holistic_table",
+        "evidence_text": (
+            "[column identity] Carbon / T300 / C1\n"
+            "[row 7] Tensile strength [MPa]\t4100"
+        ),
+    }
+
+    checked = run_final_checklist([fact])[0]
+
+    assert "sample_id_not_found_in_evidence" not in checked.get(
+        "_checklist_failures", []
+    )
+
+
+def test_material_code_and_thread_suffix_match_unordered_table_axis():
+    fact = {
+        "fact_type": "performance",
+        "assigned_sample_id": "C1_carbon_thread",
+        "metric_or_parameter": "tensile_strength",
+        "value": "4100",
+        "unit": "MPa",
+        "condition": "axis=Carbon / T300 / C1",
+        "extraction_method": "AI_holistic_table",
+        "evidence_text": (
+            "[columns]\tThread type\tCarbon\tCarbon\n"
+            "[row 1]\tThread Specification\tT300\tT300\n"
+            "[row 2]\tThread Code\tC1\tC2\n"
+            "[column identity]\tCarbon / T300 / C1\n"
+            "[row 7]\tTensile strength [MPa]\t4100\t2900"
+        ),
+    }
+
+    checked = run_final_checklist([fact])[0]
+
+    assert "sample_id_not_found_in_evidence" not in checked.get(
+        "_checklist_failures", []
+    )
+
+
+def test_shared_loading_unit_supports_specific_silica_variant():
+    fact = {
+        "fact_type": "performance",
+        "assigned_sample_id": "GFRP_2wt_silica_coating",
+        "metric_or_parameter": "water_diffusion_coefficient_reduction",
+        "value": "11.79",
+        "unit": "%",
+        "evidence_text": (
+            "The water diffusion coefficient decreased by 11.79 and 19.27% "
+            "for specimens treated with 2 and 4 wt % silica coating, "
+            "respectively."
+        ),
+    }
+
+    checked = run_final_checklist([fact])[0]
+
+    assert "sample_id_not_found_in_evidence" not in checked.get(
+        "_checklist_failures", []
+    )
+
+
+def test_zero_loading_variant_accepts_uncoated_control_wording():
+    fact = {
+        "fact_type": "performance",
+        "assigned_sample_id": "GFRP_0wt_silica_coating",
+        "metric_or_parameter": "equilibrium_water_content_change",
+        "value": "802.86",
+        "unit": "%",
+        "evidence_text": (
+            "For GFRP composite laminates containing uncoated glass fibers, "
+            "the equilibrium water content increased by 802.86%."
+        ),
+    }
+
+    checked = run_final_checklist([fact])[0]
+
+    assert "sample_id_not_found_in_evidence" not in checked.get(
+        "_checklist_failures", []
+    )
+
+
+def test_tufting_wording_supports_tufted_laminate_family():
+    fact = {
+        "fact_type": "performance",
+        "assigned_sample_id": "tufted_composite_laminate",
+        "metric_or_parameter": "in_plane_property_reduction",
+        "value": "15",
+        "unit": "%",
+        "evidence_text": (
+            "Tufting resulted in reduction in the in-plane properties like "
+            "TS, FS and IPS by 15-20%."
+        ),
+    }
+
+    checked = run_final_checklist([fact])[0]
+
+    assert "sample_id_not_found_in_evidence" not in checked.get(
+        "_checklist_failures", []
+    )
+
+
+def test_mineru_html_and_filament_suffix_preserve_sample_grounding():
+    facts = [
+        {
+            "fact_type": "performance",
+            "assigned_sample_id": "Cf-PEEK",
+            "metric_or_parameter": "tensile_strength",
+            "value": "2050",
+            "unit": "MPa",
+            "evidence_text": (
+                "<html><body><b>Cf-PEEK</b> reached 2050 MPa.</body></html>"
+            ),
+        },
+        {
+            "fact_type": "performance",
+            "assigned_sample_id": "FBR-MP0007_filament",
+            "metric_or_parameter": "tensile_strength",
+            "value": "78",
+            "unit": "MPa",
+            "evidence_text": "FBR-MP0007 reached a tensile strength of 78 MPa.",
+        },
+    ]
+
+    checked = run_final_checklist(facts)
+
+    assert all(
+        "sample_id_not_found_in_evidence" not in fact.get(
+            "_checklist_failures", []
+        )
+        for fact in checked
+    )
+
+
+def test_component_form_identity_requires_every_material_component():
+    grounded = {
+        "fact_type": "performance",
+        "assigned_sample_id": "CNC/PLA_nanocomposite_filament",
+        "metric_or_parameter": "tensile_strength",
+        "value": "65",
+        "unit": "MPa",
+        "evidence_text": (
+            "CNCs were dispersed in PLA to produce nanocomposite filaments "
+            "with a tensile strength of 65 MPa."
+        ),
+    }
+    wrong_matrix = {
+        **grounded,
+        "evidence_text": (
+            "CNCs were dispersed in PVA to produce nanocomposite filaments "
+            "with a tensile strength of 65 MPa."
+        ),
+    }
+
+    grounded_checked = run_final_checklist([grounded])[0]
+    wrong_matrix_checked = run_final_checklist([wrong_matrix])[0]
+
+    assert "sample_id_not_found_in_evidence" not in grounded_checked.get(
+        "_checklist_failures", []
+    )
+    assert "sample_id_not_found_in_evidence" in wrong_matrix_checked.get(
+        "_checklist_failures", []
+    )
+
+def test_composite_identity_accepts_filament_form_with_exact_components():
+    grounded = {
+        "fact_type": "performance",
+        "assigned_sample_id": "Cf-PEEK_composite",
+        "metric_or_parameter": "density",
+        "value": "1.57",
+        "unit": "g/cc",
+        "evidence_text": (
+            "This filament consists of continuous Cf tow impregnated with "
+            "PEEK to a density of 1.57 g/cc."
+        ),
+    }
+    wrong_matrix = {
+        **grounded,
+        "evidence_text": (
+            "This filament consists of continuous Cf tow impregnated with "
+            "PPS to a density of 1.57 g/cc."
+        ),
+    }
+
+    grounded_checked = run_final_checklist([grounded])[0]
+    wrong_matrix_checked = run_final_checklist([wrong_matrix])[0]
+
+    assert "sample_id_not_found_in_evidence" not in grounded_checked.get(
+        "_checklist_failures", []
+    )
+    assert "sample_id_not_found_in_evidence" in wrong_matrix_checked.get(
+        "_checklist_failures", []
+    )

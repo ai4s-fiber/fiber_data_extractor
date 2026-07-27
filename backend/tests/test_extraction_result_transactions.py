@@ -22,6 +22,10 @@ from app.services import extraction_jobs
 from app.services.extraction_jobs import ExtractionJobBackend
 from app.services.extraction_results import purge_extraction_results
 from app.services.extractor_v7.service import V7ExtractorService
+from app.services.runtime_llm_credentials import (
+    bind_runtime_llm_api_key,
+    reset_runtime_llm_api_key,
+)
 
 
 @pytest.fixture
@@ -205,6 +209,76 @@ async def test_preflight_failure_preserves_previous_results(
         ) == 1
         assert await _count(db, FactCandidate, FactCandidate.paper_id == paper_id) == 1
         assert await _count(db, SampleCatalog, SampleCatalog.paper_id == paper_id) == 1
+
+
+@pytest.mark.asyncio
+async def test_runtime_llm_key_reaches_pipeline_without_project_persistence(
+    result_db, tmp_path, monkeypatch
+):
+    project_id, paper_id, _ = await _seed_previous_result(result_db)
+    (tmp_path / "paper.pdf").write_bytes(b"not parsed by this test")
+
+    class FakeDocumentContext:
+        page_count = 1
+        blocks = []
+        tables = []
+        figures = []
+        markdown_text = "Original research article with experimental results."
+        parser_name = "test"
+        parse_run_id = None
+
+        @staticmethod
+        def pages_as_tuples():
+            return [(1, "Original research article with experimental results.")]
+
+        @staticmethod
+        def tables_as_legacy_blocks():
+            return []
+
+        @staticmethod
+        def chunks():
+            return [{
+                "page_number": 1,
+                "section_name": "results",
+                "source_type": "text",
+                "raw_text": "Original research article with experimental results.",
+            }]
+
+    async def fake_parse(*_args, **_kwargs):
+        return FakeDocumentContext()
+
+    captured = {}
+
+    def fake_create_llm_client(**kwargs):
+        captured.update(kwargs)
+        raise RuntimeError("stop-after-runtime-key-check")
+
+    monkeypatch.setattr(
+        "app.services.extractor_v7.service.parse_pdf_to_document_context", fake_parse
+    )
+    monkeypatch.setattr(
+        "app.services.extractor_v7.service.classify_document_type",
+        lambda *_args: SimpleNamespace(kind="article", title="", reason=""),
+    )
+    monkeypatch.setattr(
+        "app.services.extractor_v7.service.create_llm_client", fake_create_llm_client
+    )
+    monkeypatch.setattr(
+        "app.services.extractor_v7.service.settings.UPLOAD_DIR", str(tmp_path)
+    )
+
+    token = bind_runtime_llm_api_key(project_id, "runtime-test-key")
+    try:
+        async with result_db() as db:
+            result = await V7ExtractorService.run_full_pipeline_for_paper(db, paper_id)
+    finally:
+        reset_runtime_llm_api_key(token)
+
+    assert captured["api_key"] == "runtime-test-key"
+    assert "stop-after-runtime-key-check" in result["error"]
+    async with result_db() as db:
+        project = await db.get(Project, project_id)
+        assert project.llm_api_key is None
 
 
 @pytest.mark.asyncio

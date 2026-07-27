@@ -18,6 +18,7 @@ from app.services.validation import (
     is_characterization_peak_metric,
     metric_unit_compatible,
 )
+from app.services.extractor_v7.metric_normalize import canonicalize_metric_name
 from app.services.extractor_v7.validators import is_background_or_reference_fact
 
 _NUMBER_RE = re.compile(r"[+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?")
@@ -46,7 +47,9 @@ def _identity_appears_in_evidence(identity: str, evidence: str) -> bool:
     cannot match inside a different sample ID.
     """
     identity_norm = normalize_for_match(identity)
-    evidence_norm = normalize_for_match(evidence)
+    evidence_norm = normalize_for_match(
+        re.sub(r"<[^>]*>", " ", str(evidence or ""))
+    )
     parts = [part for part in re.split(r"[\s_/-]+", identity_norm) if part]
     if not parts or not evidence_norm:
         return False
@@ -107,8 +110,207 @@ def _composition_loading_identity_appears(identity: str, evidence: str) -> bool:
     return False
 
 
+_COMPONENT_FORM_TOKENS = frozenset({
+    "aerogel", "composite", "filament", "film", "foam", "hydrogel",
+    "laminate", "membrane", "nanocomposite", "nanofiber", "powder",
+    "thread", "yarn",
+})
+_COMPONENT_IDENTITY_GENERIC_TOKENS = frozenset({
+    "amount", "based", "loading", "material", "moderate",
+    "sample", "specimen", "with",
+})
+
+
+def _singular_identity_token(token: str) -> str:
+    if len(token) > 3 and token.endswith("s") and not token.endswith("ss"):
+        return token[:-1]
+    return token
+
+
+def _component_form_identity_appears(identity: str, evidence: str) -> bool:
+    """Ground a composed ID when all materials and its form share one excerpt."""
+    identity_tokens = {
+        _singular_identity_token(token)
+        for token in re.findall(r"[a-z][a-z0-9]*", normalize_for_match(identity))
+    }
+    form_tokens = identity_tokens & _COMPONENT_FORM_TOKENS
+    component_tokens = {
+        token
+        for token in identity_tokens - form_tokens
+        if len(token) >= 2 and token not in _COMPONENT_IDENTITY_GENERIC_TOKENS
+    }
+    if len(component_tokens) < 2 or not form_tokens:
+        return False
+    evidence_tokens = {
+        _singular_identity_token(token)
+        for token in re.findall(r"[a-z][a-z0-9]*", normalize_for_match(evidence))
+    }
+    evidence_form_tokens = evidence_tokens & _COMPONENT_FORM_TOKENS
+    return component_tokens <= evidence_tokens and bool(evidence_form_tokens)
+
+
+_IDENTITY_GENERIC_TOKENS = frozenset({
+    "based", "coated", "coating", "composite", "composites", "fiber",
+    "fibers", "fibre", "fibres", "laminate", "laminates", "loading",
+    "material", "materials", "sample", "samples", "specimen", "specimens",
+    "thread", "threads", "wt", "vol", "mol",
+})
+
+
+def _distinctive_identity_tokens(identity: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[a-z][a-z0-9]*", normalize_for_match(identity))
+        if token not in _IDENTITY_GENERIC_TOKENS
+        and not re.fullmatch(r"\d+(?:\.\d+)?(?:wt|vol|mol)?", token)
+    }
+
+
+def _coordinated_loading_identity_appears(identity: str, evidence: str) -> bool:
+    """Match ``2 and 4 wt %`` when the sample ID encodes the first loading."""
+    loading = re.search(
+        r"(?i)(?<![\d.])(\d+(?:\.\d+)?)\s*(?:wt|vol|mol)(?:\s*%)?",
+        identity,
+    )
+    if not loading:
+        return False
+    target = f"{float(loading.group(1)):g}"
+    material_tokens = _distinctive_identity_tokens(identity)
+    if not material_tokens:
+        return False
+    series_re = re.compile(
+        r"(?i)(?P<values>\d+(?:\.\d+)?(?:\s*(?:,|and)\s*"
+        r"\d+(?:\.\d+)?)+)\s*(?:(?:wt|vol|mol)\s*)?%"
+    )
+    for match in series_re.finditer(evidence or ""):
+        values = {
+            f"{float(value):g}"
+            for value in re.findall(r"\d+(?:\.\d+)?", match.group("values"))
+        }
+        if target not in values:
+            continue
+        window = evidence[max(0, match.start() - 100):match.end() + 100]
+        window_tokens = set(re.findall(r"[a-z][a-z0-9]*", window.lower()))
+        if material_tokens & window_tokens:
+            return True
+    return False
+
+
+def _zero_loading_control_identity_appears(identity: str, evidence: str) -> bool:
+    loading = re.search(
+        r"(?i)(?<![\d.])0(?:\.0+)?\s*(?:wt|vol|mol)(?:\s*%)?",
+        identity,
+    )
+    if not loading or not re.search(
+        r"(?i)\b(?:uncoated|untreated|unmodified|control|baseline)\b",
+        evidence or "",
+    ):
+        return False
+    material_tokens = _distinctive_identity_tokens(identity)
+    evidence_tokens = set(re.findall(r"[a-z][a-z0-9]*", (evidence or "").lower()))
+    return bool(material_tokens & evidence_tokens)
+
+
+def _unordered_table_axis_identity_appears(identity: str, fact: dict) -> bool:
+    if fact.get("extraction_method") not in {
+        "AI_holistic_table", "rule_table_performance",
+    }:
+        return False
+    evidence = str(fact.get("evidence_text") or "")
+    condition = str(fact.get("condition") or "")
+    axes = re.findall(r"(?im)^\[column identity\]\s*([^\r\n]+)", evidence)
+    axes.extend(re.findall(r"(?i)(?:^|;\s*)axis\s*=\s*([^;]+)", condition))
+    if not axes:
+        return False
+    sid_tokens = set(re.findall(r"[a-z]+\d+|\d+[a-z]+|[a-z]{3,}", identity.lower()))
+    code_tokens = {token for token in sid_tokens if re.fullmatch(r"[a-z]+\d+|\d+[a-z]+", token)}
+    material_tokens = {
+        token for token in sid_tokens
+        if token not in _IDENTITY_GENERIC_TOKENS and token not in code_tokens
+    }
+    for axis in axes:
+        axis_tokens = set(re.findall(r"[a-z]+\d+|\d+[a-z]+|[a-z]{3,}", axis.lower()))
+        if code_tokens and not code_tokens <= axis_tokens:
+            continue
+        if material_tokens and not (material_tokens & axis_tokens):
+            continue
+        if code_tokens:
+            return True
+    return False
+
+
+def _process_family_identity_appears(identity: str, evidence: str) -> bool:
+    normalized = normalize_for_match(identity)
+    return bool(
+        re.search(r"(?i)\btufted\b", normalized)
+        and re.search(r"(?i)\btufting\b", evidence or "")
+        and re.search(r"(?i)\b(?:composite|laminate|preform)\b", normalized)
+    )
+
+
+def _incorporated_material_identity_appears(identity: str, evidence: str) -> bool:
+    normalized = normalize_for_match(identity)
+    match = re.fullmatch(
+        r"(?P<additive>[a-z0-9]{3,})[\s_-]+incorporated[\s_-]+(?P<base>.+)",
+        normalized,
+    )
+    if not match or len(match.group("base").split()) < 3:
+        return False
+    additive = re.escape(match.group("additive"))
+    evidence_normalized = normalize_for_match(evidence)
+    incorporation_bound = re.search(
+        rf"(?<![a-z0-9]){additive}(?![a-z0-9]).{{0,45}}\bincorporat\w*\b|"
+        rf"\bincorporat\w*\b.{{0,45}}(?<![a-z0-9]){additive}(?![a-z0-9])",
+        evidence_normalized,
+    )
+    return bool(
+        incorporation_bound
+        and _identity_appears_in_evidence(match.group("base"), evidence)
+    )
+
+
+def _carbon_fiber_carbon_identity_appears(identity: str, evidence: str) -> bool:
+    normalized = normalize_for_match(identity)
+    return bool(
+        re.fullmatch(r"c\s*/\s*c(?:\s+composite)?", normalized)
+        and re.search(r"(?i)(?<![a-z0-9])Cf\s*[-‐‑–—/]\s*C(?![a-z0-9])", evidence)
+    )
+
+
+def _identity_alias_variants(identity: str) -> tuple[str, ...]:
+    text = str(identity or "").strip()
+    variants = [text] if text else []
+    if len(text) > 3 and text.endswith("s") and not text.endswith("ss"):
+        variants.append(text[:-1])
+    return tuple(dict.fromkeys(variants))
+
+
+def _table_column_alias_appears(identity: str, evidence: str) -> bool:
+    parts = [
+        part
+        for part in re.split(r"[\s_/-]+", str(identity or "").strip())
+        if part
+    ]
+    if not parts:
+        return False
+    identity_pattern = r"[\s_/-]+".join(re.escape(part) for part in parts)
+    for line in str(evidence or "").splitlines():
+        if not line.lstrip().lower().startswith("[columns]"):
+            continue
+        for cell in line.split("\t")[1:]:
+            if re.match(
+                rf"^\s*{identity_pattern}\s+/\s+\S",
+                cell,
+                re.IGNORECASE,
+            ):
+                return True
+    return False
+
+
 def _check_sample_id_in_evidence(fact: dict) -> str | None:
     """Check 1: sample_id must appear in evidence_text."""
+    if fact.get("_table_assignment_conflict"):
+        return "conflicting_table_sample_assignments"
     sid = str(fact.get("assigned_sample_id") or "").strip()
     evidence = str(fact.get("evidence_text") or "")
     if not sid or not evidence:
@@ -123,9 +325,11 @@ def _check_sample_id_in_evidence(fact: dict) -> str | None:
         except (json.JSONDecodeError, TypeError):
             aliases = [aliases]
     if any(
-        _identity_appears_in_evidence(str(alias), evidence)
+        _identity_appears_in_evidence(alias_variant, evidence)
+        or _table_column_alias_appears(alias_variant, evidence)
         for alias in aliases
-        if normalize_for_match(str(alias))
+        for alias_variant in _identity_alias_variants(str(alias))
+        if normalize_for_match(alias_variant)
     ):
         return None
     sid_fractions = list(re.finditer(
@@ -134,10 +338,14 @@ def _check_sample_id_in_evidence(fact: dict) -> str | None:
     ))
     sid_fraction = sid_fractions[-1] if sid_fractions else None
     if sid_fraction and re.search(
-        rf"(?i)(?<![\d.]){re.escape(sid_fraction.group(1))}(?![\d.])\s*%"
-        r".{0,50}\b(?:fib(?:er|re)|filler|reinforcement|loading|fraction|content)\b|"
-        r"\b(?:fib(?:er|re)|filler|reinforcement|loading|fraction|content)\b"
-        rf".{{0,50}}(?<![\d.]){re.escape(sid_fraction.group(1))}(?![\d.])\s*%",
+        rf"(?i)(?<![\d.]){re.escape(sid_fraction.group(1))}(?![\d.])\s*"
+        r"(?:(?:wt|vol|mol)\s*)?%"
+        r".{0,60}\b(?:fib(?:er|re)|filler|reinforcement|loading|fraction|content|"
+        r"concentration|coat(?:ing|ed)?|silica)\b|"
+        r"\b(?:fib(?:er|re)|filler|reinforcement|loading|fraction|content|"
+        r"concentration|coat(?:ing|ed)?|silica)\b"
+        rf".{{0,60}}(?<![\d.]){re.escape(sid_fraction.group(1))}(?![\d.])\s*"
+        r"(?:(?:wt|vol|mol)\s*)?%",
         evidence,
     ):
         return None
@@ -149,6 +357,20 @@ def _check_sample_id_in_evidence(fact: dict) -> str | None:
         return None
     if _composition_loading_identity_appears(sid, evidence):
         return None
+    if _component_form_identity_appears(sid, evidence):
+        return None
+    if _coordinated_loading_identity_appears(sid, evidence):
+        return None
+    if _zero_loading_control_identity_appears(sid, evidence):
+        return None
+    if _unordered_table_axis_identity_appears(sid, fact):
+        return None
+    if _process_family_identity_appears(sid, evidence):
+        return None
+    if _incorporated_material_identity_appears(sid, evidence):
+        return None
+    if _carbon_fiber_carbon_identity_appears(sid, evidence):
+        return None
     control_base = re.sub(
         r"(?i)[\s_/-]+(?:control|reference|baseline)\s*$",
         "",
@@ -157,7 +379,14 @@ def _check_sample_id_in_evidence(fact: dict) -> str | None:
     if control_base != sid and _identity_appears_in_evidence(control_base, evidence):
         return None
     # Try base name without form suffix
-    base = re.sub(r"\s+(aerogel|nanofiber|nanofibers|film|membrane|foam|coating|powder|hydrogel|fiber|composite|laminate)s?$", "", sid_display, flags=re.I).strip()
+    base = re.sub(
+        r"\s+(aerogel|nanofiber|nanofibers|film|membrane|foam|coating|"
+        r"powder|hydrogel|fiber|filament|thread|yarn|composite|laminate|solvent|"
+        r"reagent)s?$",
+        "",
+        sid_display,
+        flags=re.I,
+    ).strip()
     if base:
         base_norm = normalize_for_match(base)
         if _identity_appears_in_evidence(base, evidence):
@@ -380,7 +609,12 @@ def _check_value_belongs_to_metric(fact: dict) -> str | None:
     pairs = parse_metric_value_pairs(evidence)
     if len(pairs) < 2:
         return None
-    matched_metrics = [m for m, v in pairs if _numbers_equal(v, value)]
+    unit = str(fact.get("unit") or "")
+    matched_metrics = [
+        canonicalize_metric_name(m, evidence=evidence, unit=unit)
+        for m, v in pairs
+        if _numbers_equal(v, value)
+    ]
     if matched_metrics and metric not in matched_metrics:
         return f"value_belongs_to_{matched_metrics[0]}_not_{metric}"
     return None
@@ -408,6 +642,7 @@ def _check_condition_not_as_value(fact: dict) -> str | None:
             return "cycle_count_as_performance_value"
     if unit in ("°c", "c") and metric not in (
         "surface_temperature", "glass_transition_temperature",
+        "cold_crystallization_temperature",
         "decomposition_temperature", "onset_decomposition_temperature",
         "austenite_start_temperature", "austenite_finish_temperature",
         "martensite_start_temperature", "martensite_finish_temperature",
@@ -510,5 +745,6 @@ def run_final_checklist(facts: list[dict]) -> list[dict]:
                 )
         else:
             fact["_checklist_failed"] = False
+            fact.pop("_checklist_failures", None)
 
     return facts

@@ -21,6 +21,11 @@ from app.services.validation import (
 _IMIDIZATION_RE = re.compile(r"(?is)imidization|imidisation|imide|酰亚胺")
 _PI1_EVIDENCE_RE = re.compile(r"(?i)\bPI\s*1\b|\bPI1\b")
 _PI1_AEROGEL_RE = re.compile(r"(?i)\bPI\s*1\s+aerogel\b|\bPI1\s+aerogel\b")
+_QUALIFIED_PERCENT_UNIT_RE = re.compile(
+    r"(?is)^\s*(?:\[\s*)?(?:%|percent)(?:\s*\])?\s*"
+    r"(?P<qualifier>(?:higher|lower|greater|less|more|fewer|"
+    r"increase|decrease|improv|relative|compar|than)\b.*)$"
+)
 
 
 def _append_reason(existing: Any, suffix: str) -> str:
@@ -28,6 +33,67 @@ def _append_reason(existing: Any, suffix: str) -> str:
     if suffix in text:
         return text
     return f"{text}; {suffix}".strip("; ") if text else suffix
+
+
+def _append_condition(fact: dict, value: str) -> None:
+    value = str(value or "").strip()
+    if not value:
+        return
+    existing = str(fact.get("condition") or "").strip()
+    if value.lower() in existing.lower():
+        return
+    fact["condition"] = f"{existing}; {value}".strip("; ") if existing else value
+
+
+def _split_qualified_percent_unit(fact: dict) -> dict:
+    unit = str(fact.get("unit") or "").strip()
+    match = _QUALIFIED_PERCENT_UNIT_RE.fullmatch(unit)
+    if not match:
+        return fact
+    fact["unit"] = "%"
+    _append_condition(fact, match.group("qualifier"))
+    return fact
+
+
+def _append_temperature_label_condition(
+    fact: dict,
+    *,
+    raw_metric: str,
+    canonical_metric: str,
+    context: str,
+) -> None:
+    label_context = f"{raw_metric} {context}"
+    if canonical_metric == "melting_temperature":
+        peak_match = re.search(
+            r"(?i)\bt\s*[_ -]?\s*\{?\s*m\s*(\d+)\s*\}?",
+            label_context,
+        )
+        if peak_match:
+            _append_condition(fact, f"melting peak {peak_match.group(1)}")
+        return
+    if canonical_metric != "decomposition_temperature":
+        return
+    if re.search(r"(?i)\b(?:t[_ -]?onset|onset)\b", label_context):
+        _append_condition(fact, "onset temperature")
+    elif re.search(r"(?i)\b(?:t[_ -]?max|tmax|max[_ -]?t)\b", label_context):
+        _append_condition(fact, "maximum mass-loss-rate temperature")
+    loss_match = re.search(
+        r"(?i)\b(\d+(?:\.\d+)?)\s*%\s*"
+        r"(?:mass|weight)\s+loss\b",
+        label_context,
+    )
+    if not loss_match:
+        loss_match = re.search(
+            r"(?i)\bt\s*[_ -]?\s*\{?\s*-\s*"
+            r"(\d+(?:\.\d+)?)\s*%\s*\}?|"
+            r"\btd\s*[_ -]?(\d+(?:\.\d+)?)\s*%?\b",
+            raw_metric,
+        )
+    if loss_match:
+        loss_value = next(
+            group for group in loss_match.groups() if group is not None
+        )
+        _append_condition(fact, f"at {loss_value}% mass loss")
 
 
 _STRUCTURE_FEATURE_METRICS = frozenset({
@@ -76,10 +142,12 @@ def _fix_imidization_metric(fact: dict) -> dict:
 
 
 def _resolve_metric_unit(fact: dict) -> dict:
+    fact = _split_qualified_percent_unit(fact)
     metric = str(fact.get("metric_or_parameter") or "")
     unit = str(fact.get("unit") or "")
     evidence = str(fact.get("evidence_text") or "")
     method = str(fact.get("method") or "")
+    raw_metric = metric
     if not metric:
         return fact
 
@@ -92,6 +160,12 @@ def _resolve_metric_unit(fact: dict) -> dict:
     if canonical:
         fact["metric_or_parameter"] = canonical
         metric = canonical
+        _append_temperature_label_condition(
+            fact,
+            raw_metric=raw_metric,
+            canonical_metric=canonical,
+            context=f"{method} {evidence}",
+        )
     if not unit:
         return fact
     canonical = canonical or find_metric_canonical(metric) or metric

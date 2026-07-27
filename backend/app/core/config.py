@@ -62,7 +62,7 @@ class Settings(BaseSettings):
     DEFAULT_PARSER_STRATEGY: str = "mineru_cloud"
     DEFAULT_LLM_PROVIDER: str = "openai"
     DEFAULT_LLM_BASE_URL: str = "https://aigw.sotatts.online/v1"
-    DEFAULT_LLM_MODEL: str = "gpt-5.6-luna"
+    DEFAULT_LLM_MODEL: str = "gpt-5.5"
     # Weak-mode throughput limits (batch literature extraction)
     WEAK_MAX_PRIORITY_CHUNKS: int = 8
     WEAK_MAX_FACT_CHUNKS: int = 35

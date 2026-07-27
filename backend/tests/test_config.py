@@ -42,7 +42,7 @@ def test_default_llm_uses_gpt55_gateway_with_batch_budget():
     settings = Settings(DEBUG=False, _env_file=None)
     assert settings.DEFAULT_LLM_PROVIDER == "openai"
     assert settings.DEFAULT_LLM_BASE_URL == "https://aigw.sotatts.online/v1"
-    assert settings.DEFAULT_LLM_MODEL == "gpt-5.6-luna"
+    assert settings.DEFAULT_LLM_MODEL == "gpt-5.5"
     assert settings.EXTRACTION_MAX_CONCURRENT_JOBS == 3
     assert settings.EXTRACTION_MAX_ATTEMPTS == 2
     assert settings.EXTRACTION_PIPELINE_TIMEOUT_SECONDS == 1800

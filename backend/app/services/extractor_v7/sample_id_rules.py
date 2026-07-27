@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import re
 
-from app.services.grouping import normalize_for_match, normalize_sample_id
+from app.services.grouping import (
+    is_narrative_sample_phrase,
+    normalize_for_match,
+    normalize_sample_id,
+)
 from app.services.metrics_dictionary import (
     find_metric_canonical,
     find_structure_feature_canonical,
@@ -55,6 +59,62 @@ _SEMICOLON_CONTEXT_SUFFIX_RE = re.compile(
 _ANAPHORIC_SAMPLE_PREFIX_RE = re.compile(
     r"(?i)^(?:that|those|this|these)\s+of\s+"
 )
+_TABLE_ROW_SUFFIX_RE = re.compile(
+    r"(?i)\s*[\[(]?\s*row\s+\d+\s*[\])]?[\s,;:]*$"
+)
+_DEVICE_ONLY_SAMPLE_RE = re.compile(
+    r"(?i)^(?:(?:[a-z0-9]{1,12}\s+)?(?:tufting|sewing)\s+needles?|"
+    r"(?:[a-z0-9]{1,12}\s+)?tufting\s+machine|"
+    r"(?:tn|sn)\s*\d+(?:\.\d+)?\s+needles?|"
+    r"needles?(?:\s+(?:type|code|diameter|specification))?)$"
+)
+_GENERIC_COLLECTION_SAMPLE_RE = re.compile(
+    r"(?i)^(?:(?:one|two|three|four|five|six)|\d+)\s+"
+    r"(?:types?|kinds?|groups?)\s+of\s+.+\b"
+    r"(?:materials?|samples?|specimens?|composites?)$"
+)
+_MEASUREMENT_LABEL_SAMPLE_RE = re.compile(
+    r"(?i)^.{0,60}\b(?:channel\s+width|width|diameter|length|thickness|"
+    r"speed|rate|force|temperature|pressure)\s+"
+    r"(?:mm|cm|m|um|nm|mpa|gpa|kpa|pa|n|kn|%|wt\s*%)$"
+)
+_INCOMPLETE_SAMPLE_ACTION_RE = re.compile(
+    r"(?i)^(?:specimens?|samples?)\s+"
+    r"(?:coated|treated|reinforced|modified|aged|conditioned)\s+"
+    r"(?:with|at|by)\s+\d+(?:\.\d+)?(?:\s*(?:wt|vol|mol)?\s*%?)?$"
+)
+_PREPARATION_ONLY_SAMPLE_RE = re.compile(
+    r"(?i)^(?:crushed|ground|cut|chopped|polished)\s+"
+    r"(?:specimens?|samples?|materials?)$"
+)
+_LOADING_OF_FRAGMENT_RE = re.compile(
+    r"(?i)^\d+(?:\.\d+)?\s*(?:(?:wt|vol|mol)\s*)?%\s+of\s+.+$"
+)
+
+
+def _nonmaterial_sample_reason(sample_id: str) -> str:
+    words = re.sub(r"[_/-]+", " ", normalize_for_match(sample_id)).strip()
+    if not words:
+        return ""
+    if _DEVICE_ONLY_SAMPLE_RE.fullmatch(words):
+        return "sample_id_was_apparatus"
+    if _GENERIC_COLLECTION_SAMPLE_RE.fullmatch(words):
+        return "sample_id_was_generic_collection"
+    if _MEASUREMENT_LABEL_SAMPLE_RE.fullmatch(words):
+        return "sample_id_was_measurement_label"
+    if _INCOMPLETE_SAMPLE_ACTION_RE.fullmatch(words):
+        return "sample_id_was_incomplete_action_phrase"
+    if _PREPARATION_ONLY_SAMPLE_RE.fullmatch(words):
+        return "sample_id_was_preparation_only"
+    if _LOADING_OF_FRAGMENT_RE.fullmatch(words):
+        return "sample_id_was_loading_fragment"
+    if re.match(r"(?i)^(?:of|from|with|under|during)\b", words):
+        return "sample_id_was_incomplete_prepositional_phrase"
+    if re.search(r"(?i)\bobtained\s+in\s+this\s+study\b", words):
+        return "sample_id_was_narrative_phrase"
+    if re.search(r"(?i)\ball\s+(?:coating\s+)?concentrations?\b", words):
+        return "sample_id_was_aggregate_condition_phrase"
+    return ""
 
 
 def is_condition_only_label(text: str) -> bool:
@@ -149,6 +209,22 @@ def sanitize_sample_id(sample_id: str, evidence: str = "") -> tuple[str, str, li
     if not sid:
         return "", "", notes
 
+    cleaned_row_suffix = _TABLE_ROW_SUFFIX_RE.sub("", sid).strip(" ,;:.()[]")
+    if cleaned_row_suffix != sid:
+        sid = normalize_sample_id(cleaned_row_suffix)
+        notes.append("removed_table_row_suffix_from_sample_id")
+    if not sid:
+        return "", "", notes
+
+    if is_narrative_sample_phrase(sid):
+        notes.append("sample_id_was_narrative_phrase")
+        return "", "", notes
+
+    nonmaterial_reason = _nonmaterial_sample_reason(sid)
+    if nonmaterial_reason:
+        notes.append(nonmaterial_reason)
+        return "", "", notes
+
     if is_condition_only_label(sid):
         notes.append("sample_id_was_condition_only")
         return "", sid, notes
@@ -157,6 +233,10 @@ def sanitize_sample_id(sample_id: str, evidence: str = "") -> tuple[str, str, li
     if anaphoric:
         sid = normalize_sample_id(sid[anaphoric.end():])
         notes.append("stripped_anaphoric_sample_prefix")
+
+    if not sid:
+        notes.append("sample_id_was_empty_after_cleanup")
+        return "", "", notes
 
     if " of " in sid.lower():
         prefix, remainder = re.split(r"(?i)\s+of\s+", sid, maxsplit=1)

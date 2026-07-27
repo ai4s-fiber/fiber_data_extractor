@@ -48,7 +48,7 @@ fiber_data_extractor/
 - Node.js 20.19+
 - npm 10+
 - Docker Desktop（可选，仅 Docker Compose 部署需要）
-- LLM API Key（仅启动 AI 抽取时需要，在项目设置页填写；默认 OpenAI-compatible 模型为 `gpt-5.6-luna`）
+- LLM API Key（仅启动 AI 抽取时需要，在项目设置页填写；默认 OpenAI-compatible 模型为 `gpt-5.5`）
 - `MINERU_CLOUD_TOKEN`（正式抽取默认使用 MinerU Cloud；不配置时抽取会失败并提示）
 
 ## 获取代码
@@ -110,7 +110,7 @@ Docker Compose 默认启用 PostgreSQL、Redis、后端和前端，前端入口�
 ## 功能配置
 
 - 基础工作区功能（项目、文献上传、候选记录复核、Excel 导出）不需要登录。
-- AI 抽取必须在项目设置页配置 `llm_provider`、`llm_base_url`、`llm_model` 和 `llm_api_key`。默认值为 `openai` / `https://aigw.sotatts.online/v1` / `gpt-5.6-luna`。
+- AI 抽取必须在项目设置页配置 `llm_provider`、`llm_base_url`、`llm_model` 和 `llm_api_key`。默认值为 `openai` / `https://aigw.sotatts.online/v1` / `gpt-5.5`。
 - 默认 PDF 解析策略是 `mineru_cloud`，正式抽取使用 MinerU Cloud VLM 解析 PDF 版式、表格和结构。系统会保存 MinerU Markdown/JSON 产物；同一文献、同一解析配置重新抽取时会优先复用产物，避免重复消耗 MinerU 配额。
 - 必须在 `.env` 中配置 `MINERU_CLOUD_TOKEN` 后再启动抽取；未配置或 Cloud 解析失败时系统会直接失败并提示，不会自动退回本地 MinerU 或传统纯文本解析。
 - 可选解析策略 `mineru_local_sync` 使用 MinerU 官方本地 `mineru-api /file_parse` 同步接口；适合单篇兼容调用。自建 GPU 批处理优先使用 MinerU 异步 `/tasks` 与 `mineru-router`，避免同步请求长期占用连接。默认仍使用 MinerU Cloud。
@@ -162,7 +162,7 @@ $env:LLM_METRICS_DIR="./reports/llm_metrics"
 python scripts\benchmark\run_extraction_benchmark.py `
   --pdf-dir benchmark_pdfs `
   --api-key-env AIGW_API_KEY `
-  --model gpt-5.6-luna `
+  --model gpt-5.5 `
   --base-url https://aigw.sotatts.online/v1 `
   --model-mode strong `
   --parser-strategy mineru_cloud `
@@ -171,7 +171,7 @@ python scripts\benchmark\run_extraction_benchmark.py `
 
 ## 工程批量抽取
 
-`run_bulk_extraction.py` 面向数千篇本地 PDF。它先按 SHA-256 去重，再使用 MinerU Cloud 官方 v4 批量上传接口预解析；每篇完成后立即写入共享缓存并进入 `gpt-5.6-luna` 强抽取队列，不会等待同批最慢文献。应用任务和 MinerU 远端批次都会持久化，同一命令中断后重跑即可续传、续查和跳过已完成文献。
+`run_bulk_extraction.py` 面向数千篇本地 PDF。它先按 SHA-256 去重和分层抽样，再对最终入选文献执行 30 GiB 输出容量预检，随后使用 MinerU Cloud 官方 v4 批量上传接口预解析；每篇完成后立即写入共享缓存并进入 `gpt-5.5` 强抽取队列，不会等待同批最慢文献。应用任务和 MinerU 远端批次都会持久化，同一命令中断后重跑即可续传、续查和跳过已完成文献。
 
 运行批量命令时，不要同时启动另一个连接同一数据库的后端抽取 worker：
 
@@ -184,18 +184,22 @@ $env:MINERU_CLOUD_TOKEN="你的 MinerU Token"
 python scripts\ops\run_bulk_extraction.py `
   --pdf-dir "E:\数据\创智的paper" `
   --dry-run `
-  --report-dir ".\reports\bulk-preflight"
+  --max-output-gb 30 `
+  --report-dir "E:\数据\创智的paper\_fiber_extraction_output\bulk-preflight\reports"
 
 # 预检报告确认后启动正式抽取
 python scripts\ops\run_bulk_extraction.py `
   --pdf-dir "E:\数据\创智的paper" `
   --project-name "Fiber corpus" `
-  --model gpt-5.6-luna `
+  --model gpt-5.5 `
   --batch-size 20 `
-  --max-jobs 3
+  --max-jobs 3 `
+  --max-output-gb 30
 ```
 
 - 默认使用硬链接把语料纳入 `uploads/`，源目录与项目不在同一磁盘时自动退回复制；不会修改原始 PDF。
+- 容量预检在去重、相关性过滤和分层抽样完成后执行，只估算本次最终入选文献；默认 `--max-output-gb 30`，预计产物超限时会在 MinerU/LLM 调用和文件上传前退出。
+- 扫描会自动排除当前报告、上传、解析缓存和 `_fiber_extraction_output` 目录，避免续跑时把生成物重新当作输入；其他目录可重复传入 `--exclude-dir` 排除。
 - 单篇 PDF 在本地哈希、页数或前两页预检阶段发生异常时，会被记录到 `preflight_rejected_files` 并继续处理其余文献，不会因为一个损坏或暂时不可读的文件中断整批；最终报告会将该批标记为需要复核。
 - 默认启用保守型本地相关性预筛。它只用成熟的 `pypdf` 读取元数据和前两页，经过 Unicode 规范化后跳过明确综述、书评、勘误、撤稿和纯临床噪声；仅仅“前两页未出现纤维关键词”不会被跳过，文本不足或判断模糊的论文仍提交 MinerU。报告中的 `relevance_skipped_files` 可逐篇审计，使用 `--include-prefilter-rejected` 可强制纳入。
 - 默认跳过已完成和失败文献，并以每篇论文最新一条任务记录为准。确认要重试最新失败项时增加 `--retry-failed`，确认要重新抽取最新已完成项时增加 `--reextract-completed`；旧成功记录不会再阻止最新失败任务重试。
@@ -218,10 +222,10 @@ python scripts\ops\run_bulk_extraction.py `
 - `LLM_GLOBAL_MAX_CONCURRENT_CALLS=16`：进程内所有 LLM 请求共享总并发闸门。
 - `LLM_BATCH_MAX_CONCURRENT_CALLS=12`：批量文献抽取的并发上限；实际预算还会受全局上限和预留通道约束。
 - `LLM_INTERACTIVE_RESERVED_CALLS=4`：从全局 LLM 并发中显式预留日常调用通道；系统会在保证已启动任务至少可前进的前提下压缩批量预算。
-- `LLM_DEFAULT_REASONING_EFFORT=low`：GPT-5.6-luna 强抽取默认使用低思考档；保留多阶段证据校验，同时减少长思考造成的延迟和 Token 消耗。
+- `LLM_DEFAULT_REASONING_EFFORT=low`：GPT-5.5 强抽取默认使用低思考档；保留多阶段证据校验，同时减少长思考造成的延迟和 Token 消耗。
 - `LLM_REQUEST_MAX_RETRIES=3`：只重试 429、可恢复的 5xx 和连接故障；长生成读超时交给更小窗口的阶段回退，避免重复支付同一大请求。
 - `LLM_RETRY_BASE_SECONDS=1.0` / `LLM_RETRY_MAX_SECONDS=20.0`：所有并发调用共享网关冷却窗口，并采用尊重 `Retry-After` 的带抖动指数退避。
-- `STRONG_HOLISTIC_PERFORMANCE_WINDOW_CHARS=6000`：按 MinerU 块边界切分 Results，并行调用 `gpt-5.6-luna`，降低大窗口长尾超时。
+- `STRONG_HOLISTIC_PERFORMANCE_WINDOW_CHARS=6000`：按 MinerU 块边界切分 Results，并行调用 `gpt-5.5`，降低大窗口长尾超时。
 - `STRONG_HOLISTIC_CATALOG_RETRY_ENABLED=true`：样品目录返回空时只做一次小窗口重试，避免直接触发完整原子 Stage 1 扫描。
 - `STRONG_HOLISTIC_CATALOG_RETRY_MAX_CHARS=8000` / `STRONG_HOLISTIC_CATALOG_RETRY_MAX_TOKENS=1800`：限定目录重试的上下文和输出预算；重试仍为空才进入现有回退链路。
 - `STRONG_HOLISTIC_RESULT_MIN_SCORE=4`：Holistic 性能扫表只优先发送包含定量值或强指标信号的结果块；低于阈值的块仍保留在 Stage 2 回退链路中。

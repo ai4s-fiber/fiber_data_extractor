@@ -38,6 +38,9 @@ def normalize_scientific_text(text: str) -> str:
     raw = raw.translate(_SUPERSCRIPT_MAP)
     raw = raw.replace("−", "-").replace("–", "-").replace("—", "-")
     raw = raw.replace("×", "x").replace("·", "*")
+    raw = re.sub(r"(?i)\\(?:times|cdot)\b", "x", raw)
+    raw = re.sub(r"\^\s*\{\s*([+-]?\d+)\s*\}", r"^\1", raw)
+    raw = raw.replace("$", "")
     return raw.replace(",", "")
 
 

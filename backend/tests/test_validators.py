@@ -137,3 +137,22 @@ def test_figure_result_keeps_own_value_despite_literature_tail():
     }
 
     assert is_background_or_reference_fact(fact) is False
+
+
+def test_measured_current_values_override_previous_reported_caption_tail():
+    fact = {
+        "fact_type": "performance",
+        "_chunk_section": "results",
+        "assigned_sample_id": "P-BN fiber",
+        "metric_or_parameter": "thermal_conductivity",
+        "value": "39.5",
+        "unit": "W m^-1 K^-1",
+        "evidence_text": (
+            "The measured kappa of P-BN fiber and C-BN fiber are 39.5 +/- 1.6 "
+            "and 53.9 +/- 1.4 W m-1 K-1, respectively. "
+            "[figure caption] The pure BN fibers in this work are compared "
+            "with previously reported composite material fibers."
+        ),
+    }
+
+    assert is_background_or_reference_fact(fact) is False
