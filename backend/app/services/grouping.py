@@ -95,12 +95,53 @@ def _is_generic_sample_name(sample_id: str) -> bool:
 
 
 _PROPERTY_ONLY_SAMPLE_RE = re.compile(
-    r"(?i)^(?:hydrophilicity|hydrophobicity|wettability|conductivity|"
+    r"(?i)^(?:initial\s+)?(?:hydrophilicity|hydrophobicity|wettability|"
+    r"(?:electrical\s+)?conductivity|mechanical\s+strength|"
     r"resistivity|strength|modulus|elongation|crystallinity|porosity|density|"
     r"roughness|hardness|toughness|permittivity|dielectric(?:\s+loss)?|"
     r"(?:water\s+)?contact\s+angle|pH|band\s*gap|transmittance|reflectance|"
     r"absorbance|absorption|sensitivity)(?:\s+(?:value|result|property))?$"
 )
+_COMPARATIVE_REFERENCE_SAMPLE_RE = re.compile(
+    r"(?i)^compared\s+(?:with|to)\s+(?:that|those)\s+of\s+"
+    r"(?:the\s+)?(?P<sample>.+)$"
+)
+_PROPERTY_REFERENCE_SAMPLE_RE = re.compile(
+    r"(?i)^mechanical\s+strength\s+of\s+(?:the\s+)?(?P<sample>.+)$"
+)
+_REFERENCE_FRAGMENT_SAMPLE_RE = re.compile(
+    r"(?i)^(?:"
+    r"to|of|from|with|under|during|by|at|for|and|or|"
+    r"it|its|they|them|their|we|our|"
+    r"(?:its|their|our)\s+(?:(?:original|initial|current|previous)\s+)?"
+    r"(?:intensity|value|result|level|state|condition|performance|"
+    r"counterpart|sample|material)"
+    r")$"
+)
+
+
+def is_property_only_sample_label(sample_id: str) -> bool:
+    """Return whether a label names a measured property, not a material."""
+    return bool(_PROPERTY_ONLY_SAMPLE_RE.fullmatch(normalize_for_match(sample_id)))
+
+
+def strip_nonmaterial_sample_prefix(sample_id: str) -> tuple[str, str]:
+    """Recover an explicit material name embedded in a comparison/property phrase."""
+    sid = normalize_sample_id(sample_id)
+    for pattern, note in (
+        (
+            _COMPARATIVE_REFERENCE_SAMPLE_RE,
+            "stripped_comparative_sample_prefix",
+        ),
+        (
+            _PROPERTY_REFERENCE_SAMPLE_RE,
+            "stripped_property_sample_prefix",
+        ),
+    ):
+        match = pattern.fullmatch(sid)
+        if match:
+            return normalize_sample_id(match.group("sample")), note
+    return sid, ""
 
 
 def is_narrative_sample_phrase(sample_id: str) -> bool:
@@ -169,9 +210,19 @@ def is_material_sample_id(sample_id: str) -> bool:
         return False
     if len(sid.split()) > 8 or re.search(r"[.!?]\s", sid):
         return False
+    if strip_nonmaterial_sample_prefix(sid)[1]:
+        return False
     if is_narrative_sample_phrase(sid):
         return False
-    if _is_generic_sample_name(sid) or _PROPERTY_ONLY_SAMPLE_RE.fullmatch(sid):
+    if _REFERENCE_FRAGMENT_SAMPLE_RE.fullmatch(normalized):
+        return False
+    if _is_generic_sample_name(sid) or is_property_only_sample_label(sid):
+        return False
+    if normalized == "not at all":
+        return False
+    if re.match(r"(?i)^(?:all|both|multiple|various)\s+", normalized):
+        return False
+    if re.search(r"(?i)\s+all(?:\s+types?)?$", normalized):
         return False
     if _is_joined_sample_list(sid):
         return False

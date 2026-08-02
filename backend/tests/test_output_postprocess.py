@@ -249,6 +249,38 @@ def test_metric_unit_mismatch_corrects_density():
     assert not out[0].get("_metric_unit_mismatch")
 
 
+def test_impact_strength_reported_in_joules_becomes_impact_energy():
+    facts = [{
+        "fact_type": "performance",
+        "metric_or_parameter": "impact strength",
+        "value": "3.5",
+        "unit": "J",
+        "evidence_text": "The maximum impact strength was 3.5 J.",
+        "assigned_sample_id": "JuteEpoxy_7wtNaOH",
+    }]
+
+    out = apply_pre_output_validation(facts, [])[0]
+
+    assert out["metric_or_parameter"] == "impact_energy"
+    assert not out.get("_metric_unit_mismatch")
+
+
+def test_surface_max_height_is_a_length_metric():
+    facts = [{
+        "fact_type": "performance",
+        "metric_or_parameter": "surface max height",
+        "value": "7",
+        "unit": "nm",
+        "evidence_text": "The functionalized fiber had a max height of 7 nm.",
+        "assigned_sample_id": "functionalized fiber",
+    }]
+
+    out = apply_pre_output_validation(facts, [])[0]
+
+    assert out["metric_or_parameter"] == "surface_maximum_height"
+    assert not out.get("_metric_unit_mismatch")
+
+
 def test_is_characterization_peak_metric_generic():
     assert is_characterization_peak_metric(
         "peak_position", method="FTIR", evidence="FTIR spectrum peak"

@@ -79,7 +79,7 @@ _TGA_TEMPERATURE_LABEL_RE = re.compile(
 
 
 def _compact_scientific_metric_label(value: str) -> str:
-    text = str(value or "").lower().replace("$", "")
+    text = str(value or "").lower().replace("$", "").replace("η", "eta")
     text = re.sub(r"\\(?:mathrm|text)\s*\{([^{}]*)\}", r"\1", text)
     text = text.replace("\\", "")
     return re.sub(r"[\s{}_^]+", "", text)
@@ -118,8 +118,14 @@ def canonicalize_metric_name(
         return "glass_transition_temperature"
     if scientific_key == "tcc":
         return "cold_crystallization_temperature"
+    if re.fullmatch(r"tc\d*", scientific_key):
+        return "crystallization_temperature"
     if re.fullmatch(r"tm\d*", scientific_key):
         return "melting_temperature"
+    if scientific_key == "eta0":
+        return "zero_shear_viscosity"
+    if scientific_key == "etasp":
+        return "specific_viscosity"
     if scientific_key in {"deltahcc", "dhcc"}:
         return "cold_crystallization_enthalpy"
     if scientific_key in {"deltahm", "dhm"}:
@@ -142,6 +148,12 @@ def canonicalize_metric_name(
     )
     registered_metric = find_metric_canonical(raw)
     known_metric = registered_metric or raw_key
+
+    if unit_key in {"j", "mj", "kj"} and (
+        known_metric in {"impact_strength", "impact_energy"}
+        or re.search(r"(?i)\bimpact\s+(?:strength|energy|work)\b", raw)
+    ):
+        return "impact_energy"
 
     if unit_key in _SPECIFIC_TENSILE_STRENGTH_UNITS and (
         known_metric in {"tensile_strength", "specific_tensile_strength"}
@@ -219,7 +231,7 @@ def canonicalize_metric_name(
         context_lower,
     ))
     if fracture_energy_context and (
-        unit_key in {"j/m3", "kj/m3", ""}
+        unit_key in {"j/m3", "kj/m3", "mj/m3", ""}
         or raw_key in {"fracture_energy", "fracture_energy_improvement"}
     ):
         return (
@@ -227,6 +239,15 @@ def canonicalize_metric_name(
             if relative_change
             else "fracture_energy"
         )
+
+    if unit_key in {"j/m3", "kj/m3", "mj/m3"} and (
+        known_metric in {"fracture_toughness", "toughness"}
+        or re.search(
+            r"(?i)\b(?:tensile\s+)?toughness(?:\s+modulus)?\b",
+            context_lower,
+        )
+    ):
+        return "toughness"
 
     if relative_change and (
         known_metric in {

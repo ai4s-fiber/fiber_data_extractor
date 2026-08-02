@@ -308,3 +308,34 @@ async def test_failed_job_keeps_previous_results_reviewable(
         assert await _count(
             db, CandidateRecord, CandidateRecord.source_paper_id == paper_id
         ) == 1
+
+
+@pytest.mark.asyncio
+async def test_completed_job_clears_stale_failure_diagnostics(
+    result_db, monkeypatch
+):
+    _, _, job_id = await _seed_previous_result(result_db, with_job=True)
+    backend = ExtractionJobBackend(result_db, 1)
+
+    async def noop(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(backend, "_push_event", noop)
+    monkeypatch.setattr(extraction_jobs.extraction_queue, "mark_finished", noop)
+    monkeypatch.setattr(extraction_jobs, "bump_project_cache", noop)
+
+    await backend.mark_failed(
+        job_id,
+        "PDF file not found",
+        error_code="pdf_parse_failed",
+        error_detail='{"error": "PDF file not found"}',
+    )
+    await backend.mark_completed(job_id)
+
+    async with result_db() as db:
+        job = await db.get(ExtractionJob, job_id)
+        assert job.status == "completed"
+        assert job.step == "completed"
+        assert job.error_code is None
+        assert job.error_message is None
+        assert job.error_detail is None

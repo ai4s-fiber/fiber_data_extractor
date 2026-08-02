@@ -3,6 +3,7 @@ import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { Layout, Menu, Select } from 'antd';
 import {
   AuditOutlined,
+  CloudSyncOutlined,
   ExportOutlined,
   FileTextOutlined,
   ProjectOutlined,
@@ -38,6 +39,7 @@ export default function WorkspaceLayout() {
   const menuItems = [
     { key: '/projects', icon: <ProjectOutlined />, label: '项目库' },
     { key: '/papers', icon: <FileTextOutlined />, label: '文献录入' },
+    { key: '/pipeline', icon: <CloudSyncOutlined />, label: '数据管道' },
     { key: '/review', icon: <AuditOutlined />, label: '数据复核' },
     { key: '/export', icon: <ExportOutlined />, label: '导出' },
     { key: '/settings', icon: <SettingOutlined />, label: '项目配置' },

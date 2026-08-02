@@ -149,6 +149,49 @@ def _component_form_identity_appears(identity: str, evidence: str) -> bool:
     return component_tokens <= evidence_tokens and bool(evidence_form_tokens)
 
 
+_CODED_COMPONENT_ALIASES: dict[str, re.Pattern[str]] = {
+    "pani": re.compile(r"(?i)\b(?:PANI|polyaniline)\b"),
+    "pc": re.compile(r"(?i)\bPC\b|\bpolyester\W{0,6}cotton\b"),
+    "cofe2o4": re.compile(r"(?i)\bCoFe\s*2\s*O\s*4\b|\bcobalt\s+ferrite\b"),
+    "cf": re.compile(r"(?i)\bCF\b|\bcarbon\s+fib(?:er|re)s?\b"),
+}
+
+
+def _coded_composite_identity_appears(
+    identity: str,
+    evidence: str,
+    condition: str = "",
+) -> bool:
+    """Ground compact composite codes through explicit material aliases."""
+    identity_tokens = {
+        token.lower()
+        for token in re.split(r"[\s_/-]+", str(identity or ""))
+        if token
+    }
+    alias_tokens = identity_tokens & _CODED_COMPONENT_ALIASES.keys()
+    if len(alias_tokens) < 3:
+        return False
+    if not all(_CODED_COMPONENT_ALIASES[token].search(evidence) for token in alias_tokens):
+        return False
+    if "fabric" in identity_tokens and not re.search(r"(?i)\bfabric\b", evidence):
+        return False
+
+    ratio = re.search(
+        r"(?<!\d)(\d+(?:\.\d+)?)\s*[-_:]\s*(\d+(?:\.\d+)?)\s*$",
+        identity,
+    )
+    if not ratio:
+        return True
+    left = re.escape(f"{float(ratio.group(1)):g}")
+    right = re.escape(f"{float(ratio.group(2)):g}")
+    target = rf"{left}\s*[:/_-]\s*{right}"
+    combined = f"{evidence} {condition}"
+    return bool(re.search(
+        rf"(?i)\bratio\b.{{0,80}}?{target}|{target}.{{0,40}}?\bratio\b",
+        combined,
+    ))
+
+
 _IDENTITY_GENERIC_TOKENS = frozenset({
     "based", "coated", "coating", "composite", "composites", "fiber",
     "fibers", "fibre", "fibres", "laminate", "laminates", "loading",
@@ -307,6 +350,48 @@ def _table_column_alias_appears(identity: str, evidence: str) -> bool:
     return False
 
 
+def _implicit_series_identity_appears(fact: dict) -> bool:
+    """Ground catalog aliases from a deterministic concentration-series row."""
+    if fact.get("extraction_method") != "rule_table_performance":
+        return False
+    axis = str(fact.get("_source_table_axis") or "").strip()
+    axis_value = str(fact.get("_source_table_axis_value") or "").strip()
+    row_number = fact.get("_source_table_row")
+    identity = str(fact.get("assigned_sample_id") or "").strip()
+    evidence = str(fact.get("evidence_text") or "")
+    if not axis or not axis_value or row_number is None or not identity:
+        return False
+    row_match = re.search(
+        rf"(?im)^\[row\s+{re.escape(str(row_number))}\]\s*(.*)$",
+        evidence,
+    )
+    if not row_match or not re.search(r"(?im)^\[columns\]\s*", evidence):
+        return False
+    if normalize_for_match(axis).split()[0] not in normalize_for_match(evidence):
+        return False
+    if normalize_for_match(axis_value) not in normalize_for_match(row_match.group(1)):
+        return False
+
+    identity_norm = normalize_for_match(identity)
+    identity_tokens = {
+        token
+        for token in re.findall(r"[a-z0-9]+", identity_norm)
+        if len(token) >= 3
+    }
+    evidence_norm = normalize_for_match(evidence)
+    if not identity_tokens & set(re.findall(r"[a-z0-9]+", evidence_norm)):
+        return False
+    if "solution" in identity_norm and not re.search(
+        r"(?i)\bsolutions?\b", evidence,
+    ):
+        return False
+    if re.search(r"(?i)\b(?:fiber|fibre|mat)\b", identity_norm) and not re.search(
+        r"(?i)\b(?:fiber|fibre|mat)\b", evidence,
+    ):
+        return False
+    return True
+
+
 def _check_sample_id_in_evidence(fact: dict) -> str | None:
     """Check 1: sample_id must appear in evidence_text."""
     if fact.get("_table_assignment_conflict"):
@@ -358,6 +443,10 @@ def _check_sample_id_in_evidence(fact: dict) -> str | None:
     if _composition_loading_identity_appears(sid, evidence):
         return None
     if _component_form_identity_appears(sid, evidence):
+        return None
+    if _coded_composite_identity_appears(
+        sid, evidence, str(fact.get("condition") or "")
+    ):
         return None
     if _coordinated_loading_identity_appears(sid, evidence):
         return None
@@ -458,6 +547,8 @@ def _check_sample_id_in_evidence(fact: dict) -> str | None:
     if fact.get("extraction_method") in {
         "AI_holistic_table", "rule_table_performance",
     }:
+        if _implicit_series_identity_appears(fact):
+            return None
         grounded_row = fact.get("_source_table_row")
         grounded_column = fact.get("_source_table_column")
         axis_match = re.search(
@@ -642,6 +733,7 @@ def _check_condition_not_as_value(fact: dict) -> str | None:
             return "cycle_count_as_performance_value"
     if unit in ("°c", "c") and metric not in (
         "surface_temperature", "glass_transition_temperature",
+        "crystallization_temperature",
         "cold_crystallization_temperature",
         "decomposition_temperature", "onset_decomposition_temperature",
         "austenite_start_temperature", "austenite_finish_temperature",

@@ -226,9 +226,22 @@ PERFORMANCE_CATEGORIES: dict[str, dict] = {
                 "synonyms": ["冲击强度", "impact strength"],
                 "common_units": ["kJ/m²", "J/m²"],
             },
+            "impact_energy": {
+                "synonyms": ["冲击能量", "impact energy", "impact work"],
+                "common_units": ["J", "mJ", "kJ"],
+            },
             "fracture_toughness": {
                 "synonyms": ["fracture toughness"],
                 "common_units": ["J/m²", "kJ/m²", "MPa·m^0.5"],
+            },
+            "toughness": {
+                "synonyms": [
+                    "toughness modulus",
+                    "tensile toughness",
+                    "韧性",
+                    "韧性模量",
+                ],
+                "common_units": ["J/m³", "kJ/m³", "MJ/m³"],
             },
             "fracture_energy": {
                 "synonyms": ["fracture energy", "fracture energy density"],
@@ -403,6 +416,16 @@ PERFORMANCE_CATEGORIES: dict[str, dict] = {
                     "Tcc",
                 ],
                 "common_units": ["degC", "K"],
+            },
+            "crystallization_temperature": {
+                "synonyms": [
+                    "crystallization temperature",
+                    "crystallisation temperature",
+                    "Tc",
+                    "Tc1",
+                    "Tc2",
+                ],
+                "common_units": ["°C", "K"],
             },
             "cold_crystallization_enthalpy": {
                 "synonyms": [
@@ -720,6 +743,27 @@ PERFORMANCE_CATEGORIES: dict[str, dict] = {
                 "synonyms": ["pH value", "solution pH", "medium pH"],
                 "common_units": ["pH", "-", "dimensionless"],
             },
+            "zero_shear_viscosity": {
+                "synonyms": [
+                    "zero shear viscosity",
+                    "zero-shear viscosity",
+                    "eta_0",
+                    "eta0",
+                    "η_0",
+                    "η0",
+                ],
+                "common_units": ["Pa·s"],
+            },
+            "specific_viscosity": {
+                "synonyms": [
+                    "specific viscosity",
+                    "eta_sp",
+                    "etasp",
+                    "η_sp",
+                    "ηsp",
+                ],
+                "common_units": ["-", "dimensionless"],
+            },
             "density": {
                 "synonyms": ["密度", "density", "apparent density", "表观密度"],
                 "common_units": ["g/cm³", "mg/cm³", "kg/m³"],
@@ -764,6 +808,16 @@ PERFORMANCE_CATEGORIES: dict[str, dict] = {
                 "synonyms": [
                     "横向尺寸", "lateral size", "transverse size",
                     "maximum transverse size",
+                ],
+                "common_units": ["nm", "μm", "mm"],
+            },
+            "surface_maximum_height": {
+                "synonyms": [
+                    "surface maximum height",
+                    "surface max height",
+                    "maximum surface height",
+                    "max surface height",
+                    "Rz",
                 ],
                 "common_units": ["nm", "μm", "mm"],
             },
@@ -1205,6 +1259,7 @@ CORE_METRICS: set[str] = {
     "flexural_modulus_improvement",
     "in_plane_property_reduction",
     "fracture_toughness",
+    "toughness",
     "fracture_energy",
     "fracture_energy_improvement",
     "interlaminar_fracture_toughness",

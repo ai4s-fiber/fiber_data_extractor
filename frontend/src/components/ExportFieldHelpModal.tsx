@@ -8,12 +8,11 @@ const { Text, Paragraph } = Typography;
 const helpColumns = [
   { title: '序号', dataIndex: 'no', width: 56 },
   {
-    title: '英文字段名',
-    dataIndex: 'en',
-    width: 200,
+    title: '工作簿字段名',
+    dataIndex: 'name',
+    width: 220,
     render: (v: string) => <code style={{ fontSize: 12 }}>{v}</code>,
   },
-  { title: '中文字段名', dataIndex: 'zh', width: 130 },
   { title: '含义', dataIndex: 'meaning' },
 ];
 

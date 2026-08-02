@@ -1,4 +1,4 @@
-"""Export resumable, per-paper 40-column workbooks from a project database."""
+"""Export resumable per-paper atomic materials workbooks."""
 
 from __future__ import annotations
 
@@ -102,7 +102,14 @@ def _iso(value) -> str:
     return value.astimezone(timezone.utc).isoformat()
 
 
-def _source_signature(paper, records, evidence_items, document_blocks) -> str:
+def _source_signature(
+    paper,
+    records,
+    evidence_items,
+    document_blocks,
+    fact_candidates,
+    sample_catalogs,
+) -> str:
     payload = {
         "paper": [paper.id, _iso(paper.updated_at), paper.status],
         "records": [
@@ -117,6 +124,14 @@ def _source_signature(paper, records, evidence_items, document_blocks) -> str:
             [block.id, _iso(block.created_at)]
             for block in document_blocks
         ],
+        "facts": [
+            [fact.id, _iso(fact.created_at), fact.assignment_status]
+            for fact in fact_candidates
+        ],
+        "samples": [
+            [sample.id, _iso(sample.created_at)]
+            for sample in sample_catalogs
+        ],
     }
     encoded = json.dumps(
         payload,
@@ -130,39 +145,31 @@ def _source_signature(paper, records, evidence_items, document_blocks) -> str:
 def _validate_workbook(path: Path, expected_rows: int) -> tuple[bool, str]:
     from openpyxl import load_workbook
 
-    from app.services.workbook_export import MAIN_DATA_COLUMNS
+    from app.services.workbook_export import WORKBOOK_SHEET_COLUMNS
 
     try:
         workbook = load_workbook(path, read_only=True, data_only=True)
     except Exception as exc:
         return False, f"{exc.__class__.__name__}: {exc}"
     try:
-        required = {
-            "Main_Data",
-            "Papers",
-            "Evidence",
-            "Parse_Blocks",
-            "Quality_Report",
-        }
+        required = {"00_说明", *WORKBOOK_SHEET_COLUMNS}
         missing = required - set(workbook.sheetnames)
         if missing:
             return False, f"missing_sheets:{','.join(sorted(missing))}"
-        main_sheet_names = [
-            name
-            for name in workbook.sheetnames
-            if name == "Main_Data" or name.startswith("Main_Data_")
-        ]
-        actual_rows = 0
-        for sheet_name in main_sheet_names:
-            main_sheet = workbook[sheet_name]
+        for sheet_name, expected_columns in WORKBOOK_SHEET_COLUMNS.items():
+            sheet = workbook[sheet_name]
             header = [
-                cell.value for cell in next(main_sheet.iter_rows(max_row=1))
+                cell.value for cell in next(sheet.iter_rows(max_row=1))
             ]
-            if header != MAIN_DATA_COLUMNS:
-                return False, "main_data_header_mismatch"
-            actual_rows += max(0, main_sheet.max_row - 1)
-        if actual_rows != expected_rows:
-            return False, "main_data_row_count_mismatch"
+            if header != expected_columns:
+                return False, f"header_mismatch:{sheet_name}"
+        if expected_rows:
+            core_fact_rows = sum(
+                max(0, workbook[sheet_name].max_row - 1)
+                for sheet_name in ("03_成分", "04_工艺", "05_结构", "06_性能")
+            )
+            if core_fact_rows == 0:
+                return False, "missing_material_fact_rows"
         return True, ""
     finally:
         workbook.close()
@@ -176,8 +183,10 @@ async def _run(args: argparse.Namespace) -> dict:
     from app.models.candidate_record import CandidateRecord
     from app.models.document_parse import DocumentBlock
     from app.models.evidence_item import EvidenceItem
+    from app.models.fact_candidate import FactCandidate
     from app.models.paper import Paper
     from app.models.project import Project
+    from app.models.sample_catalog import SampleCatalog
     from app.services.workbook_export import generate_structured_workbook
 
     output_dir = Path(args.output_dir).expanduser().resolve()
@@ -265,11 +274,25 @@ async def _run(args: argparse.Namespace) -> dict:
                     )
                 )
                 document_blocks = list(block_result.scalars().all())
+                fact_result = await db.execute(
+                    select(FactCandidate)
+                    .where(FactCandidate.paper_id == paper.id)
+                    .order_by(FactCandidate.id)
+                )
+                fact_candidates = list(fact_result.scalars().all())
+                sample_result = await db.execute(
+                    select(SampleCatalog)
+                    .where(SampleCatalog.paper_id == paper.id)
+                    .order_by(SampleCatalog.id)
+                )
+                sample_catalogs = list(sample_result.scalars().all())
                 signature = _source_signature(
                     paper,
                     records,
                     evidence_items,
                     document_blocks,
+                    fact_candidates,
+                    sample_catalogs,
                 )
                 source_stem = _safe_filename_stem(
                     Path(paper.original_filename).stem
@@ -311,6 +334,8 @@ async def _run(args: argparse.Namespace) -> dict:
                         papers=[paper],
                         evidence_items=evidence_items,
                         document_blocks=document_blocks,
+                        fact_candidates=fact_candidates,
+                        sample_catalogs=sample_catalogs,
                         filepath=str(output_path),
                     )
                     valid, validation_error = await asyncio.to_thread(
@@ -329,6 +354,8 @@ async def _run(args: argparse.Namespace) -> dict:
                         "status": "completed",
                         "candidate_rows": len(records),
                         "evidence_rows": len(evidence_items),
+                        "fact_rows": len(fact_candidates),
+                        "sample_rows": len(sample_catalogs),
                         "parse_blocks": len(document_blocks),
                         "source_signature": signature,
                         "exported_at": _utcnow().isoformat(),

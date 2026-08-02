@@ -137,8 +137,16 @@ def normalize_unit(unit: str) -> str:
         lower_text,
     ):
         return "%"
-    lower = re.sub(r"\s+", "", lower_text)
-    lower = lower.replace("·", "").replace("−", "-").replace("–", "-")
+    lower = lower_text.replace("米m", "μm").replace("～c", "°c")
+    lower = lower.replace("﹞", "")
+    lower = re.sub(r"\s+", "", lower)
+    lower = (
+        lower.replace("·", "")
+        .replace("−", "-")
+        .replace("–", "-")
+        .replace("⁻", "-")
+        .replace("¹", "1")
+    )
     lower = lower.replace("**2", "²").replace("^2", "²")
     lower = lower.replace("**3", "3").replace("^3", "3").replace("³", "3")
     lower = re.sub(
@@ -163,13 +171,24 @@ def normalize_unit(unit: str) -> str:
         "µe": "microstrain",
         "μe": "microstrain",
         "j/m3": "j/m3",
+        "jm^-3": "j/m3",
+        "jm-3": "j/m3",
         "kj/m3": "kj/m3",
+        "kjm^-3": "kj/m3",
+        "kjm-3": "kj/m3",
+        "mj/m3": "mj/m3",
+        "mjm^-3": "mj/m3",
+        "mjm-3": "mj/m3",
+        "mm/mm": "dimensionless",
+        "mmmm^-1": "dimensionless",
+        "mmmm-1": "dimensionless",
         "j/m²": "j/m²",
         "kj/m²": "kj/m²",
         "s/m": "s/m",
         "sm-1": "s/m",
         "s/cm": "s/cm",
         "scm-1": "s/cm",
+        "scm^-1": "s/cm",
         "ms/m": "ms/m",
         "w/(mk)": "w/mk",
         "w/mk": "w/mk",
@@ -195,10 +214,20 @@ def normalize_unit(unit: str) -> str:
         "kgm^-3": "kg/m3",
         "kgm-3": "kg/m3",
         "kgm⁻³": "kg/m3",
+        "g/cm²": "g/cm2",
+        "gcm-²": "g/cm2",
+        "gcm^-2": "g/cm2",
+        "gcm-2": "g/cm2",
         "m²/s": "m2/s",
         "m2/s": "m2/s",
         "m²s-1": "m2/s",
         "m2s-1": "m2/s",
+        "cm²/s": "cm2/s",
+        "cm2/s": "cm2/s",
+        "cm²s^-1": "cm2/s",
+        "cm²s-1": "cm2/s",
+        "cm2s^-1": "cm2/s",
+        "cm2s-1": "cm2/s",
         "1/√s": "1/√s",
         "s-0.5": "1/√s",
         "days": "days",
@@ -254,6 +283,7 @@ UNIT_RULES: dict[str, set[str]] = {
         "cn/dtex", "n/tex", "g/denier", "kn\u00b7m/g", "mpa", "gpa",
     },
     "extension_at_break": {"mm", "cm", "m"},
+    "crystallization_temperature": {"\u00b0c", "k"},
     "cold_crystallization_temperature": {"\u00b0c", "k"},
     "cold_crystallization_enthalpy": {"j/g", "kj/g"},
     "melting_enthalpy": {"j/g", "kj/g"},
@@ -277,6 +307,7 @@ UNIT_RULES: dict[str, set[str]] = {
     "flexural_modulus_improvement": {"%"},
     "in_plane_property_reduction": {"%"},
     "impact_strength": {"j/m²", "j/m2", "kj/m²", "kj/m2"},
+    "impact_energy": {"j", "mj", "kj"},
     "fracture_toughness": {
         "j/m²", "j/m2", "kj/m²", "kj/m2", "mpa·m^0.5", "mpam^0.5",
     },
@@ -284,7 +315,8 @@ UNIT_RULES: dict[str, set[str]] = {
     "mode_I_interlaminar_fracture_toughness": {"j/m²", "j/m2", "kj/m²", "kj/m2"},
     "mode_II_interlaminar_fracture_toughness": {"j/m²", "j/m2", "kj/m²", "kj/m2"},
     "fracture_toughness_improvement": {"%"},
-    "fracture_energy": {"j/m3", "kj/m3"},
+    "toughness": {"j/m3", "kj/m3", "mj/m3"},
+    "fracture_energy": {"j/m3", "kj/m3", "mj/m3"},
     "fracture_energy_improvement": {"%"},
     "mode_I_interlaminar_fracture_toughness_improvement": {"%"},
     "mode_II_interlaminar_fracture_toughness_improvement": {"%"},
@@ -294,7 +326,7 @@ UNIT_RULES: dict[str, set[str]] = {
     "pull_out_force_improvement": {"times", "fold", "×", "dimensionless", "-"},
     "maximum_deformation": {"mm", "cm", "m", "%"},
     "deformation_speed": {"mm/s", "cm/s", "m/s"},
-    "elongation_at_break": {"%"},
+    "elongation_at_break": {"%", "-", "dimensionless"},
     "ultimate_strain": {"%", "microstrain"},
     "ultimate_strain_improvement": {"%"},
     "knee_strain": {"%"},
@@ -316,11 +348,14 @@ UNIT_RULES: dict[str, set[str]] = {
     "dielectric_loss": {"-", "dimensionless"},
     "loss_tangent": {"-", "dimensionless"},
     "surface_roughness": {"nm", "μm", "um", "µm", "å", "a", "angstrom", "angström"},
+    "surface_maximum_height": {"nm", "μm", "um", "µm", "mm"},
     "fiber_diameter": {"nm", "μm", "um", "µm"},
-    "fiber_length": {"nm", "μm", "um", "µm", "mm"},
+    "fiber_length": {"nm", "μm", "um", "µm", "mm", "km"},
     "particle_size": {"nm", "μm", "um", "µm", "mm"},
     "lateral_size": {"nm", "μm", "um", "µm", "mm"},
-    "areal_density": {"g/m²", "g/m2", "mg/cm²", "mg/cm2", "gsm"},
+    "areal_density": {
+        "g/m²", "g/m2", "g/cm²", "g/cm2", "mg/cm²", "mg/cm2", "gsm",
+    },
     "surface_tension": {"mn/m", "n/m"},
     "degradation_rate": {"%"},
     "surface_temperature": {"°c", "k"},
@@ -335,6 +370,7 @@ UNIT_RULES: dict[str, set[str]] = {
     "imidization_degree": {"%"},
     "orientation_factor": {"-", "dimensionless"},
     "compressive_displacement": {"mm", "cm", "m", "μm", "um", "µm"},
+    "radius_of_curvature": {"nm", "μm", "um", "µm", "mm", "cm", "m"},
     "softening_load": {"n", "kn", "mn"},
     "load_bearing_stability_improvement": {"%"},
     "bandgap_frequency_range": {"hz", "khz", "mhz"},
@@ -347,13 +383,17 @@ UNIT_RULES: dict[str, set[str]] = {
     "equilibrium_water_content_change": {"%"},
     "equilibrium_immersion_duration": {"days", "h"},
     "initial_water_sorption_slope": {"1/√s"},
-    "water_diffusion_coefficient": {"m2/s"},
+    "water_diffusion_coefficient": {"m2/s", "cm2/s"},
     "water_diffusion_coefficient_change": {"%"},
     "water_diffusion_coefficient_reduction": {"%"},
+    "zero_shear_viscosity": {"pa·s"},
+    "specific_viscosity": {"-", "dimensionless"},
 }
 
 _DENSITY_UNITS = {"mg/cm3", "g/cm3", "kg/m3", "mg cm^-3", "g cm^-3", "kg m^-3"}
-_LENGTH_UNITS = {"nm", "μm", "um", "µm", "å", "a", "angstrom", "angström", "mm", "μm"}
+_LENGTH_UNITS = {
+    "nm", "μm", "um", "µm", "å", "a", "angstrom", "angström", "mm", "km",
+}
 _TEMPERATURE_UNITS = {"°c", "k", "℃"}
 _THERMAL_COND_UNITS = {"w/mk", "mw/mk", "w m^-1 k^-1", "mw m^-1 k^-1"}
 _WAVENUMBER_UNITS = {"cm-1", "cm⁻¹", "1/cm", "cm^-1"}
@@ -425,7 +465,10 @@ def metric_unit_compatible(metric: str, unit: str) -> bool:
     if normalized_unit in _LENGTH_UNITS:
         return any(
             token in lower_metric
-            for token in ("roughness", "diameter", "thickness", "size", "width", "length", "fiber")
+            for token in (
+                "roughness", "diameter", "thickness", "spacing", "size",
+                "width", "length", "fiber",
+            )
         )
     if normalized_unit in _WAVENUMBER_UNITS:
         return False

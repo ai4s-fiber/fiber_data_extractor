@@ -1,10 +1,40 @@
+import sqlite3
 import socket
+from pathlib import Path
+
 from sqlalchemy import event
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from app.core.config import settings
 
 db_url = settings.DATABASE_URL
+
+
+def _ensure_sqlite_wal(url: str) -> str:
+    """Enable WAL once, before the async engine opens pooled connections."""
+
+    parsed = make_url(url)
+    database = str(parsed.database or "").strip()
+    if database in {"", ":memory:"}:
+        return "memory"
+    database_path = Path(database).expanduser().resolve()
+    database_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with sqlite3.connect(str(database_path), timeout=30) as connection:
+            mode = str(
+                connection.execute("PRAGMA journal_mode=WAL").fetchone()[0]
+            ).casefold()
+            connection.execute("PRAGMA synchronous=NORMAL")
+            connection.execute("PRAGMA busy_timeout=120000")
+    except sqlite3.Error as exc:
+        raise RuntimeError(
+            f"Failed to enable SQLite WAL mode for {database_path}: {exc}"
+        ) from exc
+    if mode != "wal":
+        raise RuntimeError(
+            f"SQLite database refused WAL mode for {database_path}: {mode}"
+        )
+    return mode
 
 
 def is_postgres_running(url: str) -> bool:
@@ -60,6 +90,7 @@ if postgres_reachable or ("postgresql" in db_url and not settings.ALLOW_SQLITE_F
 elif _use_sqlite:
     print("PostgreSQL not accessible. Automatically falling back to local SQLite engine (local_dev_fallback.db).")
     sqlite_fallback_url = "sqlite+aiosqlite:///./local_dev_fallback.db"
+    _ensure_sqlite_wal(sqlite_fallback_url)
     engine = create_async_engine(
         sqlite_fallback_url,
         echo=settings.DEBUG,
@@ -69,6 +100,7 @@ elif _use_sqlite:
     )
     event.listen(engine.sync_engine, "connect", _enable_sqlite_wal)
 elif "sqlite" in db_url:
+    _ensure_sqlite_wal(db_url)
     engine = create_async_engine(
         db_url,
         echo=settings.DEBUG,

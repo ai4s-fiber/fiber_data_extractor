@@ -1,0 +1,498 @@
+{
+  "template": {
+    "_id": 20260728032,
+    "object": {
+      "id": "object",
+      "label": "文献、样品与成分",
+      "blocks": {
+        "_ord": [
+          "文献、样品与成分"
+        ],
+        "文献、样品与成分": {
+          "r": false,
+          "t": 9,
+          "misc": {
+            "_ord": [
+              "数据ID",
+              "文献编号",
+              "论文题目",
+              "DOI或URL",
+              "年份",
+              "期刊或会议",
+              "材料类别",
+              "具体材料对象或样品编号",
+              "纤维形态",
+              "原料、前驱体或基体",
+              "增强、填料或改性组分",
+              "成分配比或浓度",
+              "溶剂或助剂"
+            ],
+            "数据ID": {
+              "r": true,
+              "t": 1,
+              "misc": {
+                "grp": [],
+                "opt": [],
+                "type": 0,
+                "multi": false,
+                "stats": "0",
+                "imageFormats": []
+              },
+              "stats": "0"
+            },
+            "文献编号": {
+              "r": false,
+              "t": 1,
+              "misc": {
+                "grp": [],
+                "opt": [],
+                "type": 0,
+                "multi": false,
+                "stats": "0",
+                "imageFormats": []
+              },
+              "stats": "0"
+            },
+            "论文题目": {
+              "r": false,
+              "t": 1,
+              "misc": {
+                "grp": [],
+                "opt": [],
+                "type": 0,
+                "multi": false,
+                "stats": "0",
+                "imageFormats": []
+              },
+              "stats": "0"
+            },
+            "DOI或URL": {
+              "r": false,
+              "t": 1,
+              "misc": {
+                "grp": [],
+                "opt": [],
+                "type": 0,
+                "multi": false,
+                "stats": "0",
+                "imageFormats": []
+              },
+              "stats": "0"
+            },
+            "年份": {
+              "r": false,
+              "t": 1,
+              "misc": {
+                "grp": [],
+                "opt": [],
+                "type": 0,
+                "multi": false,
+                "stats": "0",
+                "imageFormats": []
+              },
+              "stats": "0"
+            },
+            "期刊或会议": {
+              "r": false,
+              "t": 1,
+              "misc": {
+                "grp": [],
+                "opt": [],
+                "type": 0,
+                "multi": false,
+                "stats": "0",
+                "imageFormats": []
+              },
+              "stats": "0"
+            },
+            "材料类别": {
+              "r": false,
+              "t": 1,
+              "misc": {
+                "grp": [],
+                "opt": [],
+                "type": 0,
+                "multi": false,
+                "stats": "0",
+                "imageFormats": []
+              },
+              "stats": "0"
+            },
+            "具体材料对象或样品编号": {
+              "r": true,
+              "t": 1,
+              "misc": {
+                "grp": [],
+                "opt": [],
+                "type": 0,
+                "multi": false,
+                "stats": "0",
+                "imageFormats": []
+              },
+              "stats": "0"
+            },
+            "纤维形态": {
+              "r": false,
+              "t": 1,
+              "misc": {
+                "grp": [],
+                "opt": [],
+                "type": 0,
+                "multi": false,
+                "stats": "0",
+                "imageFormats": []
+              },
+              "stats": "0"
+            },
+            "原料、前驱体或基体": {
+              "r": false,
+              "t": 1,
+              "misc": {
+                "grp": [],
+                "opt": [],
+                "type": 0,
+                "multi": false,
+                "stats": "0",
+                "imageFormats": []
+              },
+              "stats": "0"
+            },
+            "增强、填料或改性组分": {
+              "r": false,
+              "t": 1,
+              "misc": {
+                "grp": [],
+                "opt": [],
+                "type": 0,
+                "multi": false,
+                "stats": "0",
+                "imageFormats": []
+              },
+              "stats": "0"
+            },
+            "成分配比或浓度": {
+              "r": false,
+              "t": 1,
+              "misc": {
+                "grp": [],
+                "opt": [],
+                "type": 0,
+                "multi": false,
+                "stats": "0",
+                "imageFormats": []
+              },
+              "stats": "0"
+            },
+            "溶剂或助剂": {
+              "r": false,
+              "t": 1,
+              "misc": {
+                "grp": [],
+                "opt": [],
+                "type": 0,
+                "multi": false,
+                "stats": "0",
+                "imageFormats": []
+              },
+              "stats": "0"
+            }
+          },
+          "stats": "0"
+        }
+      }
+    },
+    "operations": [
+      {
+        "id": "operation1",
+        "label": "工艺",
+        "blocks": {
+          "_ord": [
+            "工艺"
+          ],
+          "工艺": {
+            "r": false,
+            "t": 9,
+            "misc": {
+              "_ord": [
+                "工艺路线",
+                "关键工艺参数",
+                "后处理条件"
+              ],
+              "工艺路线": {
+                "r": false,
+                "t": 1,
+                "misc": {
+                  "grp": [],
+                  "opt": [],
+                  "type": 0,
+                  "multi": false,
+                  "stats": "0",
+                  "imageFormats": []
+                },
+                "stats": "0"
+              },
+              "关键工艺参数": {
+                "r": false,
+                "t": 1,
+                "misc": {
+                  "grp": [],
+                  "opt": [],
+                  "type": 0,
+                  "multi": false,
+                  "stats": "0",
+                  "imageFormats": []
+                },
+                "stats": "0"
+              },
+              "后处理条件": {
+                "r": false,
+                "t": 1,
+                "misc": {
+                  "grp": [],
+                  "opt": [],
+                  "type": 0,
+                  "multi": false,
+                  "stats": "0",
+                  "imageFormats": []
+                },
+                "stats": "0"
+              }
+            },
+            "stats": "0"
+          }
+        }
+      }
+    ],
+    "results": [
+      {
+        "id": "result1",
+        "label": "结构、性能与来源",
+        "blocks": {
+          "_ord": [
+            "结构、性能与来源"
+          ],
+          "结构、性能与来源": {
+            "r": false,
+            "t": 9,
+            "misc": {
+              "_ord": [
+                "结构表征方法",
+                "结构指标名称",
+                "结构数值",
+                "结构单位",
+                "性能测试方法或标准",
+                "性能指标名称",
+                "性能数值",
+                "性能单位",
+                "测试条件",
+                "结果描述或结论",
+                "数据来源位置",
+                "原文图表编号",
+                "是否完整",
+                "缺失信息说明",
+                "备注"
+              ],
+              "结构表征方法": {
+                "r": false,
+                "t": 1,
+                "misc": {
+                  "grp": [],
+                  "opt": [],
+                  "type": 0,
+                  "multi": false,
+                  "stats": "0",
+                  "imageFormats": []
+                },
+                "stats": "0"
+              },
+              "结构指标名称": {
+                "r": false,
+                "t": 1,
+                "misc": {
+                  "grp": [],
+                  "opt": [],
+                  "type": 0,
+                  "multi": false,
+                  "stats": "0",
+                  "imageFormats": []
+                },
+                "stats": "0"
+              },
+              "结构数值": {
+                "r": false,
+                "t": 1,
+                "misc": {
+                  "grp": [],
+                  "opt": [],
+                  "type": 0,
+                  "multi": false,
+                  "stats": "0",
+                  "imageFormats": []
+                },
+                "stats": "0"
+              },
+              "结构单位": {
+                "r": false,
+                "t": 1,
+                "misc": {
+                  "grp": [],
+                  "opt": [],
+                  "type": 0,
+                  "multi": false,
+                  "stats": "0",
+                  "imageFormats": []
+                },
+                "stats": "0"
+              },
+              "性能测试方法或标准": {
+                "r": false,
+                "t": 1,
+                "misc": {
+                  "grp": [],
+                  "opt": [],
+                  "type": 0,
+                  "multi": false,
+                  "stats": "0",
+                  "imageFormats": []
+                },
+                "stats": "0"
+              },
+              "性能指标名称": {
+                "r": false,
+                "t": 1,
+                "misc": {
+                  "grp": [],
+                  "opt": [],
+                  "type": 0,
+                  "multi": false,
+                  "stats": "0",
+                  "imageFormats": []
+                },
+                "stats": "0"
+              },
+              "性能数值": {
+                "r": false,
+                "t": 1,
+                "misc": {
+                  "grp": [],
+                  "opt": [],
+                  "type": 0,
+                  "multi": false,
+                  "stats": "0",
+                  "imageFormats": []
+                },
+                "stats": "0"
+              },
+              "性能单位": {
+                "r": false,
+                "t": 1,
+                "misc": {
+                  "grp": [],
+                  "opt": [],
+                  "type": 0,
+                  "multi": false,
+                  "stats": "0",
+                  "imageFormats": []
+                },
+                "stats": "0"
+              },
+              "测试条件": {
+                "r": false,
+                "t": 1,
+                "misc": {
+                  "grp": [],
+                  "opt": [],
+                  "type": 0,
+                  "multi": false,
+                  "stats": "0",
+                  "imageFormats": []
+                },
+                "stats": "0"
+              },
+              "结果描述或结论": {
+                "r": false,
+                "t": 1,
+                "misc": {
+                  "grp": [],
+                  "opt": [],
+                  "type": 0,
+                  "multi": false,
+                  "stats": "0",
+                  "imageFormats": []
+                },
+                "stats": "0"
+              },
+              "数据来源位置": {
+                "r": false,
+                "t": 1,
+                "misc": {
+                  "grp": [],
+                  "opt": [],
+                  "type": 0,
+                  "multi": false,
+                  "stats": "0",
+                  "imageFormats": []
+                },
+                "stats": "0"
+              },
+              "原文图表编号": {
+                "r": false,
+                "t": 1,
+                "misc": {
+                  "grp": [],
+                  "opt": [],
+                  "type": 0,
+                  "multi": false,
+                  "stats": "0",
+                  "imageFormats": []
+                },
+                "stats": "0"
+              },
+              "是否完整": {
+                "r": false,
+                "t": 1,
+                "misc": {
+                  "grp": [],
+                  "opt": [],
+                  "type": 0,
+                  "multi": false,
+                  "stats": "0",
+                  "imageFormats": []
+                },
+                "stats": "0"
+              },
+              "缺失信息说明": {
+                "r": false,
+                "t": 1,
+                "misc": {
+                  "grp": [],
+                  "opt": [],
+                  "type": 0,
+                  "multi": false,
+                  "stats": "0",
+                  "imageFormats": []
+                },
+                "stats": "0"
+              },
+              "备注": {
+                "r": false,
+                "t": 1,
+                "misc": {
+                  "grp": [],
+                  "opt": [],
+                  "type": 0,
+                  "multi": false,
+                  "stats": "0",
+                  "imageFormats": []
+                },
+                "stats": "0"
+              }
+            },
+            "stats": "0"
+          }
+        }
+      }
+    ]
+  },
+  "data": []
+}

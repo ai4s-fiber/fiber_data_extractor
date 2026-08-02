@@ -17,7 +17,9 @@ from app.models.candidate_record import CandidateRecord
 from app.models.document_parse import DocumentBlock
 from app.models.evidence_item import EvidenceItem
 from app.models.export_job import ExportJob
+from app.models.fact_candidate import FactCandidate
 from app.models.paper import Paper
+from app.models.sample_catalog import SampleCatalog
 from app.schemas.export import ExportCreateResult, ExportJobOut, ExportRequest
 from app.services import redis_cache
 from app.services.workbook_export import generate_structured_workbook
@@ -25,7 +27,6 @@ from app.services.workbook_export import generate_structured_workbook
 router = APIRouter(prefix="/projects/{project_id}/exports", tags=["导出"])
 MAX_WEB_EXPORT_PAPERS = 200
 MAX_WEB_EXPORT_RECORDS = 50_000
-MAX_WEB_EXPORT_PARSE_BLOCKS = 250_000
 
 REVIEW_STATUS_ALIASES = {
     "pending": ["pending", "待审核"],
@@ -62,7 +63,12 @@ async def create_export(
     db: AsyncSession = Depends(get_db),
 ):
     await get_project_or_404(db, project_id)
-    statuses = body.review_status_filter or ["approved"]
+    statuses = body.review_status_filter or [
+        "approved",
+        "pending",
+        "uncertain",
+        "modified",
+    ]
     status_values = _expand_review_statuses(statuses)
     filters = (
         CandidateRecord.project_id == project_id,
@@ -95,36 +101,38 @@ async def create_export(
     result = await db.execute(query)
     records = result.scalars().all()
 
-    record_ids = [record.id for record in records]
     paper_ids = sorted({record.source_paper_id for record in records})
-    block_count_result = await db.execute(
-        select(func.count(DocumentBlock.id)).where(
-            DocumentBlock.paper_id.in_(paper_ids)
-        )
-    )
-    block_count = int(block_count_result.scalar() or 0)
-    if block_count > MAX_WEB_EXPORT_PARSE_BLOCKS:
-        raise HTTPException(
-            400,
-            "Web 单次导出的解析块过多。请使用 "
-            "scripts/ops/export_project_workbooks.py 按论文原子导出并续传。",
-        )
-
     papers = []
     evidence_items = []
     document_blocks = []
-    for record_id_chunk in _id_chunks(record_ids):
-        evidence_result = await db.execute(
-            select(EvidenceItem).where(
-                EvidenceItem.candidate_record_id.in_(record_id_chunk)
-            )
-        )
-        evidence_items.extend(evidence_result.scalars().all())
+    fact_candidates = []
+    sample_catalogs = []
     for paper_id_chunk in _id_chunks(paper_ids):
         papers_result = await db.execute(
             select(Paper).where(Paper.id.in_(paper_id_chunk))
         )
         papers.extend(papers_result.scalars().all())
+
+        evidence_result = await db.execute(
+            select(EvidenceItem).where(
+                EvidenceItem.paper_id.in_(paper_id_chunk)
+            )
+        )
+        evidence_items.extend(evidence_result.scalars().all())
+
+        facts_result = await db.execute(
+            select(FactCandidate).where(
+                FactCandidate.paper_id.in_(paper_id_chunk)
+            )
+        )
+        fact_candidates.extend(facts_result.scalars().all())
+
+        samples_result = await db.execute(
+            select(SampleCatalog).where(
+                SampleCatalog.paper_id.in_(paper_id_chunk)
+            )
+        )
+        sample_catalogs.extend(samples_result.scalars().all())
 
         blocks_result = await db.execute(
             select(DocumentBlock).where(
@@ -134,6 +142,8 @@ async def create_export(
         document_blocks.extend(blocks_result.scalars().all())
     papers.sort(key=lambda item: item.id)
     evidence_items.sort(key=lambda item: item.id)
+    fact_candidates.sort(key=lambda item: item.id)
+    sample_catalogs.sort(key=lambda item: item.id)
     document_blocks.sort(
         key=lambda item: (
             item.paper_id,
@@ -146,7 +156,7 @@ async def create_export(
     export_dir = Path(settings.EXPORT_DIR) / str(project_id)
     export_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
-    filename = f"数据主表_{timestamp}.xlsx"
+    filename = f"材料数据_成分工艺结构性能_{timestamp}.xlsx"
     filepath = export_dir / filename
     await asyncio.to_thread(
         generate_structured_workbook,
@@ -154,6 +164,8 @@ async def create_export(
         papers=list(papers),
         evidence_items=list(evidence_items),
         document_blocks=list(document_blocks),
+        fact_candidates=list(fact_candidates),
+        sample_catalogs=list(sample_catalogs),
         filepath=str(filepath),
     )
 
@@ -205,7 +217,7 @@ async def download_export(
         raise HTTPException(404, "导出文件已删除")
     return FileResponse(
         str(filepath),
-        filename="数据主表.xlsx",
+        filename="材料数据_成分工艺结构性能.xlsx",
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 

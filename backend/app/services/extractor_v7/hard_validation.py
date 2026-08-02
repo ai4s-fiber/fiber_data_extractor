@@ -533,12 +533,26 @@ def infer_metric_from_evidence(
         if re.search(r"(?i)\bstiffness\s+recover(?:y|s|ed|ing)\b", ev):
             return "stiffness_recovery_strain"
 
-    for pattern, metric in (
-        (_FIBER_LENGTH_RE, "fiber_length"),
-        (_FIBER_DIAMETER_RE, "fiber_diameter"),
+    morphology_metrics = {
+        "",
+        "surface_roughness",
+        "surface roughness",
+        "surface_maximum_height",
+        "fiber_length",
+        "fiber_diameter",
+        "particle_size",
+        "lateral_size",
+    }
+    if (
+        unit_norm in {"nm", "µm", "um", "μm", "mm", "cm", "m"}
+        and current in morphology_metrics
     ):
-        if pattern.search(ev):
-            return metric
+        for pattern, metric in (
+            (_FIBER_LENGTH_RE, "fiber_length"),
+            (_FIBER_DIAMETER_RE, "fiber_diameter"),
+        ):
+            if pattern.search(ev):
+                return metric
 
     if current in ("surface_roughness", "surface roughness") and not _ROUGHNESS_RE.search(ev):
         if _FIBER_LENGTH_RE.search(ev) or ("fiber" in lower and "length" in lower):

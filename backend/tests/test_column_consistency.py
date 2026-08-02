@@ -1,4 +1,4 @@
-"""Export column definitions stay aligned between backend and frontend."""
+"""Workbook sheet definitions stay aligned between backend and frontend."""
 
 from __future__ import annotations
 
@@ -7,13 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from app.services.workbook_export import (
-    EVIDENCE_COLUMNS,
-    MAIN_DATA_COLUMNS,
-    PAPER_COLUMNS,
-    PARSE_BLOCK_COLUMNS,
-    QUALITY_COLUMNS,
-)
+from app.services.workbook_export import WORKBOOK_SHEET_COLUMNS
 
 ROOT = Path(__file__).resolve().parents[2]
 FRONTEND_EXPORT_FIELDS = ROOT / "frontend" / "src" / "data" / "exportFieldReference.ts"
@@ -25,51 +19,33 @@ def _frontend_source() -> str:
     return FRONTEND_EXPORT_FIELDS.read_text(encoding="utf-8")
 
 
-def _parse_main_data_columns_from_frontend() -> list[str]:
+def _parse_sheet_columns(sheet_key: str) -> list[str]:
     match = re.search(
-        r"export const MAIN_DATA_COLUMN_NAMES\s*=\s*\[(.*?)\]\s*as const;",
+        rf"['\"]{re.escape(sheet_key)}['\"]\s*:\s*\[(.*?)\]",
         _frontend_source(),
         re.DOTALL,
     )
     if not match:
-        pytest.fail("Cannot locate MAIN_DATA_COLUMN_NAMES in exportFieldReference.ts")
+        pytest.fail(f"Cannot locate sheet {sheet_key} in exportFieldReference.ts")
     return re.findall(r"['\"]([^'\"]+)['\"]", match.group(1))
 
 
-def _parse_sheet_field_names(sheet_key: str) -> list[str]:
-    sheet_match = re.search(
-        rf"key:\s*['\"]{re.escape(sheet_key)}['\"].*?fields:\s*\[(.*?)\n\s*\],",
-        _frontend_source(),
-        re.DOTALL,
+def test_workbook_sheet_keys_match_frontend():
+    source = _frontend_source()
+    frontend_keys = re.findall(
+        r"^\s*['\"](\d{2}_[^'\"]+)['\"]\s*:\s*\[",
+        source,
+        re.MULTILINE,
     )
-    if not sheet_match:
-        pytest.fail(f"Cannot locate sheet {sheet_key} in exportFieldReference.ts")
-    return re.findall(r"en:\s*['\"]([^'\"]+)['\"]", sheet_match.group(1))
-
-
-def test_main_data_column_count_is_stable():
-    assert len(MAIN_DATA_COLUMNS) == 40
-    assert len(_parse_main_data_columns_from_frontend()) == 40
-
-
-def test_main_data_columns_match_frontend_exactly():
-    assert _parse_main_data_columns_from_frontend() == MAIN_DATA_COLUMNS
-    assert _parse_sheet_field_names("Main_Data") == MAIN_DATA_COLUMNS
+    assert frontend_keys == list(WORKBOOK_SHEET_COLUMNS)
 
 
 @pytest.mark.parametrize(
-    ("sheet_key", "backend_cols"),
-    [
-        ("Papers", PAPER_COLUMNS),
-        ("Evidence", EVIDENCE_COLUMNS),
-        ("Parse_Blocks", PARSE_BLOCK_COLUMNS),
-        ("Quality_Report", QUALITY_COLUMNS),
-    ],
+    ("sheet_key", "backend_columns"),
+    list(WORKBOOK_SHEET_COLUMNS.items()),
 )
-def test_workbook_sheet_fields_match_frontend(sheet_key: str, backend_cols: list[str]):
-    frontend_cols = _parse_sheet_field_names(sheet_key)
-    assert frontend_cols == backend_cols, (
-        f"{sheet_key} mismatch\n"
-        f"Backend only: {set(backend_cols) - set(frontend_cols)}\n"
-        f"Frontend only: {set(frontend_cols) - set(backend_cols)}"
-    )
+def test_workbook_sheet_columns_match_frontend(
+    sheet_key: str,
+    backend_columns: list[str],
+):
+    assert _parse_sheet_columns(sheet_key) == backend_columns

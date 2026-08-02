@@ -46,7 +46,7 @@ export default function ExtractionModeModal({
       confirmLoading={extracting}
       width={580}
     >
-      <Space direction="vertical" size={16} style={{ width: '100%' }}>
+      <Space orientation="vertical" size={16} style={{ width: '100%' }}>
         {paper && (
           <Descriptions size="small" column={1} bordered>
             <Descriptions.Item label="文献名称">
@@ -65,7 +65,7 @@ export default function ExtractionModeModal({
           <Alert
             type="warning"
             showIcon
-            message="注意：重新抽取会替换该文献已有候选记录、样品目录、事实候选、页面清单和证据记录。"
+            title="注意：重新抽取会替换该文献已有候选记录、样品目录、事实候选、页面清单和证据记录。"
           />
         )}
 
@@ -87,7 +87,7 @@ export default function ExtractionModeModal({
         <Alert
           type="info"
           showIcon
-          message={
+          title={
             selectedMode === 'strong'
               ? 'Strong：多阶段串行深度抽取。大模型对材料、样品、工艺进行逐步精细研判，质量最高，但速度较慢。'
               : selectedMode === 'weak'

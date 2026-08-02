@@ -513,3 +513,44 @@ def test_storage_modulus_temperature_drop_maps_to_glass_transition_range():
             current_metric="storage_modulus",
             value=value,
         ) == "glass_transition_temperature"
+
+
+def test_wide_rheology_table_does_not_relabel_neighbor_values_as_fiber_diameter():
+    evidence = (
+        "[columns]\tSample\teta_0 (Pa·s)\teta_sp (-)\tFiber diameter (μm)\n"
+        "[row 1]\tPEO\t0.024\t71\t0.27"
+    )
+    facts = [
+        {
+            "fact_type": "performance",
+            "metric_or_parameter": "zero_shear_viscosity",
+            "value": "0.024",
+            "unit": "Pa﹞s",
+            "evidence_text": evidence,
+            "assigned_sample_id": "PEO",
+        },
+        {
+            "fact_type": "performance",
+            "metric_or_parameter": "specific_viscosity",
+            "value": "71",
+            "unit": "dimensionless",
+            "evidence_text": evidence,
+            "assigned_sample_id": "PEO",
+        },
+        {
+            "fact_type": "performance",
+            "metric_or_parameter": "fiber_diameter",
+            "value": "0.27",
+            "unit": "米m",
+            "evidence_text": evidence,
+            "assigned_sample_id": "PEO",
+        },
+    ]
+
+    out = apply_hard_validation(facts)
+
+    assert [fact["metric_or_parameter"] for fact in out] == [
+        "zero_shear_viscosity",
+        "specific_viscosity",
+        "fiber_diameter",
+    ]

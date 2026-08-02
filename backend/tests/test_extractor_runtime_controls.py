@@ -782,6 +782,7 @@ async def test_strong_stage2_table_uses_compact_fallback_prompt(monkeypatch):
     assert "metrics_list" not in str(captured["system_prompt"])
     assert len(facts) == 1
     assert facts[0]["metric_or_parameter"] == "tensile_strength"
+    assert facts[0]["extraction_method"] == "AI_holistic_table"
 
 
 @pytest.mark.asyncio
@@ -1124,6 +1125,41 @@ def test_process_background_enriches_fiber_cards_only():
     assert "tip_to_collector_distance=11 cm" in out[0]["process_parameters"]
     assert not out[1].get("process_route")
     assert not out[2].get("process_route")
+
+
+def test_assigned_holistic_process_enriches_only_its_sample_card():
+    cards = [
+        {"sample_id": "20% AF/PVA fiber", "fiber_type": "fiber"},
+        {"sample_id": "40% AF/PVA fiber", "fiber_type": "fiber"},
+    ]
+    facts = [
+        {
+            "fact_type": "process",
+            "assigned_sample_id": "40% AF/PVA fiber",
+            "metric_or_parameter": "fabrication_method",
+            "value": "wet spinning",
+            "unit": "",
+            "evidence_text": "40% AF/PVA fiber was prepared by wet spinning.",
+        },
+        {
+            "fact_type": "process",
+            "assigned_sample_id": "40% AF/PVA fiber",
+            "metric_or_parameter": "coagulation_bath_temperature",
+            "value": "50",
+            "unit": "°C",
+            "evidence_text": "The first coagulation bath was at 50 °C.",
+        },
+    ]
+
+    out = V7ExtractorService._enrich_sample_cards_from_process_facts(
+        cards,
+        facts,
+    )
+
+    assert not out[0].get("process_route")
+    assert out[1]["process_route"] == "wet spinning"
+    assert "coagulation_bath=50 °C" in out[1]["process_parameters"]
+    assert "40% AF/PVA fiber" in out[1]["process_evidence"]
 
 
 def test_background_propagation_does_not_cross_sample_forms_or_g000():

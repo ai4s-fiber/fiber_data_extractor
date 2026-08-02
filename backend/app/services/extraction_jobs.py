@@ -37,6 +37,25 @@ RETRYABLE_ERROR_CODES = frozenset({
 })
 
 
+def effective_extraction_job_limit(
+    configured_limit: int,
+    *,
+    database_url: str,
+) -> int:
+    """Keep SQLite's in-process extractor responsive under browser polling.
+
+    The extraction pipeline contains synchronous CPU-heavy stages and runs on
+    the API event loop.  Multiple simultaneous SQLite jobs can therefore
+    starve status and preflight requests even while database progress
+    continues.  Non-SQLite deployments retain their configured concurrency.
+    """
+
+    configured = max(1, int(configured_limit or 1))
+    if str(database_url or "").strip().casefold().startswith("sqlite"):
+        return 1
+    return configured
+
+
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -325,6 +344,9 @@ class ExtractionJobBackend:
             job.step = "completed"
             job.percent = 100
             job.progress_message = f"抽取完成: {candidate_count} 条记录"
+            job.error_code = None
+            job.error_message = None
+            job.error_detail = None
             job.finished_at = utcnow()
             job.updated_at = utcnow()
             paper = await db.get(Paper, job.paper_id)
@@ -589,5 +611,8 @@ class ExtractionJobBackend:
 
 extraction_job_backend = ExtractionJobBackend(
     async_session_factory,
-    settings.EXTRACTION_MAX_CONCURRENT_JOBS,
+    effective_extraction_job_limit(
+        settings.EXTRACTION_MAX_CONCURRENT_JOBS,
+        database_url=settings.DATABASE_URL,
+    ),
 )

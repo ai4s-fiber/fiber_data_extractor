@@ -34,6 +34,17 @@ services:
       UPLOAD_DIR: /data/uploads
       EXPORT_DIR: /data/exports
       PARSE_ARTIFACT_DIR: /data/parse_artifacts
+      NAS_SOURCE_ROOTS: ${NAS_SOURCE_ROOTS:-}
+      NAS_SCAN_MAX_FILES: ${NAS_SCAN_MAX_FILES:-5000}
+      NAS_MAX_FILE_BYTES: ${NAS_MAX_FILE_BYTES:-104857600}
+      PLATFORM_BASE_URL: ${PLATFORM_BASE_URL:-http://192.168.2.101/database-code}
+      PLATFORM_BATCH_TEMPLATE_PATH: /platform_templates/canary/platform-batch-canary.json
+      PLATFORM_EXPECTED_DATASET_ID: ${PLATFORM_EXPECTED_DATASET_ID:-2081660157305163778}
+      PLATFORM_EXPECTED_TEMPLATE_ID: ${PLATFORM_EXPECTED_TEMPLATE_ID:-2081658374180704257}
+      PLATFORM_BATCH_TEMPLATE_SHA256: ${PLATFORM_BATCH_TEMPLATE_SHA256:-d001d4d70df42a34644cf8704dd77ede99dc6eb7e89626b8778cd353d34465a2}
+      PLATFORM_SESSION_TTL_SECONDS: ${PLATFORM_SESSION_TTL_SECONDS:-14400}
+      PLATFORM_PARSE_TIMEOUT_SECONDS: ${PLATFORM_PARSE_TIMEOUT_SECONDS:-180}
+      PLATFORM_POLL_INTERVAL_SECONDS: ${PLATFORM_POLL_INTERVAL_SECONDS:-2}
       DEFAULT_PARSER_STRATEGY: ${DEFAULT_PARSER_STRATEGY:-mineru_cloud}
       MINERU_ENABLED: ${MINERU_ENABLED:-true}
       MINERU_API_URL: ${MINERU_API_URL:-http://127.0.0.1:8001}
@@ -97,6 +108,7 @@ services:
       - uploads:/data/uploads
       - exports:/data/exports
       - parse_artifacts:/data/parse_artifacts
+      - ./platform_templates:/platform_templates:ro
 
   frontend:
     restart: unless-stopped

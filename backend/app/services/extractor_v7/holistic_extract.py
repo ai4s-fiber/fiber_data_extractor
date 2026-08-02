@@ -69,13 +69,20 @@ _DIMENSIONLESS_RESULT_SIGNAL_RE = re.compile(
     rf"{_DIMENSIONLESS_RESULT_LABEL}\b.{{0,120}}"
     rf"{_DIMENSIONLESS_RESULT_NUMBER})"
 )
+_OWN_WORK_RESULT_RE = re.compile(
+    r"(?i)\b(?:herein|here,\s*we|we\s+(?:developed|fabricated|prepared|"
+    r"report|reported|demonstrate|demonstrated|present|presented)|"
+    r"our\s+(?:study|work|results?|material|sample|fiber|membrane)|"
+    r"this\s+(?:study|work)|in\s+summary|resultantly)\b"
+)
+_MISLABELED_RESULT_SECTIONS = frozenset({"title_abstract", "introduction"})
 
 _BACKGROUND_COMPOSITION_RE = re.compile(
     r"(?i)\b(?:composition|matrix|polymer|reinforc\w*|additive|solution|"
     r"solvent|precursor|concentration|loading|wt\s*%|vol\s*%|content)\b"
 )
 _BACKGROUND_PROCESS_RE = re.compile(
-    r"(?i)\b(?:electrospin\w*|spinn\w*|cast\w*|extrud\w*|dry\w*|"
+    r"(?i)\b(?:electrospin\w*|spinn\w*|cast\w*|extrud\w*|extrus\w*|dry\w*|"
     r"anneal\w*|cure\w*|pyrolys\w*|carboniz\w*|calcination|"
     r"temperature|voltage|flow\s+rate|feed\s+rate|distance|duration|"
     r"humidity|pressure|post[- ]?treat\w*)\b"
@@ -160,6 +167,39 @@ Output JSON:
 
 Use detailed prose in process_parameters (temperatures, times, concentrations, equipment).
 Quote evidence locations like p.2, Section 2.2 when visible."""
+
+PROCESS_PROMPT = """You are a materials process-data specialist. Extract only this paper's explicit SAMPLE-LEVEL fabrication and post-treatment facts from its experimental section.
+
+Known sample IDs (use only these exact identities):
+{sample_ids}
+
+Return JSON only:
+{{"processes": [{{
+  "sample_ids": [],
+  "process_metric": "",
+  "process_value": "",
+  "process_unit": "",
+  "process_method": "",
+  "process_condition": "",
+  "source_location": "",
+  "source_block_id": "",
+  "source_page": 0,
+  "evidence_text": ""
+}}]}}
+
+Rules:
+1. One route or one explicit parameter = one row. Include forming route, mixing/feed sequence, temperature, residence time, speed, concentration, bath conditions, drying, curing, washing, freeze-drying and other manufacturing settings.
+2. sample_ids must contain one or more exact Known sample IDs. List multiple IDs only when the quoted evidence explicitly states that the same procedure applies to the full named series.
+3. Preserve sample-specific settings. Never copy one composition's extrusion temperature, treatment or additive step onto another variant.
+4. process_value must copy the exact method name or scalar/range from the evidence. Put its unit in process_unit. Do not calculate or infer an unstated value.
+5. evidence_text must quote the preparation sentence containing the method/value. Copy source_block_id and source_page from that exact input block header.
+6. Exclude characterization and performance-test conditions (SEM/TEM coating, tensile-test speed, conductivity measurement, cell assay), literature methods, apparatus specifications unrelated to fabrication, and qualitative discussion from Results.
+7. Do not create new material samples, and do not use equipment, property names, process phrases, temperatures or time points as sample IDs.
+8. A nonnumeric process_value is allowed only for a real fabrication route or post-treatment, such as hot-melt extrusion, wet spinning or freeze-drying.
+9. A process value that resembles a sample prefix is still only a value: for example, a 60% coagulation bath applies to every explicitly named sample in that shared procedure and MUST NOT be assigned only to the "60%" sample.
+10. Read the entire supplied context, including preparation tables and the final sentences. Capture each sample row's optimal extrusion temperature and all later wet-spinning steps: every coagulation-bath composition and temperature, soaking duration, freeze-drying duration, washing, and final drying.
+11. A pure/control sample must not inherit an additive-, coating-, crosslinker-, filler-, or treatment-specific step that the evidence applies only to a modified sample.
+"""
 
 PERFORMANCE_PROMPT = """You are a fiber material data scientist. Extract ALL numerical material properties from the results section.
 
@@ -567,6 +607,95 @@ def select_background_context_chunks(
     return [candidates[index] for index in sorted(chosen)]
 
 
+def select_process_context_chunks(
+    chunks: list[dict],
+    *,
+    max_chars: int,
+) -> list[dict]:
+    """Select bounded preparation blocks without reopening result prose."""
+
+    ordered = sorted(
+        chunks,
+        key=lambda chunk: (
+            chunk.get("page_number") or 0,
+            chunk.get("order_index") or 0,
+        ),
+    )
+    candidates = [
+        chunk
+        for chunk in ordered
+        if (chunk.get("section_name") or "").lower() in EXPERIMENTAL_SECTIONS
+        and (chunk.get("section_name") or "").lower() not in BACKGROUND_SECTIONS
+        and str(chunk.get("block_type") or "").lower()
+        not in IGNORED_CONTEXT_BLOCK_TYPES
+        and str(chunk.get("raw_text") or "").strip()
+    ]
+    scores: dict[int, int] = {}
+    for index, chunk in enumerate(candidates):
+        text = str(chunk.get("raw_text") or "")
+        if not _BACKGROUND_PROCESS_RE.search(text):
+            continue
+        score = 8
+        score += min(5, len(re.findall(r"\d", text)) // 4)
+        if re.search(
+            r"(?i)\b(?:prepared|fabricated|produced|manufactured|"
+            r"hot[-\s]?melt\s+extrusion|wet[-\s]?spinning|"
+            r"electrospinning|coagulation\s+bath|post[-\s]?treat)\b",
+            text,
+        ):
+            score += 5
+        if chunk.get("source_type") == "table_text":
+            # Preparation tables often carry the only sample-specific setting
+            # (for example, each formulation's optimal extrusion temperature).
+            # Prefer them within the bounded context without admitting Results
+            # tables, since the section filter above still applies.
+            score += 10
+            if re.search(
+                r"(?i)\b(?:preparation|fabrication|processing|process|"
+                r"extrusion|spinning|optimal\s+temperature)\b",
+                text[:1200],
+            ):
+                score += 8
+        scores[index] = score
+    if not scores:
+        return []
+
+    # A following block often contains the numeric settings for a route named
+    # in the preceding block. Keep only same-page neighbours and preserve the
+    # original reading order in the final prompt.
+    selected_indices = set(scores)
+    for index in tuple(scores):
+        for neighbor in (index - 1, index + 1):
+            if (
+                0 <= neighbor < len(candidates)
+                and candidates[neighbor].get("page_number")
+                == candidates[index].get("page_number")
+            ):
+                neighbor_text = str(
+                    candidates[neighbor].get("raw_text") or ""
+                )
+                if re.search(r"\d", neighbor_text):
+                    selected_indices.add(neighbor)
+
+    limit = max(1, int(max_chars or 1))
+    ranked = sorted(
+        selected_indices,
+        key=lambda index: (-scores.get(index, 1), index),
+    )
+    chosen: set[int] = set()
+    used = 0
+    for index in ranked:
+        size = len(str(candidates[index].get("raw_text") or "")) + 120
+        if chosen and used + size > limit:
+            continue
+        if not chosen and size > limit:
+            chosen.add(index)
+            break
+        chosen.add(index)
+        used += size
+    return [candidates[index] for index in sorted(chosen)]
+
+
 _SAMPLE_NAMING_RE = re.compile(
     r"(?i)\b(?:called|named|denoted|labelled|labeled|referred\s+to\s+as)\b|"
     r"\b(?:samples?|specimens?)\s*(?:no\.?|#)?\s*[A-Z]*\d+[A-Za-z0-9_.-]*\b"
@@ -729,6 +858,74 @@ def select_treatment_variant_context_chunks(
         bounded.append(chunk)
         used += size
     return bounded
+
+
+def select_mislabeled_performance_context_chunks(
+    chunks: list[dict],
+    *,
+    known_sample_ids: list[str],
+    max_chars: int,
+) -> list[dict]:
+    """Recover only strong own-work results from mislabelled front matter.
+
+    MinerU occasionally labels an entire paper body as ``introduction`` or
+    ``title_abstract``.  A broad fallback would re-import prior-work values, so
+    this route requires four independent signals: a known non-generic sample
+    identity, an explicit measurement, a result term, and own-work language.
+    """
+
+    compact_sample_ids = {
+        re.sub(r"[^a-z0-9]+", "", str(sample_id).casefold())
+        for sample_id in known_sample_ids
+        if len(re.sub(r"[^a-z0-9]+", "", str(sample_id).casefold())) >= 5
+    }
+    compact_sample_ids.difference_update({
+        "fiber",
+        "sample",
+        "material",
+        "composite",
+        "membrane",
+    })
+    if not compact_sample_ids:
+        return []
+
+    selected: list[dict] = []
+    used = 0
+    for chunk in sorted(
+        chunks,
+        key=lambda item: (
+            item.get("page_number") or 0,
+            item.get("order_index") or 0,
+        ),
+    ):
+        section = str(chunk.get("section_name") or "").casefold()
+        if section not in _MISLABELED_RESULT_SECTIONS:
+            continue
+        if chunk.get("source_type") == "table_text":
+            continue
+        if str(chunk.get("block_type") or "").casefold() in {
+            "ref_text",
+            "header_footer",
+            "page_number",
+        }:
+            continue
+        text = str(chunk.get("raw_text") or "").strip()
+        if (
+            not text
+            or not _MEASUREMENT_RE.search(text)
+            or not _RESULT_TERM_RE.search(text)
+            or not _OWN_WORK_RESULT_RE.search(text)
+        ):
+            continue
+        compact_text = re.sub(r"[^a-z0-9]+", "", text.casefold())
+        if not any(sample_id in compact_text for sample_id in compact_sample_ids):
+            continue
+        size = len(text) + 120
+        if selected and used + size > max_chars:
+            continue
+        selected.append(chunk)
+        used += size
+    return selected
 
 
 def build_context_texts(
@@ -1131,6 +1328,127 @@ def catalog_to_mentions(samples: list[dict]) -> list[dict]:
     return mentions
 
 
+_SAMPLE_CARD_EVIDENCE_MARKER_RE = re.compile(
+    r"(?i)\[sample\s+card\s+evidence\]"
+)
+_GENERIC_MATERIAL_FORM_WORDS = frozenset({
+    "aerogel",
+    "bulk",
+    "composite",
+    "composites",
+    "fabric",
+    "fabrics",
+    "fiber",
+    "fibers",
+    "fibre",
+    "fibres",
+    "filament",
+    "filaments",
+    "film",
+    "films",
+    "mat",
+    "mats",
+    "membrane",
+    "membranes",
+    "nanofiber",
+    "nanofibers",
+    "nanofibre",
+    "nanofibres",
+    "sample",
+    "samples",
+    "scaffold",
+    "scaffolds",
+    "specimen",
+    "specimens",
+})
+_GENERIC_MATERIAL_FORM_PATTERN = (
+    r"(?:aerogel|bulk|composites?|fabrics?|fib(?:er|re)s?|"
+    r"filaments?|films?|mats?|membranes?|nanofib(?:er|re)s?|"
+    r"samples?|scaffolds?|specimens?)"
+)
+_PROPERTY_ONLY_PERFORMANCE_SAMPLE_RE = re.compile(
+    r"(?i)^(?:(?:highest|lowest|maximum|minimum|initial|final|average|mean|"
+    r"peak|ultimate)\s+)*(?:(?:compressive|tensile|mechanical|electrical|"
+    r"thermal|flexural|storage|loss|young'?s?)\s+)*(?:strength|modulus|"
+    r"conductivity|resistivity|elongation|strain|stress|toughness|hardness|"
+    r"porosity|density|crystallinity|roughness|permittivity|sensitivity|"
+    r"contact\s+angle)(?:\s+(?:value|result|property))?$"
+)
+
+
+def _raw_evidence_for_sample_alignment(evidence_text: Any) -> str:
+    """Exclude synthetic sample-card evidence from identity reconciliation."""
+
+    evidence = str(evidence_text or "")
+    return _SAMPLE_CARD_EVIDENCE_MARKER_RE.split(
+        evidence,
+        maxsplit=1,
+    )[0].strip()
+
+
+def _generic_form_base(sample_id: str) -> str:
+    """Remove only trailing generic material-form words from an identity."""
+
+    words = normalize_for_match(sample_id).split()
+    while words and words[-1] in _GENERIC_MATERIAL_FORM_WORDS:
+        words.pop()
+    return " ".join(words)
+
+
+def _normalized_phrase_present(text: str, phrase: str) -> bool:
+    if not text or not phrase:
+        return False
+    return bool(re.search(
+        rf"(?<![a-z0-9]){re.escape(phrase)}(?![a-z0-9])",
+        text,
+    ))
+
+
+def _known_samples_named_in_evidence(
+    evidence_text: Any,
+    known_sample_ids: list[str],
+) -> list[str]:
+    """Return known samples explicitly and uniquely nameable in raw evidence.
+
+    Exact identities are preferred. A generic-form alias is accepted only when
+    the evidence supplies another generic material form, such as ``scaffolds``
+    for a catalog identity ending in ``filament``. If two catalog identities
+    collapse to the same base, both remain matches so callers will not guess.
+    """
+
+    raw_evidence = _raw_evidence_for_sample_alignment(evidence_text)
+    normalized_evidence = normalize_for_match(raw_evidence)
+    if not normalized_evidence:
+        return []
+
+    matches: list[str] = []
+    for sample_id in known_sample_ids:
+        normalized_id = normalize_for_match(sample_id)
+        if _normalized_phrase_present(normalized_evidence, normalized_id):
+            matches.append(sample_id)
+            continue
+
+        base = _generic_form_base(sample_id)
+        if not base or base == normalized_id:
+            continue
+        alias_pattern = (
+            rf"(?<![a-z0-9]){re.escape(base)}\s+"
+            rf"{_GENERIC_MATERIAL_FORM_PATTERN}(?![a-z0-9])"
+        )
+        if re.search(alias_pattern, normalized_evidence):
+            matches.append(sample_id)
+    return list(dict.fromkeys(matches))
+
+
+def _is_property_only_performance_sample(sample_id: str) -> bool:
+    normalized = normalize_for_match(sample_id)
+    # Keep this check deliberately lexical and high precision. The metric
+    # dictionary's fuzzy substring lookup can classify short material
+    # acronyms as metrics (for example, ``PLA`` matches an ``in-plane``
+    # synonym), which would drop legitimate table rows.
+    return bool(_PROPERTY_ONLY_PERFORMANCE_SAMPLE_RE.fullmatch(normalized))
+
+
 def performances_to_facts(
     performances: list[dict],
     *,
@@ -1139,16 +1457,30 @@ def performances_to_facts(
 ) -> list[dict]:
     facts: list[dict] = []
     counter = start_index
+    known_ids = list(dict.fromkeys(
+        normalize_sample_id(value)
+        for value in (known_sample_ids or [])
+        if (
+            is_material_sample_id(value)
+            and not _is_property_only_performance_sample(value)
+        )
+    ))
     for row in performances:
         if not isinstance(row, dict):
             continue
         sid = normalize_sample_id(row.get("sample_id") or "")
-        known_ids = list(dict.fromkeys(
-            normalize_sample_id(value)
-            for value in (known_sample_ids or [])
-            if is_material_sample_id(value)
-        ))
-        if not is_material_sample_id(sid):
+        evidence_matches = _known_samples_named_in_evidence(
+            row.get("evidence_text"),
+            known_ids,
+        )
+        if len(evidence_matches) == 1:
+            evidence_sid = evidence_matches[0]
+            if normalize_for_match(sid) != normalize_for_match(evidence_sid):
+                sid = evidence_sid
+        if (
+            not is_material_sample_id(sid)
+            or _is_property_only_performance_sample(sid)
+        ):
             if len(known_ids) == 1:
                 sid = known_ids[0]
             else:
@@ -1188,6 +1520,126 @@ def performances_to_facts(
             "_source_block_id": str(row.get("source_block_id") or "").strip() or None,
             "_source_page": source_page,
         })
+    return facts
+
+
+def processes_to_facts(
+    processes: list[dict],
+    *,
+    known_sample_ids: list[str],
+    start_index: int = 1,
+) -> list[dict]:
+    """Convert grounded process rows into one assigned fact per known sample."""
+
+    known_by_key = {
+        normalize_for_match(sample_id): normalize_sample_id(sample_id)
+        for sample_id in known_sample_ids
+        if is_material_sample_id(sample_id)
+    }
+    facts: list[dict] = []
+    counter = start_index
+    for row in processes:
+        if not isinstance(row, dict):
+            continue
+        raw_sample_ids = row.get("sample_ids")
+        if not isinstance(raw_sample_ids, list):
+            raw_sample_ids = [row.get("sample_id") or raw_sample_ids]
+        sample_ids = list(dict.fromkeys(
+            known_by_key[key]
+            for raw_sample_id in raw_sample_ids
+            if (
+                key := normalize_for_match(raw_sample_id or "")
+            ) in known_by_key
+        ))
+        if not sample_ids and len(known_by_key) == 1:
+            sample_ids = [next(iter(known_by_key.values()))]
+
+        metric_raw = str(
+            row.get("process_metric")
+            or row.get("metric_or_parameter")
+            or ""
+        ).strip()
+        value = str(
+            row.get("process_value")
+            or row.get("value")
+            or ""
+        ).strip()
+        evidence = str(row.get("evidence_text") or "").strip()
+        if not sample_ids or not metric_raw or not value or not evidence:
+            continue
+        metric = find_process_parameter_canonical(metric_raw) or metric_raw
+        source_page = row.get("source_page")
+        try:
+            source_page = (
+                int(source_page)
+                if source_page not in (None, "")
+                else None
+            )
+        except (TypeError, ValueError):
+            source_page = None
+        try:
+            confidence = float(row.get("confidence") or 0.90)
+        except (TypeError, ValueError):
+            confidence = 0.90
+
+        for sample_id in sample_ids:
+            primary_evidence = re.split(
+                r"(?i)\[source\s+block\s+context\]",
+                evidence,
+                maxsplit=1,
+            )[0]
+            normalized_primary = normalize_for_match(primary_evidence)
+            normalized_sample = normalize_for_match(sample_id)
+            if (
+                re.search(r"\bdense\s+fib(?:er|re)s?\b", normalized_primary)
+                and re.search(
+                    r"\b(?:aerogel|porous)\b",
+                    normalized_sample,
+                )
+            ):
+                # Composition-matched dense controls are sometimes prepared
+                # only for density testing after the porous series. Their
+                # "without lyophilization" route must not overwrite the
+                # aerogel samples' freeze-dried route.
+                continue
+            if (
+                re.search(r"\bporous\s+fib(?:er|re)s?\b", normalized_primary)
+                and re.search(r"\bdense\b", normalized_sample)
+            ):
+                continue
+            fact_id = f"HP{counter:04d}"
+            counter += 1
+            facts.append({
+                "fact_id": fact_id,
+                "fact_type": "process",
+                "subject_text": metric,
+                "candidate_sample_ids": [sample_id],
+                "metric_or_parameter": metric,
+                "value": value,
+                "unit": row.get("process_unit") or row.get("unit") or "",
+                "method": row.get("process_method") or row.get("method") or "",
+                "condition": (
+                    row.get("process_condition")
+                    or row.get("condition")
+                    or ""
+                ),
+                "category": "process",
+                "evidence_text": evidence,
+                "source_location": (
+                    row.get("source_location") or "experimental"
+                ),
+                "extraction_method": "AI_holistic",
+                "confidence": min(0.95, max(0.70, confidence)),
+                "assigned_sample_id": sample_id,
+                "assignment_status": "assigned",
+                "assignment_confidence": 0.90,
+                "assignment_reason": "holistic_process_sweep",
+                "_data_source_type": "experimental_condition",
+                "_source_block_id": (
+                    str(row.get("source_block_id") or "").strip() or None
+                ),
+                "_source_page": source_page,
+            })
     return facts
 
 
@@ -1339,6 +1791,9 @@ _CONTEXT_ONLY_TABLE_CAPTION_RE = re.compile(
 _EMPTY_TABLE_CELL_RE = re.compile(r"^(?:[-–—]+|n/?a|none|not reported|[�]+)$", re.I)
 _TABLE_IDENTITY_HEADERS = frozenset({
     "code",
+    "constituent",
+    "constituent phase",
+    "constituents",
     "fabric",
     "fabric type",
     "factor",
@@ -1390,6 +1845,11 @@ def _table_header_is_non_result(column: str) -> bool:
     """Return True for table columns that identify inputs or test conditions."""
     if not column or _TABLE_NON_RESULT_HEADER_RE.search(column):
         return True
+    if (
+        _normalized_table_header(column) == "c"
+        and re.search(r"(?i)(?:wt|vol|mol)\s*\.?\s*%", column)
+    ):
+        return True
     if _process_metric_for_label(column):
         return True
     return _normalized_table_header(column) in _TABLE_IDENTITY_HEADERS
@@ -1406,6 +1866,9 @@ def _table_sample_column_index(columns: list[str]) -> int | None:
             index
             for index, column in enumerate(columns)
             if re.search(r"(?i)\b(?:sample|specimen)\b", column)
+            or _normalized_table_header(column) in {
+                "constituent", "constituents", "constituent phase",
+            }
         ),
         None,
     )
@@ -2322,11 +2785,23 @@ _TABLE_STATISTICAL_ANNOTATION_RE = re.compile(
     r"(?is)^(?P<value>.+?)\s*"
     r"(?P<annotation>\(\s*(?:reference|p\b[^)]*)\))\s*$"
 )
+_TABLE_PLUS_MINUS_RE = re.compile(
+    r"(?is)^\s*(?P<value>[+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\s*"
+    r"(?:±|\+/-)\s*"
+    r"(?P<spread>\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\s*$"
+)
 
 
 def _split_table_statistical_annotation(value: Any) -> tuple[str, str]:
     """Separate a numeric measurement from a trailing p-value/reference note."""
     raw = str(value or "").strip()
+    plus_minus = _TABLE_PLUS_MINUS_RE.match(raw)
+    if plus_minus:
+        spread = plus_minus.group("spread")
+        return (
+            plus_minus.group("value"),
+            f"standard deviation=± {spread}",
+        )
     match = _TABLE_STATISTICAL_ANNOTATION_RE.match(raw)
     if not match:
         return raw, ""
@@ -2369,7 +2844,14 @@ def _table_metric_matches_column(metric: str, column: str) -> bool:
 def _table_metric_canonical(label: str, full_column: str = "") -> str | None:
     """Resolve compact mechanical table symbols using their unit-bearing header."""
     base = _label_without_unit(label)
-    compact = re.sub(r"[^A-Za-z0-9]", "", base).lower()
+    compact = re.sub(
+        r"[^A-Za-z0-9]",
+        "",
+        base.replace("η", "eta")
+        .replace("Φ", "phi")
+        .replace("φ", "phi")
+        .replace("ϕ", "phi"),
+    ).lower()
     unit = _unit_from_table_label(full_column or label).lower()
     if compact == "uts" and unit in {"mpa", "gpa", "kpa", "pa"}:
         return "tensile_strength"
@@ -2377,6 +2859,12 @@ def _table_metric_canonical(label: str, full_column: str = "") -> str | None:
         return "Youngs_modulus"
     if compact == "d" and unit in {"m²/s", "m2/s"}:
         return "water_diffusion_coefficient"
+    if compact == "eta0":
+        return "zero_shear_viscosity"
+    if compact == "etasp":
+        return "specific_viscosity"
+    if compact == "phi" and unit in {"nm", "μm", "µm", "um", "mm"}:
+        return "fiber_diameter"
     normalized = canonicalize_metric_name(base or label)
     return find_metric_canonical(normalized)
 
@@ -2842,6 +3330,13 @@ def table_rows_to_facts(
         )
         _, source_annotation = _split_table_statistical_annotation(source_cell)
         statistical_annotation = source_annotation or proposed_annotation
+        source_unit = _unit_from_table_label(source_column_name)
+        if (
+            statistical_annotation.startswith("standard deviation=")
+            and source_unit
+            and not statistical_annotation.endswith(source_unit)
+        ):
+            statistical_annotation = f"{statistical_annotation} {source_unit}"
         condition = str(item.get("condition") or "").strip()
         if (
             statistical_annotation
@@ -2892,6 +3387,99 @@ def table_rows_to_facts(
     return facts
 
 
+_IMPLICIT_SERIES_AXIS_RE = re.compile(
+    r"(?i)^(?:c|concentration|polymer concentration|solution concentration)$"
+)
+_IMPLICIT_SERIES_METRICS = frozenset({
+    "zero_shear_viscosity",
+    "specific_viscosity",
+    "fiber_diameter",
+})
+
+
+def _table_implicit_series_axis_index(columns: list[str]) -> int | None:
+    """Return a concentration axis that can safely identify a material series."""
+    matches = [
+        index
+        for index, column in enumerate(columns)
+        if _IMPLICIT_SERIES_AXIS_RE.fullmatch(_normalized_table_header(column))
+        and re.search(r"(?i)(?:wt|vol|mol)\s*\.?\s*%", column)
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _table_implicit_series_sample_id(
+    metric: str,
+    *,
+    header_text: str,
+    row_text: str,
+    columns: list[str],
+    axis_index: int,
+    known_sample_ids: list[str] | None,
+) -> str:
+    """Bind a concentration-series result to one unambiguous catalog family."""
+    if metric not in _IMPLICIT_SERIES_METRICS:
+        return ""
+    cells = _table_cells(row_text)
+    if axis_index >= len(cells):
+        return ""
+    concentration_match = re.search(r"[+-]?\d+(?:\.\d+)?", cells[axis_index])
+    if not concentration_match:
+        return ""
+    concentration = float(concentration_match.group(0))
+
+    caption = _table_caption_text(header_text)
+    material_codes = {
+        token.lower()
+        for token in re.findall(r"\b[A-Z][A-Z0-9]{1,11}\b", caption)
+        if token not in {"TABLE", "FIG", "CFS", "ES"}
+    }
+    if not material_codes:
+        return ""
+
+    candidates = [
+        normalize_sample_id(value)
+        for value in known_sample_ids or []
+        if is_material_sample_id(value)
+        and any(
+            code in normalize_for_match(value).replace(" ", "")
+            for code in material_codes
+        )
+    ]
+    if not candidates:
+        return ""
+
+    wants_solution = metric in {
+        "zero_shear_viscosity", "specific_viscosity",
+    }
+    ranked: list[tuple[int, str]] = []
+    for candidate in dict.fromkeys(candidates):
+        normalized = normalize_for_match(candidate)
+        score = 6
+        has_solution = "solution" in normalized
+        has_fiber_form = bool(re.search(r"\b(?:fiber|fibre|mat)\b", normalized))
+        if wants_solution:
+            score += 8 if has_solution else -4 if has_fiber_form else 0
+        else:
+            score += 8 if has_fiber_form else -4 if has_solution else 0
+        if "series" in normalized:
+            score += 3
+
+        loading = re.search(
+            r"(?i)(?<![\d.])(\d+(?:\.\d+)?)\s*(?:wt|vol|mol)",
+            candidate,
+        )
+        if loading:
+            score += 6 if float(loading.group(1)) == concentration else -8
+        else:
+            score += 2
+        ranked.append((score, candidate))
+
+    best_score = max(score for score, _ in ranked)
+    best = {candidate for score, candidate in ranked if score == best_score}
+    return next(iter(best)) if best_score >= 10 and len(best) == 1 else ""
+
+
 def deterministic_performance_table_facts(
     *,
     table_text: str,
@@ -2904,15 +3492,33 @@ def deterministic_performance_table_facts(
 ) -> list[dict]:
     """Extract unambiguous MinerU table cells without an LLM call.
 
-    This fast path is intentionally narrow: it requires an explicit sample-like
-    identity column and a dictionary-known performance metric for every emitted
-    cell. Broad labels such as ``Groups`` are accepted only in the first column.
-    Complex or unknown columns remain available to the LLM path.
+    This fast path is intentionally narrow: it requires either an explicit
+    sample-like identity column or a concentration-series table whose material
+    family and result columns are unambiguous. Complex or unknown columns remain
+    available to the LLM path.
     """
     header, source_rows = _table_row_map(table_text)
     columns_line = _table_columns_line(header)
     columns = _table_cells(columns_line) if columns_line else []
-    if not columns or _table_sample_column_index(columns) is None:
+    if not columns:
+        return []
+    sample_column = _table_sample_column_index(columns)
+    series_axis = (
+        _table_implicit_series_axis_index(columns)
+        if sample_column is None
+        else None
+    )
+    canonical_columns = {
+        canonical
+        for column in columns
+        if (canonical := _table_metric_canonical(column, column))
+    }
+    if sample_column is None and (
+        series_axis is None
+        or not {
+            "zero_shear_viscosity", "specific_viscosity",
+        }.issubset(canonical_columns)
+    ):
         return []
 
     rows: list[dict] = []
@@ -2924,19 +3530,33 @@ def deterministic_performance_table_facts(
         if not canonical:
             continue
         source_row = source_rows.get(row_number, "")
-        sample_id = _table_row_sample_id(
-            header,
-            source_row,
-            known_sample_ids=known_sample_ids,
+        sample_id = (
+            _table_row_sample_id(
+                header,
+                source_row,
+                known_sample_ids=known_sample_ids,
+            )
+            if sample_column is not None
+            else _table_implicit_series_sample_id(
+                canonical,
+                header_text=header,
+                row_text=source_row,
+                columns=columns,
+                axis_index=series_axis,
+                known_sample_ids=known_sample_ids,
+            )
         )
         if not is_material_sample_id(sample_id):
             continue
+        unit = _unit_from_table_label(column)
+        if canonical == "specific_viscosity" and not unit:
+            unit = "dimensionless"
         rows.append({
             "row": row_number,
             "sample_id": sample_id,
             "metric": canonical,
             "value": parse_scientific_value(cell) or cell,
-            "unit": _unit_from_table_label(column),
+            "unit": unit,
             "condition": "; ".join(
                 part
                 for part in (caption, *_table_row_conditions(header, source_row))
@@ -2959,6 +3579,15 @@ def deterministic_performance_table_facts(
         fact["extraction_method"] = "rule_table_performance"
         fact["assignment_reason"] = "mineru_table_cell_grounded"
         fact["confidence"] = 0.97
+        if series_axis is not None:
+            row_number = fact.get("_source_table_row")
+            source_row = source_rows.get(int(row_number), "") if row_number is not None else ""
+            axis_value = ""
+            cells = _table_cells(source_row)
+            if series_axis < len(cells):
+                axis_value = cells[series_axis]
+            fact["_source_table_axis"] = columns[series_axis]
+            fact["_source_table_axis_value"] = axis_value
     return facts
 
 
@@ -3659,6 +4288,9 @@ async def run_holistic_extraction(
     background_timeout: int = 60,
     background_max_chars: int = 9000,
     background_max_tokens: int = 1400,
+    process_timeout: int | None = None,
+    process_max_chars: int = 14000,
+    process_max_tokens: int = 6000,
     table_timeout: int = 75,
 ) -> HolisticExtractionResult:
     """Run large-context extraction with bounded, block-aware parallel sweeps."""
@@ -3676,6 +4308,7 @@ async def run_holistic_extraction(
     if not experimental.strip() and not results.strip():
         return result
 
+    process_context = ""
     if experimental.strip():
         sample_chunks = select_sample_catalog_context_chunks(
             chunks,
@@ -3705,6 +4338,15 @@ async def run_holistic_extraction(
         )
         if len(background_context) < 1000:
             background_context = experimental[:background_max_chars]
+        process_chunks = select_process_context_chunks(
+            chunks,
+            max_chars=process_max_chars,
+        )
+        process_context = merge_chunks_text(
+            process_chunks,
+            sections=EXPERIMENTAL_SECTIONS,
+            max_chars=process_max_chars,
+        )
 
         async def _extract_catalog(
             prompt: str,
@@ -3841,12 +4483,53 @@ async def run_holistic_extraction(
             )
         return parsed if isinstance(parsed, dict) else {}
 
+    async def _run_processes() -> list[dict]:
+        async with semaphore:
+            parsed, _ = await llm_json(
+                PROCESS_PROMPT.format(
+                    sample_ids=", ".join(sample_ids) or "unknown",
+                ),
+                f"Experimental process text:\n{process_context}",
+                max_tokens=process_max_tokens,
+                timeout_seconds=min(
+                    llm_timeout,
+                    process_timeout or llm_timeout,
+                ),
+                stage="holistic_processes",
+                reasoning_effort=catalog_reasoning_effort,
+            )
+        rows = _response_rows(parsed, "processes", "facts", "_items")
+        return processes_to_facts(
+            rows,
+            known_sample_ids=sample_ids,
+        )
+
     if experimental.strip() and catalog_supports_shared_background(result.samples):
         tasks.append(("background", _run_background()))
+    if process_context.strip() and sample_ids:
+        tasks.append(("process", _run_processes()))
 
     has_result_signal = bool(
         _MEASUREMENT_RE.search(results) or _RESULT_TERM_RE.search(results)
     )
+    if skip_empty_performance and sample_ids and not has_result_signal:
+        fallback_chunks = select_mislabeled_performance_context_chunks(
+            chunks,
+            known_sample_ids=sample_ids,
+            max_chars=results_max_chars,
+        )
+        if fallback_chunks:
+            results = "\n\n".join(
+                f"{_chunk_header(chunk)}\n{str(chunk.get('raw_text') or '').strip()}"
+                for chunk in fallback_chunks
+            )
+            result.results_chars = len(results)
+            has_result_signal = bool(
+                _MEASUREMENT_RE.search(results) and _RESULT_TERM_RE.search(results)
+            )
+            result.warnings.append(
+                "holistic_performance_fallback:mislabelled_own_work"
+            )
     if (
         results.strip()
         and sample_ids

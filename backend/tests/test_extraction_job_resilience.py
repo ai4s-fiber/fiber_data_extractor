@@ -7,6 +7,7 @@ import pytest
 from app.services.extraction_jobs import (
     ExtractionJobBackend,
     classify_extraction_error,
+    effective_extraction_job_limit,
     is_retryable_extraction_error,
 )
 from app.services.extractor_v7.exceptions import NoExtractableResults
@@ -38,6 +39,21 @@ def test_suspicious_empty_result_is_classified_and_not_retried():
 
     assert classify_extraction_error(error) == "no_extractable_results"
     assert is_retryable_extraction_error(error) is False
+
+
+def test_sqlite_in_process_runner_caps_concurrency_to_one():
+    assert effective_extraction_job_limit(
+        3,
+        database_url="sqlite+aiosqlite:///./pipeline.db",
+    ) == 1
+    assert effective_extraction_job_limit(
+        3,
+        database_url="postgresql+asyncpg://db/app",
+    ) == 3
+    assert effective_extraction_job_limit(
+        0,
+        database_url="postgresql+asyncpg://db/app",
+    ) == 1
 
 
 @pytest.mark.asyncio

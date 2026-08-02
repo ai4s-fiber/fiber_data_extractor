@@ -6,8 +6,10 @@ import re
 
 from app.services.grouping import (
     is_narrative_sample_phrase,
+    is_property_only_sample_label,
     normalize_for_match,
     normalize_sample_id,
+    strip_nonmaterial_sample_prefix,
 )
 from app.services.metrics_dictionary import (
     find_metric_canonical,
@@ -96,6 +98,8 @@ def _nonmaterial_sample_reason(sample_id: str) -> str:
     words = re.sub(r"[_/-]+", " ", normalize_for_match(sample_id)).strip()
     if not words:
         return ""
+    if is_property_only_sample_label(words):
+        return "sample_id_was_measurement_label"
     if _DEVICE_ONLY_SAMPLE_RE.fullmatch(words):
         return "sample_id_was_apparatus"
     if _GENERIC_COLLECTION_SAMPLE_RE.fullmatch(words):
@@ -159,6 +163,61 @@ def _loading_tokens_in_text(text: str) -> set[str]:
 
 
 _INFERRED_TEMP_SUFFIX_RE = re.compile(r"(?i)[-\s](\d+(?:\.\d+)?)\s*°?\s*c\s*$")
+_EMBEDDED_CONDITION_TOKEN_RE = re.compile(
+    r"(?i)^(?:(?P<temperature>[+-]?\d+(?:\.\d+)?\s*°?\s*c)|"
+    r"(?P<minutes>\d+(?:\.\d+)?\s*min(?:ute)?s?))$"
+)
+
+
+def _canonical_embedded_condition(token: str) -> str:
+    match = _EMBEDDED_CONDITION_TOKEN_RE.fullmatch(token.strip())
+    if not match:
+        return ""
+    if match.group("temperature"):
+        value = re.search(r"[+-]?\d+(?:\.\d+)?", match.group("temperature"))
+        return f"{value.group(0)} °C" if value else ""
+    value = re.search(r"\d+(?:\.\d+)?", match.group("minutes") or "")
+    return f"{value.group(0)} min" if value else ""
+
+
+def _strip_embedded_underscore_conditions(
+    sample_id: str,
+    evidence: str,
+) -> tuple[str, str, list[str]]:
+    """Move underscore-delimited temperature/time tokens into condition."""
+    if "_" not in sample_id or is_explicit_sample_name_in_evidence(
+        sample_id, evidence
+    ):
+        return sample_id, "", []
+
+    parts = sample_id.split("_")
+    kept: list[str] = []
+    conditions: list[str] = []
+    index = 0
+    while index < len(parts):
+        current = _canonical_embedded_condition(parts[index])
+        if (
+            current
+            and index + 2 < len(parts)
+            and parts[index + 1].lower() == "to"
+        ):
+            end = _canonical_embedded_condition(parts[index + 2])
+            if end:
+                conditions.append(f"{current} to {end}")
+                index += 3
+                continue
+        if current:
+            conditions.append(current)
+        else:
+            kept.append(parts[index])
+        index += 1
+
+    if not conditions or not any(part.strip() for part in kept):
+        return sample_id, "", []
+    cleaned = normalize_sample_id("_".join(part for part in kept if part.strip()))
+    return cleaned, "; ".join(conditions), [
+        "moved_embedded_condition_to_condition"
+    ]
 
 
 def strip_inferred_temperature_suffix(sample_id: str, evidence: str) -> tuple[str, list[str]]:
@@ -216,6 +275,12 @@ def sanitize_sample_id(sample_id: str, evidence: str = "") -> tuple[str, str, li
     if not sid:
         return "", "", notes
 
+    sid, reference_note = strip_nonmaterial_sample_prefix(sid)
+    if reference_note:
+        notes.append(reference_note)
+    if not sid:
+        return "", "", notes
+
     if is_narrative_sample_phrase(sid):
         notes.append("sample_id_was_narrative_phrase")
         return "", "", notes
@@ -257,6 +322,15 @@ def sanitize_sample_id(sample_id: str, evidence: str = "") -> tuple[str, str, li
             sid = normalize_sample_id(base)
             condition_appendix = suffix
             notes.append("moved_contextual_sample_suffix_to_condition")
+
+    sid, embedded_condition, embedded_notes = _strip_embedded_underscore_conditions(
+        sid, evidence
+    )
+    if embedded_condition:
+        condition_appendix = "; ".join(
+            value for value in (condition_appendix, embedded_condition) if value
+        )
+    notes.extend(embedded_notes)
 
     sid, temp_notes = strip_inferred_temperature_suffix(sid, evidence)
     notes.extend(temp_notes)

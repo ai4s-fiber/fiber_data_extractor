@@ -70,6 +70,26 @@ def test_grounded_results_table_is_not_background_due_to_nearby_citation():
     assert is_background_or_reference_fact(fact) is False
 
 
+def test_grounded_constituent_table_with_explicit_external_sources_is_reference():
+    fact = {
+        "fact_type": "performance",
+        "extraction_method": "AI_holistic_table",
+        "_source_table_row": 1,
+        "assigned_sample_id": "Epoxy",
+        "metric_or_parameter": "Youngs_modulus",
+        "value": "3500",
+        "unit": "MPa",
+        "evidence_text": (
+            "Table 1 Material properties of constituents used in the FE "
+            "analysis [24,63-65].\n"
+            "[columns]\tS. No.\tConstituent\tYoung's modulus (MPa)\n"
+            "[row 1]\t1\tEpoxy\t3500"
+        ),
+    }
+
+    assert is_background_or_reference_fact(fact) is True
+
+
 def test_persisted_structured_table_fact_is_grounded_without_private_coordinates():
     fact = {
         "fact_type": "performance",

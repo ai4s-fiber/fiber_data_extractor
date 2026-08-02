@@ -181,8 +181,29 @@ def is_grounded_table_performance_fact(fact: dict) -> bool:
     return False
 
 
+def _grounded_table_has_explicit_external_sources(fact: dict) -> bool:
+    evidence = str(fact.get("evidence_text") or "")
+    prefix = evidence.split("[columns]", 1)[0]
+    captions = [
+        line.strip()
+        for line in prefix.splitlines()
+        if re.search(r"(?i)\btable\s*\d+", line)
+    ]
+    citation_re = re.compile(r"\[\s*\d+(?:\s*[-–,]\s*\d+)*\s*\]")
+    external_context_re = re.compile(
+        r"(?i)\b(?:used|adopted|taken|sourced)\b.{0,80}"
+        r"\b(?:FE|finite\s+element|simulation|model(?:ing)?|analysis)\b"
+    )
+    return any(
+        citation_re.search(caption) and external_context_re.search(caption)
+        for caption in captions
+    )
+
+
 def is_background_or_reference_fact(fact: dict) -> bool:
     if is_grounded_table_performance_fact(fact):
+        if _grounded_table_has_explicit_external_sources(fact):
+            return True
         return False
     text = " ".join([
         str(fact.get("evidence_text") or ""),
