@@ -143,6 +143,9 @@ def test_material_sample_filter_rejects_property_peak_and_joined_ids():
 
 def test_material_sample_filter_rejects_confirmed_narrative_fragments():
     for sample_id in (
+        "to",
+        "its original intensity",
+        "compared with that of the solid AgNFP-PU fiber",
         "double that of the control group",
         "11.5% from",
         "machined fibers in one layer",
@@ -158,6 +161,19 @@ def test_material_sample_filter_rejects_model_and_generic_system_labels():
         "BF_reinforced_geopolymer_composite_unified_model"
     )
     assert not is_material_sample_id("BF_reinforced_geopolymer_composites")
+    assert not is_material_sample_id("not at all")
+    assert not is_material_sample_id("all purified constructs")
+    assert not is_material_sample_id("spun fibers (all types")
+    assert not is_material_sample_id("engineered protein fibers (all")
+
+
+def test_material_sample_filter_rejects_property_phrases_but_keeps_materials():
+    assert not is_material_sample_id("initial electrical conductivity")
+    assert not is_material_sample_id(
+        "mechanical strength of the hollow AgNFP-PU fiber"
+    )
+    assert is_material_sample_id("solid AgNFP-PU fiber")
+    assert is_material_sample_id("hollow AgNFP-PU fiber")
 
 
 def test_anaphoric_matrix_reference_remains_a_valid_sample_after_cleanup():

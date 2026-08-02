@@ -648,12 +648,15 @@ class V7ExtractorService:
     def _enrich_sample_cards_from_process_facts(
         sample_cards: list[dict], facts: list[dict],
     ) -> list[dict]:
-        """Apply explicit shared fabrication settings to material fiber cards."""
+        """Apply shared or explicitly assigned fabrication facts to cards."""
         process_facts = [
             fact for fact in facts
             if fact.get("fact_type") == "process"
             and not fact.get("_hard_reject")
-            and fact.get("_apply_to_all_fiber_samples")
+            and (
+                fact.get("_apply_to_all_fiber_samples")
+                or fact.get("assigned_sample_id")
+            )
         ]
         if not process_facts:
             return sample_cards
@@ -665,12 +668,25 @@ class V7ExtractorService:
                 fiber_type not in {"", "bulk", "powder", "solution"}
                 or re.search(r"\b(?:nanofiber|fiber|fibre|fibrous\s+mat|membrane|yarn)\b", sid)
             )
-            if not is_fiber:
+            applicable_facts = [
+                fact
+                for fact in process_facts
+                if (
+                    fact.get("_apply_to_all_fiber_samples") and is_fiber
+                )
+                or (
+                    fact.get("assigned_sample_id")
+                    and normalize_for_match(
+                        fact.get("assigned_sample_id") or ""
+                    ) == sid
+                )
+            ]
+            if not applicable_facts:
                 continue
 
             parameters = str(card.get("process_parameters") or "").strip()
             evidence = str(card.get("process_evidence") or "").strip()
-            for fact in process_facts:
+            for fact in applicable_facts:
                 metric = find_process_parameter_canonical(
                     str(fact.get("metric_or_parameter") or "")
                 ) or str(fact.get("metric_or_parameter") or "")
@@ -681,6 +697,36 @@ class V7ExtractorService:
                         card["spinning_method"] = value
                     if not card.get("process_route"):
                         card["process_route"] = value
+                elif (
+                    value
+                    and not re.search(r"\d", value)
+                    and re.search(
+                        r"(?i)(?:method|route|spinn|extrusion|fabricat|"
+                        r"prepar|forming)",
+                        metric,
+                    )
+                ):
+                    card["process_route"] = V7ExtractorService._append_unique(
+                        str(card.get("process_route") or ""),
+                        value,
+                    )
+                    if re.search(r"(?i)spinn|extrusion", value):
+                        card["spinning_method"] = (
+                            card.get("spinning_method") or value
+                        )
+                elif metric in {
+                    "post_treatment",
+                    "post-treatment",
+                    "washing",
+                    "freeze_drying",
+                    "drying_method",
+                } and value:
+                    card["post_treatment"] = (
+                        V7ExtractorService._append_unique(
+                            str(card.get("post_treatment") or ""),
+                            f"{value}{(' ' + unit) if unit else ''}",
+                        )
+                    )
                 elif value and re.search(r"\d", value):
                     entry = f"{metric}={value}{(' ' + unit) if unit else ''}"
                     parameters = V7ExtractorService._append_unique(parameters, entry)
@@ -1781,9 +1827,10 @@ class V7ExtractorService:
                         fact["_source_block_id"] = source_chunk.get("source_block_id")
                         fact["_source_page"] = source_chunk.get("page_number")
                         fact["_source_bbox"] = source_chunk.get("source_bbox")
-                        fact["extraction_method"] = (
-                            V7ExtractorService._extraction_method_for_chunk(source_chunk)
-                        )
+                        if fact.get("extraction_method") != "AI_holistic_table":
+                            fact["extraction_method"] = (
+                                V7ExtractorService._extraction_method_for_chunk(source_chunk)
+                            )
                         if (
                             is_rough_source_location(fact.get("source_location") or "")
                             or not re.search(

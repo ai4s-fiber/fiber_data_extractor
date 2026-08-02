@@ -1,0 +1,1816 @@
+{
+  "dataset": {
+    "_id": 2081660157305163778
+  },
+  "template": {
+    "_id": 2081658374180704257,
+    "object": {
+      "id": "object",
+      "label": "对象",
+      "blocks": {
+        "_ord": [
+          "数据记录键",
+          "投影版本",
+          "文献编号",
+          "数据状态",
+          "文献标题",
+          "DOI或链接",
+          "发表年份",
+          "期刊",
+          "原始文件名",
+          "样品编号",
+          "样品组编号",
+          "样品别名",
+          "材料体系",
+          "纤维类型",
+          "成分表达式",
+          "变量名称",
+          "变量原始值",
+          "变量单位",
+          "基体名称",
+          "基体含量原始值",
+          "基体单位",
+          "填料或改性组分",
+          "溶剂或助剂"
+        ],
+        "期刊": {
+          "r": false,
+          "t": 1,
+          "misc": {
+            "grp": [],
+            "opt": [],
+            "type": 0,
+            "multi": false,
+            "stats": "0",
+            "imageFormats": []
+          },
+          "stats": "0"
+        },
+        "DOI或链接": {
+          "r": false,
+          "t": 1,
+          "misc": {
+            "grp": [],
+            "opt": [],
+            "type": 0,
+            "multi": false,
+            "stats": "0",
+            "imageFormats": []
+          },
+          "stats": "0"
+        },
+        "发表年份": {
+          "r": false,
+          "t": 2,
+          "misc": {
+            "grp": [],
+            "opt": [],
+            "type": 0,
+            "multi": false,
+            "stats": "0",
+            "imageFormats": []
+          },
+          "stats": "0"
+        },
+        "变量单位": {
+          "r": false,
+          "t": 1,
+          "misc": {
+            "grp": [],
+            "opt": [],
+            "type": 0,
+            "multi": false,
+            "stats": "0",
+            "imageFormats": []
+          },
+          "stats": "0"
+        },
+        "变量名称": {
+          "r": false,
+          "t": 1,
+          "misc": {
+            "grp": [],
+            "opt": [],
+            "type": 0,
+            "multi": false,
+            "stats": "0",
+            "imageFormats": []
+          },
+          "stats": "0"
+        },
+        "基体单位": {
+          "r": false,
+          "t": 1,
+          "misc": {
+            "grp": [],
+            "opt": [],
+            "type": 0,
+            "multi": false,
+            "stats": "0",
+            "imageFormats": []
+          },
+          "stats": "0"
+        },
+        "基体名称": {
+          "r": false,
+          "t": 1,
+          "misc": {
+            "grp": [],
+            "opt": [],
+            "type": 0,
+            "multi": false,
+            "stats": "0",
+            "imageFormats": []
+          },
+          "stats": "0"
+        },
+        "投影版本": {
+          "r": true,
+          "t": 1,
+          "misc": {
+            "grp": [],
+            "opt": [],
+            "type": 0,
+            "multi": false,
+            "stats": "0",
+            "imageFormats": []
+          },
+          "stats": "0"
+        },
+        "数据状态": {
+          "r": true,
+          "t": 6,
+          "misc": {
+            "grp": [],
+            "opt": [
+              "已抽取",
+              "已验证",
+              "待复核",
+              "抽取中",
+              "未报告",
+              "不适用"
+            ],
+            "type": 0,
+            "multi": false,
+            "stats": "0",
+            "imageFormats": []
+          },
+          "stats": "0"
+        },
+        "文献标题": {
+          "r": false,
+          "t": 1,
+          "misc": {
+            "grp": [],
+            "opt": [],
+            "type": 0,
+            "multi": false,
+            "stats": "0",
+            "imageFormats": []
+          },
+          "stats": "0"
+        },
+        "文献编号": {
+          "r": true,
+          "t": 1,
+          "misc": {
+            "grp": [],
+            "opt": [],
+            "type": 0,
+            "multi": false,
+            "stats": "0",
+            "imageFormats": []
+          },
+          "stats": "0"
+        },
+        "材料体系": {
+          "r": false,
+          "t": 1,
+          "misc": {
+            "grp": [],
+            "opt": [],
+            "type": 0,
+            "multi": false,
+            "stats": "0",
+            "imageFormats": []
+          },
+          "stats": "0"
+        },
+        "样品别名": {
+          "r": false,
+          "t": 1,
+          "misc": {
+            "grp": [],
+            "opt": [],
+            "type": 0,
+            "multi": false,
+            "stats": "0",
+            "imageFormats": []
+          },
+          "stats": "0"
+        },
+        "样品编号": {
+          "r": false,
+          "t": 1,
+          "misc": {
+            "grp": [],
+            "opt": [],
+            "type": 0,
+            "multi": false,
+            "stats": "0",
+            "imageFormats": []
+          },
+          "stats": "0"
+        },
+        "纤维类型": {
+          "r": false,
+          "t": 1,
+          "misc": {
+            "grp": [],
+            "opt": [],
+            "type": 0,
+            "multi": false,
+            "stats": "0",
+            "imageFormats": []
+          },
+          "stats": "0"
+        },
+        "原始文件名": {
+          "r": false,
+          "t": 1,
+          "misc": {
+            "grp": [],
+            "opt": [],
+            "type": 0,
+            "multi": false,
+            "stats": "0",
+            "imageFormats": []
+          },
+          "stats": "0"
+        },
+        "变量原始值": {
+          "r": false,
+          "t": 1,
+          "misc": {
+            "grp": [],
+            "opt": [],
+            "type": 0,
+            "multi": false,
+            "stats": "0",
+            "imageFormats": []
+          },
+          "stats": "0"
+        },
+        "成分表达式": {
+          "r": false,
+          "t": 1,
+          "misc": {
+            "grp": [],
+            "opt": [],
+            "type": 0,
+            "multi": false,
+            "stats": "0",
+            "imageFormats": []
+          },
+          "stats": "0"
+        },
+        "数据记录键": {
+          "r": true,
+          "t": 1,
+          "misc": {
+            "grp": [],
+            "opt": [],
+            "type": 0,
+            "multi": false,
+            "stats": "0",
+            "imageFormats": []
+          },
+          "stats": "0"
+        },
+        "样品组编号": {
+          "r": false,
+          "t": 1,
+          "misc": {
+            "grp": [],
+            "opt": [],
+            "type": 0,
+            "multi": false,
+            "stats": "0",
+            "imageFormats": []
+          },
+          "stats": "0"
+        },
+        "溶剂或助剂": {
+          "r": false,
+          "t": 1,
+          "misc": {
+            "grp": [],
+            "opt": [],
+            "type": 0,
+            "multi": false,
+            "stats": "0",
+            "imageFormats": []
+          },
+          "stats": "0"
+        },
+        "基体含量原始值": {
+          "r": false,
+          "t": 1,
+          "misc": {
+            "grp": [],
+            "opt": [],
+            "type": 0,
+            "multi": false,
+            "stats": "0",
+            "imageFormats": []
+          },
+          "stats": "0"
+        },
+        "填料或改性组分": {
+          "r": false,
+          "t": 1,
+          "misc": {
+            "grp": [],
+            "opt": [],
+            "type": 0,
+            "multi": false,
+            "stats": "0",
+            "imageFormats": []
+          },
+          "stats": "0"
+        }
+      }
+    },
+    "operations": [
+      {
+        "id": "operation1",
+        "label": "制备与处理摘要",
+        "blocks": {
+          "_ord": [
+            "工艺路线",
+            "纺丝方法",
+            "工艺参数摘要",
+            "后处理摘要",
+            "成分证据",
+            "工艺证据"
+          ],
+          "工艺证据": {
+            "r": false,
+            "t": 1,
+            "misc": {
+              "grp": [],
+              "opt": [],
+              "type": 0,
+              "multi": false,
+              "stats": "0",
+              "imageFormats": []
+            },
+            "stats": "0"
+          },
+          "工艺路线": {
+            "r": false,
+            "t": 1,
+            "misc": {
+              "grp": [],
+              "opt": [],
+              "type": 0,
+              "multi": false,
+              "stats": "0",
+              "imageFormats": []
+            },
+            "stats": "0"
+          },
+          "成分证据": {
+            "r": false,
+            "t": 1,
+            "misc": {
+              "grp": [],
+              "opt": [],
+              "type": 0,
+              "multi": false,
+              "stats": "0",
+              "imageFormats": []
+            },
+            "stats": "0"
+          },
+          "纺丝方法": {
+            "r": false,
+            "t": 1,
+            "misc": {
+              "grp": [],
+              "opt": [],
+              "type": 0,
+              "multi": false,
+              "stats": "0",
+              "imageFormats": []
+            },
+            "stats": "0"
+          },
+          "后处理摘要": {
+            "r": false,
+            "t": 1,
+            "misc": {
+              "grp": [],
+              "opt": [],
+              "type": 0,
+              "multi": false,
+              "stats": "0",
+              "imageFormats": []
+            },
+            "stats": "0"
+          },
+          "工艺参数摘要": {
+            "r": false,
+            "t": 1,
+            "misc": {
+              "grp": [],
+              "opt": [],
+              "type": 0,
+              "multi": false,
+              "stats": "0",
+              "imageFormats": []
+            },
+            "stats": "0"
+          }
+        }
+      },
+      {
+        "id": "operation2",
+        "label": "审核与附件",
+        "blocks": {
+          "_ord": [
+            "记录审核状态",
+            "原始论文PDF",
+            "补充材料或原始测试文件",
+            "关键图像"
+          ],
+          "关键图像": {
+            "r": false,
+            "t": 4,
+            "misc": {
+              "grp": [],
+              "opt": [],
+              "type": 0,
+              "multi": true,
+              "stats": "0",
+              "imageFormats": [
+                ".jpg",
+                ".jpeg",
+                ".png",
+                ".gif",
+                ".bmp",
+                ".tiff",
+                ".psd",
+                ".svg",
+                ".webp",
+                ".heic",
+                ".tif"
+              ]
+            },
+            "stats": "0"
+          },
+          "原始论文PDF": {
+            "r": false,
+            "t": 5,
+            "misc": {
+              "grp": [],
+              "opt": [],
+              "type": 0,
+              "multi": false,
+              "stats": "0",
+              "fileFormats": [
+                ".pdf"
+              ],
+              "imageFormats": []
+            },
+            "stats": "0"
+          },
+          "记录审核状态": {
+            "r": false,
+            "t": 6,
+            "misc": {
+              "grp": [],
+              "opt": [
+                "待审核",
+                "已修改",
+                "通过",
+                "存疑",
+                "缺失",
+                "已删除"
+              ],
+              "type": 0,
+              "multi": false,
+              "stats": "0",
+              "imageFormats": []
+            },
+            "stats": "0"
+          },
+          "补充材料或原始测试文件": {
+            "r": false,
+            "t": 5,
+            "misc": {
+              "grp": [],
+              "opt": [],
+              "type": 0,
+              "multi": true,
+              "stats": "0",
+              "fileFormats": [
+                ".pdf",
+                ".doc",
+                ".docx",
+                ".txt",
+                ".xlsx",
+                ".xls",
+                ".csv",
+                ".json",
+                ".zip",
+                ".rar",
+                ".7z",
+                ".cif",
+                ".XYZ",
+                ".trr"
+              ],
+              "imageFormats": []
+            },
+            "stats": "0"
+          }
+        }
+      }
+    ],
+    "results": [
+      {
+        "id": "result1",
+        "label": "成分与配方明细",
+        "blocks": {
+          "_ord": [
+            "成分与配方明细"
+          ],
+          "成分与配方明细": {
+            "r": false,
+            "t": 7,
+            "misc": {
+              "r": true,
+              "t": 9,
+              "misc": {
+                "_ord": [
+                  "组分角色",
+                  "组分名称",
+                  "含量原始值",
+                  "含量数值",
+                  "含量范围",
+                  "成分单位",
+                  "条件或说明",
+                  "成分证据原文",
+                  "成分来源位置",
+                  "成分置信度",
+                  "成分抽取状态"
+                ],
+                "含量数值": {
+                  "r": false,
+                  "t": 2,
+                  "misc": {
+                    "grp": [],
+                    "opt": [],
+                    "type": 0,
+                    "multi": false,
+                    "stats": "0",
+                    "imageFormats": []
+                  },
+                  "stats": "0"
+                },
+                "含量范围": {
+                  "r": false,
+                  "t": 3,
+                  "misc": {
+                    "grp": [],
+                    "opt": [],
+                    "type": 0,
+                    "multi": false,
+                    "stats": "0",
+                    "imageFormats": []
+                  },
+                  "stats": "0"
+                },
+                "成分单位": {
+                  "r": false,
+                  "t": 1,
+                  "misc": {
+                    "grp": [],
+                    "opt": [],
+                    "type": 0,
+                    "multi": false,
+                    "stats": "0",
+                    "imageFormats": []
+                  },
+                  "stats": "0"
+                },
+                "组分名称": {
+                  "r": true,
+                  "t": 1,
+                  "misc": {
+                    "grp": [],
+                    "opt": [],
+                    "type": 0,
+                    "multi": false,
+                    "stats": "0",
+                    "imageFormats": []
+                  },
+                  "stats": "0"
+                },
+                "组分角色": {
+                  "r": false,
+                  "t": 1,
+                  "misc": {
+                    "grp": [],
+                    "opt": [],
+                    "type": 0,
+                    "multi": false,
+                    "stats": "0",
+                    "imageFormats": []
+                  },
+                  "stats": "0"
+                },
+                "含量原始值": {
+                  "r": true,
+                  "t": 1,
+                  "misc": {
+                    "grp": [],
+                    "opt": [],
+                    "type": 0,
+                    "multi": false,
+                    "stats": "0",
+                    "imageFormats": []
+                  },
+                  "stats": "0"
+                },
+                "成分置信度": {
+                  "r": false,
+                  "t": 2,
+                  "misc": {
+                    "grp": [],
+                    "opt": [],
+                    "type": 0,
+                    "multi": false,
+                    "stats": "0",
+                    "imageFormats": []
+                  },
+                  "stats": "0"
+                },
+                "条件或说明": {
+                  "r": false,
+                  "t": 1,
+                  "misc": {
+                    "grp": [],
+                    "opt": [],
+                    "type": 0,
+                    "multi": false,
+                    "stats": "0",
+                    "imageFormats": []
+                  },
+                  "stats": "0"
+                },
+                "成分抽取状态": {
+                  "r": true,
+                  "t": 6,
+                  "misc": {
+                    "grp": [],
+                    "opt": [
+                      "已抽取",
+                      "已验证",
+                      "待复核",
+                      "抽取中",
+                      "未报告",
+                      "不适用"
+                    ],
+                    "type": 0,
+                    "multi": false,
+                    "stats": "0",
+                    "imageFormats": []
+                  },
+                  "stats": "0"
+                },
+                "成分来源位置": {
+                  "r": false,
+                  "t": 1,
+                  "misc": {
+                    "grp": [],
+                    "opt": [],
+                    "type": 0,
+                    "multi": false,
+                    "stats": "0",
+                    "imageFormats": []
+                  },
+                  "stats": "0"
+                },
+                "成分证据原文": {
+                  "r": false,
+                  "t": 1,
+                  "misc": {
+                    "grp": [],
+                    "opt": [],
+                    "type": 0,
+                    "multi": false,
+                    "stats": "0",
+                    "imageFormats": []
+                  },
+                  "stats": "0"
+                }
+              },
+              "stats": "0"
+            },
+            "stats": "0"
+          }
+        }
+      },
+      {
+        "id": "result2",
+        "label": "工艺参数明细",
+        "blocks": {
+          "_ord": [
+            "工艺参数明细"
+          ],
+          "工艺参数明细": {
+            "r": false,
+            "t": 7,
+            "misc": {
+              "r": true,
+              "t": 9,
+              "misc": {
+                "_ord": [
+                  "工艺阶段",
+                  "参数名称",
+                  "工艺参数原始值",
+                  "工艺参数数值",
+                  "工艺参数范围",
+                  "工艺参数单位",
+                  "方法或设备",
+                  "工艺条件",
+                  "工艺证据原文",
+                  "工艺来源位置",
+                  "工艺置信度",
+                  "工艺抽取状态"
+                ],
+                "参数名称": {
+                  "r": true,
+                  "t": 1,
+                  "misc": {
+                    "grp": [],
+                    "opt": [],
+                    "type": 0,
+                    "multi": false,
+                    "stats": "0",
+                    "imageFormats": []
+                  },
+                  "stats": "0"
+                },
+                "工艺条件": {
+                  "r": false,
+                  "t": 1,
+                  "misc": {
+                    "grp": [],
+                    "opt": [],
+                    "type": 0,
+                    "multi": false,
+                    "stats": "0",
+                    "imageFormats": []
+                  },
+                  "stats": "0"
+                },
+                "工艺阶段": {
+                  "r": true,
+                  "t": 1,
+                  "misc": {
+                    "grp": [],
+                    "opt": [],
+                    "type": 0,
+                    "multi": false,
+                    "stats": "0",
+                    "imageFormats": []
+                  },
+                  "stats": "0"
+                },
+                "工艺置信度": {
+                  "r": false,
+                  "t": 2,
+                  "misc": {
+                    "grp": [],
+                    "opt": [],
+                    "type": 0,
+                    "multi": false,
+                    "stats": "0",
+                    "imageFormats": []
+                  },
+                  "stats": "0"
+                },
+                "方法或设备": {
+                  "r": false,
+                  "t": 1,
+                  "misc": {
+                    "grp": [],
+                    "opt": [],
+                    "type": 0,
+                    "multi": false,
+                    "stats": "0",
+                    "imageFormats": []
+                  },
+                  "stats": "0"
+                },
+                "工艺参数单位": {
+                  "r": false,
+                  "t": 1,
+                  "misc": {
+                    "grp": [],
+                    "opt": [],
+                    "type": 0,
+                    "multi": false,
+                    "stats": "0",
+                    "imageFormats": []
+                  },
+                  "stats": "0"
+                },
+                "工艺参数数值": {
+                  "r": false,
+                  "t": 2,
+                  "misc": {
+                    "grp": [],
+                    "opt": [],
+                    "type": 0,
+                    "multi": false,
+                    "stats": "0",
+                    "imageFormats": []
+                  },
+                  "stats": "0"
+                },
+                "工艺参数范围": {
+                  "r": false,
+                  "t": 3,
+                  "misc": {
+                    "grp": [],
+                    "opt": [],
+                    "type": 0,
+                    "multi": false,
+                    "stats": "0",
+                    "imageFormats": []
+                  },
+                  "stats": "0"
+                },
+                "工艺抽取状态": {
+                  "r": true,
+                  "t": 6,
+                  "misc": {
+                    "grp": [],
+                    "opt": [
+                      "已抽取",
+                      "已验证",
+                      "待复核",
+                      "抽取中",
+                      "未报告",
+                      "不适用"
+                    ],
+                    "type": 0,
+                    "multi": false,
+                    "stats": "0",
+                    "imageFormats": []
+                  },
+                  "stats": "0"
+                },
+                "工艺来源位置": {
+                  "r": false,
+                  "t": 1,
+                  "misc": {
+                    "grp": [],
+                    "opt": [],
+                    "type": 0,
+                    "multi": false,
+                    "stats": "0",
+                    "imageFormats": []
+                  },
+                  "stats": "0"
+                },
+                "工艺证据原文": {
+                  "r": false,
+                  "t": 1,
+                  "misc": {
+                    "grp": [],
+                    "opt": [],
+                    "type": 0,
+                    "multi": false,
+                    "stats": "0",
+                    "imageFormats": []
+                  },
+                  "stats": "0"
+                },
+                "工艺参数原始值": {
+                  "r": true,
+                  "t": 1,
+                  "misc": {
+                    "grp": [],
+                    "opt": [],
+                    "type": 0,
+                    "multi": false,
+                    "stats": "0",
+                    "imageFormats": []
+                  },
+                  "stats": "0"
+                }
+              },
+              "stats": "0"
+            },
+            "stats": "0"
+          }
+        }
+      },
+      {
+        "id": "result3",
+        "label": "结构测试结果",
+        "blocks": {
+          "_ord": [
+            "结构测试结果"
+          ],
+          "结构测试结果": {
+            "r": false,
+            "t": 7,
+            "misc": {
+              "r": true,
+              "t": 9,
+              "misc": {
+                "_ord": [
+                  "结构指标名称",
+                  "结构原始值",
+                  "结构数值",
+                  "结构范围",
+                  "结构单位",
+                  "表征方法",
+                  "结构测试条件",
+                  "结构证据原文",
+                  "结构来源位置",
+                  "结构置信度",
+                  "结构抽取状态"
+                ],
+                "结构单位": {
+                  "r": false,
+                  "t": 1,
+                  "misc": {
+                    "grp": [],
+                    "opt": [],
+                    "type": 0,
+                    "multi": false,
+                    "stats": "0",
+                    "imageFormats": []
+                  },
+                  "stats": "0"
+                },
+                "结构数值": {
+                  "r": false,
+                  "t": 2,
+                  "misc": {
+                    "grp": [],
+                    "opt": [],
+                    "type": 0,
+                    "multi": false,
+                    "stats": "0",
+                    "imageFormats": []
+                  },
+                  "stats": "0"
+                },
+                "结构范围": {
+                  "r": false,
+                  "t": 3,
+                  "misc": {
+                    "grp": [],
+                    "opt": [],
+                    "type": 0,
+                    "multi": false,
+                    "stats": "0",
+                    "imageFormats": []
+                  },
+                  "stats": "0"
+                },
+                "表征方法": {
+                  "r": false,
+                  "t": 1,
+                  "misc": {
+                    "grp": [],
+                    "opt": [],
+                    "type": 0,
+                    "multi": false,
+                    "stats": "0",
+                    "imageFormats": []
+                  },
+                  "stats": "0"
+                },
+                "结构原始值": {
+                  "r": true,
+                  "t": 1,
+                  "misc": {
+                    "grp": [],
+                    "opt": [],
+                    "type": 0,
+                    "multi": false,
+                    "stats": "0",
+                    "imageFormats": []
+                  },
+                  "stats": "0"
+                },
+                "结构置信度": {
+                  "r": false,
+                  "t": 2,
+                  "misc": {
+                    "grp": [],
+                    "opt": [],
+                    "type": 0,
+                    "multi": false,
+                    "stats": "0",
+                    "imageFormats": []
+                  },
+                  "stats": "0"
+                },
+                "结构抽取状态": {
+                  "r": true,
+                  "t": 6,
+                  "misc": {
+                    "grp": [],
+                    "opt": [
+                      "已抽取",
+                      "已验证",
+                      "待复核",
+                      "抽取中",
+                      "未报告",
+                      "不适用"
+                    ],
+                    "type": 0,
+                    "multi": false,
+                    "stats": "0",
+                    "imageFormats": []
+                  },
+                  "stats": "0"
+                },
+                "结构指标名称": {
+                  "r": true,
+                  "t": 1,
+                  "misc": {
+                    "grp": [],
+                    "opt": [],
+                    "type": 0,
+                    "multi": false,
+                    "stats": "0",
+                    "imageFormats": []
+                  },
+                  "stats": "0"
+                },
+                "结构来源位置": {
+                  "r": false,
+                  "t": 1,
+                  "misc": {
+                    "grp": [],
+                    "opt": [],
+                    "type": 0,
+                    "multi": false,
+                    "stats": "0",
+                    "imageFormats": []
+                  },
+                  "stats": "0"
+                },
+                "结构测试条件": {
+                  "r": false,
+                  "t": 1,
+                  "misc": {
+                    "grp": [],
+                    "opt": [],
+                    "type": 0,
+                    "multi": false,
+                    "stats": "0",
+                    "imageFormats": []
+                  },
+                  "stats": "0"
+                },
+                "结构证据原文": {
+                  "r": false,
+                  "t": 1,
+                  "misc": {
+                    "grp": [],
+                    "opt": [],
+                    "type": 0,
+                    "multi": false,
+                    "stats": "0",
+                    "imageFormats": []
+                  },
+                  "stats": "0"
+                }
+              },
+              "stats": "0"
+            },
+            "stats": "0"
+          }
+        }
+      },
+      {
+        "id": "result4",
+        "label": "性能测试结果",
+        "blocks": {
+          "_ord": [
+            "性能测试结果"
+          ],
+          "性能测试结果": {
+            "r": false,
+            "t": 7,
+            "misc": {
+              "r": true,
+              "t": 9,
+              "misc": {
+                "_ord": [
+                  "性能类别",
+                  "性能指标名称",
+                  "性能原始值",
+                  "性能数值",
+                  "性能范围",
+                  "性能单位",
+                  "性能测试方法",
+                  "性能测试条件",
+                  "性能证据原文",
+                  "性能来源位置",
+                  "性能置信度",
+                  "性能抽取状态",
+                  "性能审核状态",
+                  "性能审核意见"
+                ],
+                "性能单位": {
+                  "r": false,
+                  "t": 1,
+                  "misc": {
+                    "grp": [],
+                    "opt": [],
+                    "type": 0,
+                    "multi": false,
+                    "stats": "0",
+                    "imageFormats": []
+                  },
+                  "stats": "0"
+                },
+                "性能数值": {
+                  "r": false,
+                  "t": 2,
+                  "misc": {
+                    "grp": [],
+                    "opt": [],
+                    "type": 0,
+                    "multi": false,
+                    "stats": "0",
+                    "imageFormats": []
+                  },
+                  "stats": "0"
+                },
+                "性能类别": {
+                  "r": true,
+                  "t": 1,
+                  "misc": {
+                    "grp": [],
+                    "opt": [],
+                    "type": 0,
+                    "multi": false,
+                    "stats": "0",
+                    "imageFormats": []
+                  },
+                  "stats": "0"
+                },
+                "性能范围": {
+                  "r": false,
+                  "t": 3,
+                  "misc": {
+                    "grp": [],
+                    "opt": [],
+                    "type": 0,
+                    "multi": false,
+                    "stats": "0",
+                    "imageFormats": []
+                  },
+                  "stats": "0"
+                },
+                "性能原始值": {
+                  "r": true,
+                  "t": 1,
+                  "misc": {
+                    "grp": [],
+                    "opt": [],
+                    "type": 0,
+                    "multi": false,
+                    "stats": "0",
+                    "imageFormats": []
+                  },
+                  "stats": "0"
+                },
+                "性能置信度": {
+                  "r": false,
+                  "t": 2,
+                  "misc": {
+                    "grp": [],
+                    "opt": [],
+                    "type": 0,
+                    "multi": false,
+                    "stats": "0",
+                    "imageFormats": []
+                  },
+                  "stats": "0"
+                },
+                "性能审核意见": {
+                  "r": false,
+                  "t": 1,
+                  "misc": {
+                    "grp": [],
+                    "opt": [],
+                    "type": 0,
+                    "multi": false,
+                    "stats": "0",
+                    "imageFormats": []
+                  },
+                  "stats": "0"
+                },
+                "性能审核状态": {
+                  "r": false,
+                  "t": 6,
+                  "misc": {
+                    "grp": [],
+                    "opt": [
+                      "待审核",
+                      "已修改",
+                      "通过",
+                      "存疑",
+                      "缺失",
+                      "已删除"
+                    ],
+                    "type": 0,
+                    "multi": false,
+                    "stats": "0",
+                    "imageFormats": []
+                  },
+                  "stats": "0"
+                },
+                "性能抽取状态": {
+                  "r": true,
+                  "t": 6,
+                  "misc": {
+                    "grp": [],
+                    "opt": [
+                      "已抽取",
+                      "已验证",
+                      "待复核",
+                      "抽取中",
+                      "未报告",
+                      "不适用"
+                    ],
+                    "type": 0,
+                    "multi": false,
+                    "stats": "0",
+                    "imageFormats": []
+                  },
+                  "stats": "0"
+                },
+                "性能指标名称": {
+                  "r": true,
+                  "t": 1,
+                  "misc": {
+                    "grp": [],
+                    "opt": [],
+                    "type": 0,
+                    "multi": false,
+                    "stats": "0",
+                    "imageFormats": []
+                  },
+                  "stats": "0"
+                },
+                "性能来源位置": {
+                  "r": false,
+                  "t": 1,
+                  "misc": {
+                    "grp": [],
+                    "opt": [],
+                    "type": 0,
+                    "multi": false,
+                    "stats": "0",
+                    "imageFormats": []
+                  },
+                  "stats": "0"
+                },
+                "性能测试方法": {
+                  "r": false,
+                  "t": 1,
+                  "misc": {
+                    "grp": [],
+                    "opt": [],
+                    "type": 0,
+                    "multi": false,
+                    "stats": "0",
+                    "imageFormats": []
+                  },
+                  "stats": "0"
+                },
+                "性能测试条件": {
+                  "r": false,
+                  "t": 1,
+                  "misc": {
+                    "grp": [],
+                    "opt": [],
+                    "type": 0,
+                    "multi": false,
+                    "stats": "0",
+                    "imageFormats": []
+                  },
+                  "stats": "0"
+                },
+                "性能证据原文": {
+                  "r": false,
+                  "t": 1,
+                  "misc": {
+                    "grp": [],
+                    "opt": [],
+                    "type": 0,
+                    "multi": false,
+                    "stats": "0",
+                    "imageFormats": []
+                  },
+                  "stats": "0"
+                }
+              },
+              "stats": "0"
+            },
+            "stats": "0"
+          }
+        }
+      },
+      {
+        "id": "result5",
+        "label": "其他指标与质量",
+        "blocks": {
+          "_ord": [
+            "其他未映射指标",
+            "数据质量与溯源"
+          ],
+          "其他未映射指标": {
+            "r": false,
+            "t": 8,
+            "misc": {
+              "_head": [
+                "事实类型",
+                "长尾指标或参数名称",
+                "长尾原始值",
+                "长尾单位",
+                "长尾方法",
+                "长尾条件",
+                "长尾样品编号",
+                "长尾证据原文",
+                "长尾来源位置",
+                "长尾置信度",
+                "长尾抽取状态"
+              ],
+              "事实类型": {
+                "r": true,
+                "t": 1,
+                "misc": {
+                  "grp": [],
+                  "opt": [],
+                  "type": 0,
+                  "multi": false,
+                  "stats": "0",
+                  "imageFormats": []
+                },
+                "stats": "0"
+              },
+              "长尾单位": {
+                "r": false,
+                "t": 1,
+                "misc": {
+                  "grp": [],
+                  "opt": [],
+                  "type": 0,
+                  "multi": false,
+                  "stats": "0",
+                  "imageFormats": []
+                },
+                "stats": "0"
+              },
+              "长尾方法": {
+                "r": false,
+                "t": 1,
+                "misc": {
+                  "grp": [],
+                  "opt": [],
+                  "type": 0,
+                  "multi": false,
+                  "stats": "0",
+                  "imageFormats": []
+                },
+                "stats": "0"
+              },
+              "长尾条件": {
+                "r": false,
+                "t": 1,
+                "misc": {
+                  "grp": [],
+                  "opt": [],
+                  "type": 0,
+                  "multi": false,
+                  "stats": "0",
+                  "imageFormats": []
+                },
+                "stats": "0"
+              },
+              "长尾原始值": {
+                "r": true,
+                "t": 1,
+                "misc": {
+                  "grp": [],
+                  "opt": [],
+                  "type": 0,
+                  "multi": false,
+                  "stats": "0",
+                  "imageFormats": []
+                },
+                "stats": "0"
+              },
+              "长尾置信度": {
+                "r": false,
+                "t": 2,
+                "misc": {
+                  "grp": [],
+                  "opt": [],
+                  "type": 0,
+                  "multi": false,
+                  "stats": "0",
+                  "imageFormats": []
+                },
+                "stats": "0"
+              },
+              "长尾抽取状态": {
+                "r": true,
+                "t": 6,
+                "misc": {
+                  "grp": [],
+                  "opt": [
+                    "已抽取",
+                    "已验证",
+                    "待复核",
+                    "抽取中",
+                    "未报告",
+                    "不适用"
+                  ],
+                  "type": 0,
+                  "multi": false,
+                  "stats": "0",
+                  "imageFormats": []
+                },
+                "stats": "0"
+              },
+              "长尾来源位置": {
+                "r": false,
+                "t": 1,
+                "misc": {
+                  "grp": [],
+                  "opt": [],
+                  "type": 0,
+                  "multi": false,
+                  "stats": "0",
+                  "imageFormats": []
+                },
+                "stats": "0"
+              },
+              "长尾样品编号": {
+                "r": false,
+                "t": 1,
+                "misc": {
+                  "grp": [],
+                  "opt": [],
+                  "type": 0,
+                  "multi": false,
+                  "stats": "0",
+                  "imageFormats": []
+                },
+                "stats": "0"
+              },
+              "长尾证据原文": {
+                "r": false,
+                "t": 1,
+                "misc": {
+                  "grp": [],
+                  "opt": [],
+                  "type": 0,
+                  "multi": false,
+                  "stats": "0",
+                  "imageFormats": []
+                },
+                "stats": "0"
+              },
+              "长尾指标或参数名称": {
+                "r": true,
+                "t": 1,
+                "misc": {
+                  "grp": [],
+                  "opt": [],
+                  "type": 0,
+                  "multi": false,
+                  "stats": "0",
+                  "imageFormats": []
+                },
+                "stats": "0"
+              }
+            },
+            "stats": "0"
+          },
+          "数据质量与溯源": {
+            "r": false,
+            "t": 9,
+            "misc": {
+              "_ord": [
+                "抽取方式",
+                "映射版本",
+                "源数据签名",
+                "证据覆盖率",
+                "已映射值数量",
+                "未映射事实数量",
+                "待复核数量",
+                "导出时间",
+                "质量审核意见"
+              ],
+              "导出时间": {
+                "r": false,
+                "t": 1,
+                "misc": {
+                  "grp": [],
+                  "opt": [],
+                  "type": 0,
+                  "multi": false,
+                  "stats": "0",
+                  "imageFormats": []
+                },
+                "stats": "0"
+              },
+              "抽取方式": {
+                "r": false,
+                "t": 1,
+                "misc": {
+                  "grp": [],
+                  "opt": [],
+                  "type": 0,
+                  "multi": false,
+                  "stats": "0",
+                  "imageFormats": []
+                },
+                "stats": "0"
+              },
+              "映射版本": {
+                "r": false,
+                "t": 1,
+                "misc": {
+                  "grp": [],
+                  "opt": [],
+                  "type": 0,
+                  "multi": false,
+                  "stats": "0",
+                  "imageFormats": []
+                },
+                "stats": "0"
+              },
+              "待复核数量": {
+                "r": false,
+                "t": 2,
+                "misc": {
+                  "grp": [],
+                  "opt": [],
+                  "type": 0,
+                  "multi": false,
+                  "stats": "0",
+                  "imageFormats": []
+                },
+                "stats": "0"
+              },
+              "源数据签名": {
+                "r": false,
+                "t": 1,
+                "misc": {
+                  "grp": [],
+                  "opt": [],
+                  "type": 0,
+                  "multi": false,
+                  "stats": "0",
+                  "imageFormats": []
+                },
+                "stats": "0"
+              },
+              "证据覆盖率": {
+                "r": false,
+                "t": 2,
+                "misc": {
+                  "grp": [],
+                  "opt": [],
+                  "type": 0,
+                  "multi": false,
+                  "stats": "0",
+                  "imageFormats": []
+                },
+                "stats": "0"
+              },
+              "已映射值数量": {
+                "r": false,
+                "t": 2,
+                "misc": {
+                  "grp": [],
+                  "opt": [],
+                  "type": 0,
+                  "multi": false,
+                  "stats": "0",
+                  "imageFormats": []
+                },
+                "stats": "0"
+              },
+              "质量审核意见": {
+                "r": false,
+                "t": 1,
+                "misc": {
+                  "grp": [],
+                  "opt": [],
+                  "type": 0,
+                  "multi": false,
+                  "stats": "0",
+                  "imageFormats": []
+                },
+                "stats": "0"
+              },
+              "未映射事实数量": {
+                "r": false,
+                "t": 2,
+                "misc": {
+                  "grp": [],
+                  "opt": [],
+                  "type": 0,
+                  "multi": false,
+                  "stats": "0",
+                  "imageFormats": []
+                },
+                "stats": "0"
+              }
+            },
+            "stats": "0"
+          }
+        }
+      }
+    ],
+    "_comment": {
+      "r": "是否必填 (true=必填, false=非必填)",
+      "t": "字段类型 (1=字符串, 2=数值, 3=范围, 4=图片, 5=文件, 6=候选, 7=数组, 8=表格, 9=容器, 10=生成器)",
+      "misc": "字段详细配置（扩展配置项）",
+      "grp": "候选下拉选项组",
+      "opt": "候选下拉选项",
+      "type": "范围型控件类型 (0=范围, 1=误差)",
+      "unit": "单位",
+      "multi": "是否多选 (true=多选, false=单选)",
+      "precision": "小数位数",
+      "description": "字段描述",
+      "stats": "模板规则配置",
+      "imageFormats": "支持的图片格式列表",
+      "fileFormats": "支持的文件格式列表"
+    }
+  },
+  "data": [
+    {
+      "meta": {
+        "数据ID": "data-d53e376155f49ffd93ad2cf7"
+      },
+      "content": {
+        "object": {
+          "数据记录键": "AI4S-d53e376155f49ffd93ad2cf7",
+          "投影版本": "chemical_fiber_projection_v1",
+          "文献编号": "CANARY-20260727",
+          "数据状态": "待复核",
+          "文献标题": "AI4S 平台兼容性金丝雀记录",
+          "DOI或链接": "urn:ai4s:platform-canary:20260727",
+          "期刊": "AI4S Integration Test",
+          "样品编号": "S-CANARY-001",
+          "纤维类型": "单组分长丝",
+          "材料体系": "PAN",
+          "发表年份": 2026,
+          "原始文件名": "ai4s-platform-canary.pdf",
+          "样品组编号": "G-CANARY-001"
+        },
+        "operations": [
+          {
+            "id": "operation1",
+            "工艺路线": "溶液纺丝—牵伸—热处理",
+            "成分证据": "The canary material system is PAN.\nThe intrinsic viscosity was 1.20 dL/g at 25 °C.",
+            "工艺证据": "The process route comprised solution spinning, drawing, and heat treatment.\nThe spinning temperature was maintained between 260 and 270 °C."
+          },
+          {
+            "id": "operation2",
+            "记录审核状态": "待审核"
+          }
+        ],
+        "results": [
+          {
+            "id": "result1",
+            "成分与配方明细": [
+              {
+                "组分角色": "聚合物",
+                "组分名称": "特性粘度",
+                "含量原始值": "1.20 dL/g",
+                "含量数值": 1.2,
+                "成分单位": "dL/g",
+                "条件或说明": "25 °C",
+                "成分证据原文": "The intrinsic viscosity was 1.20 dL/g at 25 °C.",
+                "成分来源位置": "p.2, Experimental",
+                "成分置信度": 0.94,
+                "成分抽取状态": "已抽取"
+              }
+            ]
+          },
+          {
+            "id": "result2",
+            "工艺参数明细": [
+              {
+                "工艺阶段": "纺丝",
+                "参数名称": "纺丝温度",
+                "工艺参数原始值": "260-270 °C",
+                "工艺参数范围": {
+                  "lb": 260,
+                  "ub": 270
+                },
+                "工艺参数单位": "°C",
+                "方法或设备": "solution spinning",
+                "工艺条件": "nitrogen atmosphere",
+                "工艺证据原文": "The spinning temperature was maintained between 260 and 270 °C.",
+                "工艺来源位置": "p.3, Table 1",
+                "工艺置信度": 0.93,
+                "工艺抽取状态": "已抽取"
+              }
+            ]
+          },
+          {
+            "id": "result3",
+            "结构测试结果": [
+              {
+                "结构指标名称": "结晶度",
+                "结构原始值": "48 %",
+                "结构数值": 48,
+                "结构单位": "%",
+                "表征方法": "XRD",
+                "结构测试条件": "Cu Kα",
+                "结构证据原文": "XRD analysis gave a crystallinity of 48%.",
+                "结构来源位置": "p.4, Figure 2",
+                "结构置信度": 0.92,
+                "结构抽取状态": "已抽取"
+              }
+            ]
+          },
+          {
+            "id": "result4",
+            "性能测试结果": [
+              {
+                "性能类别": "力学性能",
+                "性能指标名称": "拉伸强度",
+                "性能原始值": "800-900 MPa",
+                "性能范围": {
+                  "lb": 800,
+                  "ub": 900
+                },
+                "性能单位": "MPa",
+                "性能测试方法": "single-fiber tensile test",
+                "性能测试条件": "23 °C, 50% RH",
+                "性能证据原文": "The tensile strength ranged from 800 to 900 MPa.",
+                "性能来源位置": "p.5, Table 2",
+                "性能置信度": 0.95,
+                "性能抽取状态": "已验证",
+                "性能审核状态": "待审核"
+              }
+            ]
+          },
+          {
+            "id": "result5",
+            "其他未映射指标": [
+              {
+                "事实类型": "性能",
+                "长尾指标或参数名称": "whisker instability index",
+                "长尾原始值": "2.4 a.u.",
+                "长尾单位": "a.u.",
+                "长尾方法": "custom method",
+                "长尾条件": "dry",
+                "长尾样品编号": "S-CANARY-001",
+                "长尾证据原文": "The whisker instability index was reported as 2.4.",
+                "长尾来源位置": "p.6",
+                "长尾置信度": 0.82,
+                "长尾抽取状态": "待复核"
+              }
+            ],
+            "数据质量与溯源": {
+              "抽取方式": "AI4S evidence-grounded extraction",
+              "映射版本": "nmbdc_platform_batch_v1",
+              "源数据签名": "f896fc416d1a14d1b05f6171c3ded98fcf8e46ecd8c7fd251fd3ec2467ff77b0",
+              "证据覆盖率": 1.0,
+              "已映射值数量": 8,
+              "未映射事实数量": 1,
+              "待复核数量": 1,
+              "导出时间": "2026-07-27T16:45:00+08:00",
+              "质量审核意见": "含待复核或未映射事实，需人工复核"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

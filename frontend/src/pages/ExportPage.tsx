@@ -31,7 +31,12 @@ export default function ExportPage() {
   const [exports, setExports] = useState<ExportJobRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
-  const [statusFilter, setStatusFilter] = useState<string[]>(['approved']);
+  const [statusFilter, setStatusFilter] = useState<string[]>([
+    'approved',
+    'pending',
+    'uncertain',
+    'modified',
+  ]);
   const [statusCounts, setStatusCounts] = useState<Record<ExportStatus, number>>({
     approved: 0,
     pending: 0,
@@ -99,7 +104,7 @@ export default function ExportPage() {
       });
       downloadBlobResponse(
         response.data,
-        '数据主表.xlsx',
+        '材料数据_成分工艺结构性能.xlsx',
         'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       );
     } catch {
@@ -147,7 +152,7 @@ export default function ExportPage() {
   return (
     <div>
       <div className="page-header">
-        <h1>导出结构化工作簿</h1>
+        <h1>导出材料数据工作簿</h1>
         <Space direction="vertical" size={4} align="end">
           <Space>
             <Select
@@ -177,9 +182,13 @@ export default function ExportPage() {
 
       <div style={{ marginBottom: 24, padding: 20, background: 'var(--color-bg-tertiary)', borderRadius: 12, border: '1px solid var(--color-border)' }}>
         <p style={{ color: 'var(--color-text-secondary)', fontSize: 13, margin: 0 }}>
-          导出文件名：<strong>数据主表.xlsx</strong>；工作簿包含 <strong>Main_Data</strong>、<strong>Papers</strong>、<strong>Evidence</strong>、<strong>Parse_Blocks</strong>、<strong>Quality_Report</strong>。
-          <strong>Main_Data</strong> 是可独立交付的 40 列主数据表；文献信息、证据明细和解析块同时保留在独立 Sheet 中。
-          默认只导出审核状态为"通过"的候选记录，导出不会删除数据库中的原始结果。
+          导出文件名：<strong>材料数据_成分工艺结构性能.xlsx</strong>。工作簿按
+          你原来的数据录入表逻辑，在第一张 <strong>01_数据主表</strong> 中按
+          <strong> 文献与样品 → 成分 → 工艺 → 结构 → 性能 </strong>
+          横向展开，一行代表一个实际材料样品；同时保留成分、工艺、结构、性能原子明细表。
+          原文证据、置信度和复核状态统一放在 <strong>90_证据与质控</strong>，
+          抽取方式、映射版本、上传哈希等系统过程字段不会混入科研主表。
+          默认导出全部有效审核状态，且不会删除数据库中的原始结果。
         </p>
       </div>
 

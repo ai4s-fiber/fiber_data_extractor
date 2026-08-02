@@ -1,0 +1,385 @@
+{
+  "template": {
+    "_id": 2026072802,
+    "object": {
+      "id": "object",
+      "label": "原子材料事实",
+      "blocks": {
+        "_ord": [
+          "事实记录键",
+          "文献编号",
+          "文献标题",
+          "DOI或链接",
+          "发表年份",
+          "期刊",
+          "样品编号",
+          "样品组编号",
+          "样品别名",
+          "材料体系",
+          "材料形态",
+          "事实类别",
+          "组分角色",
+          "工艺阶段",
+          "指标类别",
+          "指标或参数名称",
+          "原始值",
+          "数值",
+          "最小值",
+          "最大值",
+          "单位",
+          "方法或设备",
+          "条件或说明",
+          "证据原文",
+          "来源位置",
+          "置信度"
+        ],
+        "事实记录键": {
+          "r": true,
+          "t": 1,
+          "misc": {
+            "grp": [],
+            "opt": [],
+            "type": 0,
+            "multi": false,
+            "stats": "0",
+            "imageFormats": []
+          },
+          "stats": "0"
+        },
+        "文献编号": {
+          "r": true,
+          "t": 1,
+          "misc": {
+            "grp": [],
+            "opt": [],
+            "type": 0,
+            "multi": false,
+            "stats": "0",
+            "imageFormats": []
+          },
+          "stats": "0"
+        },
+        "文献标题": {
+          "r": false,
+          "t": 1,
+          "misc": {
+            "grp": [],
+            "opt": [],
+            "type": 0,
+            "multi": false,
+            "stats": "0",
+            "imageFormats": []
+          },
+          "stats": "0"
+        },
+        "DOI或链接": {
+          "r": false,
+          "t": 1,
+          "misc": {
+            "grp": [],
+            "opt": [],
+            "type": 0,
+            "multi": false,
+            "stats": "0",
+            "imageFormats": []
+          },
+          "stats": "0"
+        },
+        "发表年份": {
+          "r": false,
+          "t": 2,
+          "misc": {
+            "grp": [],
+            "opt": [],
+            "type": 0,
+            "multi": false,
+            "stats": "0",
+            "imageFormats": []
+          },
+          "stats": "0"
+        },
+        "期刊": {
+          "r": false,
+          "t": 1,
+          "misc": {
+            "grp": [],
+            "opt": [],
+            "type": 0,
+            "multi": false,
+            "stats": "0",
+            "imageFormats": []
+          },
+          "stats": "0"
+        },
+        "样品编号": {
+          "r": true,
+          "t": 1,
+          "misc": {
+            "grp": [],
+            "opt": [],
+            "type": 0,
+            "multi": false,
+            "stats": "0",
+            "imageFormats": []
+          },
+          "stats": "0"
+        },
+        "样品组编号": {
+          "r": false,
+          "t": 1,
+          "misc": {
+            "grp": [],
+            "opt": [],
+            "type": 0,
+            "multi": false,
+            "stats": "0",
+            "imageFormats": []
+          },
+          "stats": "0"
+        },
+        "样品别名": {
+          "r": false,
+          "t": 1,
+          "misc": {
+            "grp": [],
+            "opt": [],
+            "type": 0,
+            "multi": false,
+            "stats": "0",
+            "imageFormats": []
+          },
+          "stats": "0"
+        },
+        "材料体系": {
+          "r": false,
+          "t": 1,
+          "misc": {
+            "grp": [],
+            "opt": [],
+            "type": 0,
+            "multi": false,
+            "stats": "0",
+            "imageFormats": []
+          },
+          "stats": "0"
+        },
+        "材料形态": {
+          "r": false,
+          "t": 1,
+          "misc": {
+            "grp": [],
+            "opt": [],
+            "type": 0,
+            "multi": false,
+            "stats": "0",
+            "imageFormats": []
+          },
+          "stats": "0"
+        },
+        "事实类别": {
+          "r": true,
+          "t": 6,
+          "misc": {
+            "grp": [],
+            "opt": [
+              "成分",
+              "工艺",
+              "结构",
+              "性能"
+            ],
+            "type": 0,
+            "multi": false,
+            "stats": "0",
+            "imageFormats": []
+          },
+          "stats": "0"
+        },
+        "组分角色": {
+          "r": false,
+          "t": 1,
+          "misc": {
+            "grp": [],
+            "opt": [],
+            "type": 0,
+            "multi": false,
+            "stats": "0",
+            "imageFormats": []
+          },
+          "stats": "0"
+        },
+        "工艺阶段": {
+          "r": false,
+          "t": 1,
+          "misc": {
+            "grp": [],
+            "opt": [],
+            "type": 0,
+            "multi": false,
+            "stats": "0",
+            "imageFormats": []
+          },
+          "stats": "0"
+        },
+        "指标类别": {
+          "r": false,
+          "t": 1,
+          "misc": {
+            "grp": [],
+            "opt": [],
+            "type": 0,
+            "multi": false,
+            "stats": "0",
+            "imageFormats": []
+          },
+          "stats": "0"
+        },
+        "指标或参数名称": {
+          "r": true,
+          "t": 1,
+          "misc": {
+            "grp": [],
+            "opt": [],
+            "type": 0,
+            "multi": false,
+            "stats": "0",
+            "imageFormats": []
+          },
+          "stats": "0"
+        },
+        "原始值": {
+          "r": true,
+          "t": 1,
+          "misc": {
+            "grp": [],
+            "opt": [],
+            "type": 0,
+            "multi": false,
+            "stats": "0",
+            "imageFormats": []
+          },
+          "stats": "0"
+        },
+        "数值": {
+          "r": false,
+          "t": 2,
+          "misc": {
+            "grp": [],
+            "opt": [],
+            "type": 0,
+            "multi": false,
+            "stats": "0",
+            "imageFormats": []
+          },
+          "stats": "0"
+        },
+        "最小值": {
+          "r": false,
+          "t": 2,
+          "misc": {
+            "grp": [],
+            "opt": [],
+            "type": 0,
+            "multi": false,
+            "stats": "0",
+            "imageFormats": []
+          },
+          "stats": "0"
+        },
+        "最大值": {
+          "r": false,
+          "t": 2,
+          "misc": {
+            "grp": [],
+            "opt": [],
+            "type": 0,
+            "multi": false,
+            "stats": "0",
+            "imageFormats": []
+          },
+          "stats": "0"
+        },
+        "单位": {
+          "r": false,
+          "t": 1,
+          "misc": {
+            "grp": [],
+            "opt": [],
+            "type": 0,
+            "multi": false,
+            "stats": "0",
+            "imageFormats": []
+          },
+          "stats": "0"
+        },
+        "方法或设备": {
+          "r": false,
+          "t": 1,
+          "misc": {
+            "grp": [],
+            "opt": [],
+            "type": 0,
+            "multi": false,
+            "stats": "0",
+            "imageFormats": []
+          },
+          "stats": "0"
+        },
+        "条件或说明": {
+          "r": false,
+          "t": 1,
+          "misc": {
+            "grp": [],
+            "opt": [],
+            "type": 0,
+            "multi": false,
+            "stats": "0",
+            "imageFormats": []
+          },
+          "stats": "0"
+        },
+        "证据原文": {
+          "r": false,
+          "t": 1,
+          "misc": {
+            "grp": [],
+            "opt": [],
+            "type": 0,
+            "multi": false,
+            "stats": "0",
+            "imageFormats": []
+          },
+          "stats": "0"
+        },
+        "来源位置": {
+          "r": false,
+          "t": 1,
+          "misc": {
+            "grp": [],
+            "opt": [],
+            "type": 0,
+            "multi": false,
+            "stats": "0",
+            "imageFormats": []
+          },
+          "stats": "0"
+        },
+        "置信度": {
+          "r": false,
+          "t": 2,
+          "misc": {
+            "grp": [],
+            "opt": [],
+            "type": 0,
+            "multi": false,
+            "stats": "0",
+            "imageFormats": []
+          },
+          "stats": "0"
+        }
+      }
+    },
+    "operations": [],
+    "results": []
+  },
+  "data": []
+}

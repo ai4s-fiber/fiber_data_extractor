@@ -787,3 +787,65 @@ def test_composite_identity_accepts_filament_form_with_exact_components():
     assert "sample_id_not_found_in_evidence" in wrong_matrix_checked.get(
         "_checklist_failures", []
     )
+
+
+def test_coded_composite_identity_accepts_semantic_material_aliases_and_ratio():
+    evidence = (
+        "When the doping ratio of cobalt ferrite to carbon fiber powder is "
+        "0:3, the cobalt ferrite/carbon fiber-coated PANI-based "
+        "polyester-cotton fabric reaches a minimum reflection loss of -21.4 dB."
+    )
+    fact = {
+        "fact_type": "performance",
+        "assigned_sample_id": "PANI_PC_fabric_CoFe2O4-CF_0-3",
+        "metric_or_parameter": "minimum_reflection_loss",
+        "value": "-21.4",
+        "unit": "dB",
+        "condition": "doping ratio 0:3",
+        "evidence_text": evidence,
+    }
+
+    checked = run_final_checklist([fact])[0]
+
+    assert "sample_id_not_found_in_evidence" not in checked.get(
+        "_checklist_failures", []
+    )
+
+
+def test_coded_composite_identity_rejects_wrong_ratio():
+    fact = {
+        "fact_type": "performance",
+        "assigned_sample_id": "PANI_PC_fabric_CoFe2O4-CF_0-3",
+        "metric_or_parameter": "minimum_reflection_loss",
+        "value": "-5.32",
+        "unit": "dB",
+        "condition": "doping ratio 1:2",
+        "evidence_text": (
+            "When the doping ratio of cobalt ferrite to carbon fiber powder is "
+            "1:2, the cobalt ferrite/carbon fiber-coated PANI-based "
+            "polyester-cotton fabric reaches -5.32 dB."
+        ),
+    }
+
+    checked = run_final_checklist([fact])[0]
+
+    assert "sample_id_not_found_in_evidence" in checked.get(
+        "_checklist_failures", []
+    )
+
+
+def test_crystallization_temperature_is_not_flagged_as_bare_condition():
+    fact = {
+        "fact_type": "performance",
+        "assigned_sample_id": "PHBV/PBAT blend",
+        "metric_or_parameter": "crystallization_temperature",
+        "value": "60",
+        "unit": "°C",
+        "evidence_text": "The crystallization temperature Tc2 rose to 60 °C.",
+    }
+
+    checked = run_final_checklist([fact])[0]
+
+    assert "bare_temperature_as_performance_value" not in checked.get(
+        "_checklist_failures", []
+    )

@@ -6,6 +6,7 @@ import pytest
 
 from app.services.extractor_v7.holistic_extract import (
     PERFORMANCE_PROMPT,
+    PROCESS_PROMPT,
     SENSING_SWEEP_PROMPT,
     SPECTROSCOPY_SWEEP_PROMPT,
     augment_catalog_samples_from_process_tables,
@@ -16,12 +17,15 @@ from app.services.extractor_v7.holistic_extract import (
     enrich_sample_cards,
     merge_holistic_and_atomic_facts,
     performances_to_facts,
+    processes_to_facts,
     process_table_to_facts,
     reconcile_holistic_table_duplicates,
     run_holistic_extraction,
     sanitize_catalog_samples,
     select_background_context_chunks,
+    select_mislabeled_performance_context_chunks,
     select_performance_context_chunks,
+    select_process_context_chunks,
     select_sample_catalog_context_chunks,
     select_specialized_result_context,
     split_context_windows,
@@ -38,6 +42,141 @@ def test_performance_prompt_format_escapes_json_braces():
     rendered = PERFORMANCE_PROMPT.format(sample_ids="PCF_1.0wtCNC")
     assert "PCF_1.0wtCNC" in rendered
     assert '{"performances":' in rendered
+
+
+def test_process_prompt_and_converter_keep_exact_known_sample_scope():
+    rendered = PROCESS_PROMPT.format(sample_ids="20% AF/PVA fiber, 40% AF/PVA fiber")
+    assert '{"processes":' in rendered
+    assert "60% coagulation bath" in rendered
+    assert "MUST NOT be assigned only to the \"60%\" sample" in rendered
+    assert "pure/control sample must not inherit" in rendered
+    assert "freeze-drying duration" in rendered
+
+    facts = processes_to_facts(
+        [{
+            "sample_ids": ["20% AF/PVA fiber", "40% AF/PVA fiber", "invented"],
+            "process_metric": "coagulation_bath_temperature",
+            "process_value": "50",
+            "process_unit": "°C",
+            "process_method": "wet spinning",
+            "process_condition": "first coagulation bath",
+            "source_location": "p.8, experimental",
+            "source_block_id": "B000125",
+            "source_page": 8,
+            "evidence_text": (
+                "For wet spinning, the first coagulation bath was at 50 °C."
+            ),
+        }],
+        known_sample_ids=["20% AF/PVA fiber", "40% AF/PVA fiber"],
+    )
+
+    assert {fact["assigned_sample_id"] for fact in facts} == {
+        "20% AF/PVA fiber",
+        "40% AF/PVA fiber",
+    }
+    assert all(fact["fact_type"] == "process" for fact in facts)
+    assert all(fact["_source_block_id"] == "B000125" for fact in facts)
+
+
+def test_process_converter_rejects_dense_control_for_aerogel_series():
+    known = [
+        "20% AF/PVA aerogel fiber",
+        "40% AF/PVA aerogel fiber",
+    ]
+    dense_control = {
+        "sample_ids": known,
+        "process_metric": "lyophilization",
+        "process_value": "without lyophilization process",
+        "process_method": "dense fiber preparation",
+        "evidence_text": (
+            "dense fibers without lyophilization process were prepared "
+            "and used to test the density."
+        ),
+    }
+    shared_aerogel_step = {
+        "sample_ids": known,
+        "process_metric": "freeze_drying_duration",
+        "process_value": "24",
+        "process_unit": "h",
+        "process_method": "freeze-drying",
+        "evidence_text": (
+            "the primary fibers were processed by freeze-drying for 24 h."
+        ),
+    }
+
+    assert processes_to_facts(
+        [dense_control],
+        known_sample_ids=known,
+    ) == []
+    assert {
+        fact["assigned_sample_id"]
+        for fact in processes_to_facts(
+            [shared_aerogel_step],
+            known_sample_ids=known,
+        )
+    } == set(known)
+
+
+def test_process_context_selection_excludes_results_and_test_methods():
+    chunks = [
+        {
+            "page_number": 2,
+            "order_index": 0,
+            "section_name": "experimental",
+            "source_type": "text",
+            "block_type": "paragraph",
+            "raw_text": (
+                "The fibers were prepared by wet spinning into a coagulation "
+                "bath at 50 °C."
+            ),
+        },
+        {
+            "page_number": 5,
+            "order_index": 1,
+            "section_name": "results",
+            "source_type": "text",
+            "block_type": "paragraph",
+            "raw_text": "Tensile testing was performed at 5 mm min-1.",
+        },
+    ]
+    assert select_process_context_chunks(chunks, max_chars=2000) == [chunks[0]]
+
+
+def test_process_context_prioritizes_experimental_preparation_table():
+    prose = {
+        "page_number": 2,
+        "order_index": 0,
+        "section_name": "experimental",
+        "source_type": "text",
+        "block_type": "paragraph",
+        "raw_text": "The composites were prepared by hot-melt extrusion.",
+    }
+    table = {
+        "page_number": 3,
+        "order_index": 1,
+        "section_name": "experimental",
+        "source_type": "table_text",
+        "block_type": "table",
+        "raw_text": (
+            "Table 1. Sample-specific optimal extrusion temperature.\n"
+            "[columns]\tSample\tOptimal extrusion temperature (°C)\n"
+            "[row 1]\t20/80 HAp/poPCL\t95\n"
+            "[row 2]\t40/60 HAp/poPCL\t105"
+        ),
+    }
+    result_table = {
+        **table,
+        "page_number": 7,
+        "order_index": 2,
+        "section_name": "results",
+    }
+
+    selected = select_process_context_chunks(
+        [prose, table, result_table],
+        max_chars=len(table["raw_text"]) + 120,
+    )
+
+    assert selected == [table]
 
 
 def test_sensing_and_spectroscopy_prompts_format():
@@ -149,6 +288,71 @@ def test_performances_to_facts_resolves_contextual_pronoun_with_one_known_sample
 
     assert facts[0]["assigned_sample_id"] == "UD FFRP specimen"
     assert facts[0]["metric_or_parameter"] == "inelastic_threshold_stress"
+
+
+def test_performances_to_facts_corrects_valid_but_wrong_sample_from_evidence():
+    facts = performances_to_facts(
+        [{
+            "sample_id": "20/80 HAp/poPCL filament",
+            "performance_metric": "compressive modulus",
+            "performance_value": "42",
+            "performance_unit": "MPa",
+            "evidence_text": (
+                "The 40/60 HAp/poPCL filament had a compressive modulus "
+                "of 42 MPa."
+            ),
+        }],
+        known_sample_ids=[
+            "20/80 HAp/poPCL filament",
+            "40/60 HAp/poPCL filament",
+        ],
+    )
+
+    assert facts[0]["assigned_sample_id"] == "40/60 HAp/poPCL filament"
+
+
+def test_performances_to_facts_recovers_property_label_via_form_alias():
+    facts = performances_to_facts(
+        [{
+            "sample_id": "highest compressive modulus",
+            "performance_metric": "compressive modulus",
+            "performance_value": "42",
+            "performance_unit": "MPa",
+            "evidence_text": (
+                "The 40/60 HAp/poPCL scaffolds showed the highest "
+                "compressive modulus of 42 MPa. "
+                "[sample card evidence] 20/80 HAp/poPCL filament"
+            ),
+        }],
+        known_sample_ids=[
+            "20/80 HAp/poPCL filament",
+            "40/60 HAp/poPCL filament",
+        ],
+    )
+
+    assert len(facts) == 1
+    assert facts[0]["assigned_sample_id"] == "40/60 HAp/poPCL filament"
+
+
+def test_performances_to_facts_does_not_guess_from_multi_sample_comparison():
+    facts = performances_to_facts(
+        [{
+            "sample_id": "highest compressive modulus",
+            "performance_metric": "compressive modulus",
+            "performance_value": "42",
+            "performance_unit": "MPa",
+            "evidence_text": (
+                "The 40/60 HAp/poPCL scaffold reached 42 MPa, compared "
+                "with the 20/80 HAp/poPCL scaffold."
+            ),
+        }],
+        known_sample_ids=[
+            "20/80 HAp/poPCL filament",
+            "40/60 HAp/poPCL filament",
+        ],
+    )
+
+    assert facts == []
 
 
 def test_merge_dedupes_by_sample_metric_value():
@@ -548,6 +752,199 @@ async def test_holistic_skips_empty_core_performance_call_when_configured():
     assert result.performance_attempted is False
     assert result.performance_skipped_reason == "no_quantitative_signal"
     assert not any(stage.startswith("holistic_performances") for stage in stages)
+
+
+@pytest.mark.asyncio
+async def test_holistic_process_sweep_is_sample_assigned_and_grounded():
+    chunks = [{
+        "page_number": 2,
+        "order_index": 0,
+        "section_name": "experimental",
+        "source_type": "text",
+        "block_type": "paragraph",
+        "source_block_id": "B000030",
+        "raw_text": (
+            "The poPCL filament was produced by hot-melt extrusion. "
+            "The residence time was 10 min at 60 rpm."
+        ),
+    }]
+
+    process_max_tokens: list[int] = []
+
+    async def fake_llm_json(_system, _user_prompt, *, stage, **_kwargs):
+        if stage == "holistic_samples":
+            return {
+                "samples": [{
+                    "sample_id": "poPCL filament",
+                    "material_system": "PCL",
+                    "fiber_type": "filament",
+                }],
+            }, ""
+        if stage == "holistic_processes":
+            process_max_tokens.append(_kwargs["max_tokens"])
+            return {
+                "processes": [{
+                    "sample_ids": ["poPCL filament"],
+                    "process_metric": "residence_time",
+                    "process_value": "10",
+                    "process_unit": "min",
+                    "process_method": "hot-melt extrusion",
+                    "source_location": "p.2, experimental",
+                    "source_block_id": "B000030",
+                    "source_page": 2,
+                    "evidence_text": "The residence time was 10 min at 60 rpm.",
+                }],
+            }, ""
+        return {}, ""
+
+    result = await run_holistic_extraction(
+        chunks=chunks,
+        llm_json=fake_llm_json,
+        llm_timeout=5,
+        skip_empty_performance=True,
+        sensing_enabled=False,
+    )
+
+    process_facts = [
+        fact
+        for fact in result.performance_facts
+        if fact["fact_type"] == "process"
+    ]
+    assert len(process_facts) == 1
+    assert process_facts[0]["assigned_sample_id"] == "poPCL filament"
+    assert process_facts[0]["metric_or_parameter"] == "residence_time"
+    assert process_facts[0]["_source_block_id"] == "B000030"
+    assert process_max_tokens == [6000]
+
+
+@pytest.mark.asyncio
+async def test_holistic_process_sweep_failure_degrades_to_warning():
+    chunks = [{
+        "page_number": 2,
+        "order_index": 0,
+        "section_name": "experimental",
+        "source_type": "text",
+        "block_type": "paragraph",
+        "source_block_id": "B000125",
+        "raw_text": "The AF/PVA fiber was prepared by wet spinning at 50 °C.",
+    }]
+
+    async def fake_llm_json(_system, _user_prompt, *, stage, **_kwargs):
+        if stage == "holistic_samples":
+            return {"samples": [{"sample_id": "AF/PVA fiber"}]}, ""
+        if stage == "holistic_processes":
+            raise TimeoutError("process timeout")
+        return {}, ""
+
+    result = await run_holistic_extraction(
+        chunks=chunks,
+        llm_json=fake_llm_json,
+        llm_timeout=5,
+        skip_empty_performance=True,
+        sensing_enabled=False,
+    )
+
+    assert result.samples[0]["sample_id"] == "AF/PVA fiber"
+    assert any(warning.startswith("process:") for warning in result.warnings)
+
+
+def test_mislabeled_performance_fallback_requires_own_work_and_known_sample():
+    own_work = {
+        "page_number": 1,
+        "order_index": 0,
+        "section_name": "title_abstract",
+        "source_type": "text",
+        "block_type": "paragraph",
+        "raw_text": (
+            "Herein, the hollow AgNFP-PU fiber is presented. "
+            "Its tensile strength reached 29 MPa."
+        ),
+    }
+    prior_work = {
+        "page_number": 2,
+        "order_index": 1,
+        "section_name": "introduction",
+        "source_type": "text",
+        "block_type": "paragraph",
+        "raw_text": (
+            "Smith et al. reported that another AgNFP-PU fiber reached "
+            "25 MPa tensile strength."
+        ),
+    }
+
+    selected = select_mislabeled_performance_context_chunks(
+        [prior_work, own_work],
+        known_sample_ids=["hollow AgNFP-PU fiber"],
+        max_chars=2000,
+    )
+
+    assert selected == [own_work]
+
+
+@pytest.mark.asyncio
+async def test_holistic_recovers_own_work_results_mislabeled_as_abstract():
+    chunks = [
+        {
+            "page_number": 1,
+            "order_index": 0,
+            "section_name": "title_abstract",
+            "source_type": "text",
+            "block_type": "paragraph",
+            "raw_text": (
+                "Herein, the hollow AgNFP-PU fiber is presented. "
+                "Its tensile strength reached 29 MPa."
+            ),
+        },
+        {
+            "page_number": 3,
+            "order_index": 1,
+            "section_name": "experimental",
+            "source_type": "text",
+            "block_type": "paragraph",
+            "raw_text": "The hollow AgNFP-PU fiber was prepared by wet spinning.",
+        },
+    ]
+    stages: list[str] = []
+
+    async def fake_llm_json(_system, user_prompt, *, stage, **_kwargs):
+        stages.append(stage)
+        if stage == "holistic_samples":
+            return {"samples": [{"sample_id": "hollow AgNFP-PU fiber"}]}, ""
+        if stage == "holistic_background":
+            return {"process": {}}, ""
+        if stage.startswith("holistic_performances"):
+            assert "29 MPa" in user_prompt
+            return {
+                "performances": [{
+                    "sample_id": "hollow AgNFP-PU fiber",
+                    "performance_metric": "tensile_strength",
+                    "performance_value": "29",
+                    "performance_unit": "MPa",
+                    "evidence_text": (
+                        "The hollow AgNFP-PU fiber tensile strength reached "
+                        "29 MPa."
+                    ),
+                }],
+            }, ""
+        return {}, ""
+
+    result = await run_holistic_extraction(
+        chunks=chunks,
+        llm_json=fake_llm_json,
+        llm_timeout=5,
+        performance_min_score=4,
+        skip_empty_performance=True,
+        sensing_enabled=False,
+    )
+
+    assert result.performance_attempted is True
+    assert result.performance_skipped_reason == ""
+    assert any(stage.startswith("holistic_performances") for stage in stages)
+    assert [fact["value"] for fact in result.performance_facts] == ["29"]
+    assert (
+        "holistic_performance_fallback:mislabelled_own_work"
+        in result.warnings
+    )
 
 
 @pytest.mark.asyncio
@@ -1237,6 +1634,117 @@ def test_table_rows_use_grounded_column_metric_instead_of_llm_alias():
     assert facts[0]["metric_or_parameter"] == "storage_modulus"
 
 
+def test_constituent_column_overrides_composite_level_sample_id():
+    table = (
+        "Table 1. Material properties of constituents used in FE analysis.\n"
+        "[columns]\tS. No.\tConstituent\tYoung's modulus (MPa)\tPoisson's ratio\n"
+        "[row 1]\t1\tEpoxy\t3500\t0.33"
+    )
+    facts = table_rows_to_facts(
+        [
+            {
+                "row": 1,
+                "sample_id": "PVA-glass-bagasse composite",
+                "metric": "Young's modulus",
+                "value": "3500",
+                "unit": "MPa",
+            },
+            {
+                "row": 1,
+                "sample_id": "PVA-glass-bagasse composite",
+                "metric": "Poisson's ratio",
+                "value": "0.33",
+                "unit": "dimensionless",
+            },
+        ],
+        table_text=table,
+        source_location="p.4, Table 1",
+        known_sample_ids=["PVA-glass-bagasse composite", "Epoxy"],
+    )
+
+    assert len(facts) == 2
+    assert {fact["assigned_sample_id"] for fact in facts} == {"Epoxy"}
+
+
+def test_deterministic_rheology_table_grounds_compact_metric_symbols():
+    table = (
+        "Table 2. PEO solution and fiber properties.\n"
+        "[columns]\tSample\teta_0 (Pa·s)\teta_sp (-)\tFiber diameter (μm)\n"
+        "[row 1]\tPEO\t0.024\t71\t0.27"
+    )
+
+    facts = deterministic_performance_table_facts(
+        table_text=table,
+        source_location="p.5, Table 2",
+        known_sample_ids=["PEO"],
+    )
+
+    assert {
+        (fact["metric_or_parameter"], fact["value"])
+        for fact in facts
+    } == {
+        ("zero_shear_viscosity", "0.024"),
+        ("specific_viscosity", "71"),
+        ("fiber_diameter", "0.27"),
+    }
+
+
+def test_deterministic_rheology_concentration_series_without_sample_column():
+    table = (
+        "Table 1. Zero-shear viscosity of PEO solutions and fiber properties.\n"
+        "[columns]\tc [wt.%]\t$\\eta_0$ [Pa·s]\t$\\eta_{sp}$\t$\\Phi$ [μm]\tBeads\n"
+        "[row 1]\t2\t0.024\t71\t0.27 ± 0.17\tYes\n"
+        "[row 2]\t5\t1.17\t3468\t1.62 ± 0.76\tNo"
+    )
+
+    facts = deterministic_performance_table_facts(
+        table_text=table,
+        source_location="p.5, Table 1",
+        known_sample_ids=[
+            "PEO_AcN_solution_series",
+            "PEO_fiber_mat_series",
+            "PEO_fiber_mat_5wt_AcN",
+            "bulk_PEO_powder",
+        ],
+    )
+
+    assert len(facts) == 6
+    by_key = {
+        (fact["metric_or_parameter"], fact["value"]): fact
+        for fact in facts
+    }
+    assert by_key[("zero_shear_viscosity", "0.024")][
+        "assigned_sample_id"
+    ] == "PEO_AcN_solution_series"
+    assert by_key[("specific_viscosity", "71")]["unit"] == "dimensionless"
+    assert by_key[("fiber_diameter", "0.27")][
+        "assigned_sample_id"
+    ] == "PEO_fiber_mat_series"
+    assert by_key[("fiber_diameter", "1.62")][
+        "assigned_sample_id"
+    ] == "PEO_fiber_mat_5wt_AcN"
+    assert "c=2 wt%" in by_key[("zero_shear_viscosity", "0.024")][
+        "condition"
+    ]
+    assert "standard deviation=± 0.17 μm" in by_key[
+        ("fiber_diameter", "0.27")
+    ]["condition"]
+
+
+def test_implicit_concentration_series_requires_rheology_columns():
+    table = (
+        "Table 2. PEO processing sweep.\n"
+        "[columns]\tc [wt.%]\tVoltage (kV)\tDistance (cm)\n"
+        "[row 1]\t2\t12\t15"
+    )
+
+    assert deterministic_performance_table_facts(
+        table_text=table,
+        source_location="p.5, Table 2",
+        known_sample_ids=["PEO_AcN_solution_series"],
+    ) == []
+
+
 def test_table_rows_reject_material_identity_with_embedded_number():
     table = (
         "Table 2. Specification of yarn and fabric samples\n"
@@ -1293,6 +1801,46 @@ def test_catalog_sanitizer_removes_anaphoric_and_metric_name_prefixes():
         "epoxy resin matrix",
         "PES intercalation composite",
     ]
+
+
+def test_catalog_sanitizer_merges_job70_reference_phrases_into_real_samples():
+    cleaned = sanitize_catalog_samples([
+        {
+            "sample_id": "compared with that of the solid AgNFP-PU fiber",
+            "evidence_text": (
+                "The conductivity was compared with that of the solid "
+                "AgNFP-PU fiber."
+            ),
+        },
+        {"sample_id": "solid AgNFP-PU fiber"},
+        {
+            "sample_id": "mechanical strength of the hollow AgNFP-PU fiber",
+            "evidence_text": (
+                "The mechanical strength of the hollow AgNFP-PU fiber "
+                "was 29 MPa."
+            ),
+        },
+        {"sample_id": "hollow AgNFP-PU fiber"},
+        {
+            "sample_id": "initial electrical conductivity",
+            "evidence_text": (
+                "The initial electrical conductivity was 10,990 S cm-1."
+            ),
+        },
+    ])
+
+    assert [sample["sample_id"] for sample in cleaned] == [
+        "solid AgNFP-PU fiber",
+        "hollow AgNFP-PU fiber",
+    ]
+    assert (
+        "compared with that of the solid AgNFP-PU fiber"
+        in cleaned[0]["aliases"]
+    )
+    assert (
+        "mechanical strength of the hollow AgNFP-PU fiber"
+        in cleaned[1]["aliases"]
+    )
 
 
 def test_catalog_sanitizer_removes_equipment_and_incomplete_prose_samples():

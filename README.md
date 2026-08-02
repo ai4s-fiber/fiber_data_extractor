@@ -125,6 +125,53 @@ Docker Compose 默认启用 PostgreSQL、Redis、后端和前端，前端入口�
 - 数值、单位和样品绑定均要求原文证据；均值旁存在唯一的 `±`/括号标准差时会零 Token 恢复到结构化条件，歧义值保留原样并进入现有质量检查。
 - 最终样品卡、事实、候选记录和证据在一个数据库事务内替换。重跑失败、超时或取消时保留上一次完整结果，成功提交后才切换到新结果。
 
+## NAS 到新材料大数据中心
+
+前端侧栏的“数据管道”已把整条链路合并到一个页面：
+
+1. 从后端已配置的 NAS 根目录只读扫描 PDF；
+2. 选择一批文件，按 SHA-256 去重后纳入当前项目；
+3. 可直接进入现有 MinerU + LLM 抽取队列；
+4. 对状态为 `review` 或 `completed` 的论文生成平台批次并严格预检；
+5. 使用一次性验证码登录新材料大数据中心，分片上传后持续查询，直到同时确认上传与解析结果。
+6. 平台维护或接口异常时，可下载同一个已验证 JSON 批次并在平台人工上传。
+
+Windows 直接运行后端时，在 `backend/.env` 配置服务器实际能够读取的共享目录：
+
+```dotenv
+NAS_SOURCE_ROOTS=["\\\\nas-server\\papers","Z:\\incoming"]
+NAS_SCAN_MAX_FILES=5000
+NAS_MAX_FILE_BYTES=104857600
+```
+
+这里的路径由后端服务账号访问，不是浏览器所在电脑的任意路径。服务账号必须具有
+NAS 读取权限；程序不会修改源文件，只会把选中的稳定快照复制到 `UPLOAD_DIR`。
+扫描结果只携带安全相对路径，路径越界、软链接逃逸、复制期间发生变化、伪 PDF 和
+超限文件都会逐项拒绝，不会中断同批其他文件。
+
+当前默认平台绑定是已经完成 canary 上传、解析和回读的私有开发数据集：
+
+```dotenv
+PLATFORM_BASE_URL=http://192.168.2.101/database-code
+PLATFORM_BATCH_TEMPLATE_PATH=../platform_templates/canary/platform-batch-canary.json
+PLATFORM_EXPECTED_DATASET_ID=2081660157305163778
+PLATFORM_EXPECTED_TEMPLATE_ID=2081658374180704257
+PLATFORM_BATCH_TEMPLATE_SHA256=d001d4d70df42a34644cf8704dd77ede99dc6eb7e89626b8778cd353d34465a2
+```
+
+模板文件、数据集 ID、模板 ID 和 SHA-256 是一个不可拆分的绑定；任何一项不匹配，
+后端都会在上传前失败关闭。切换到正式数据集时，必须从该数据集重新下载批量 JSON
+模板、替换上述四项，并先做一条私有 canary。平台密码不写数据库，平台令牌只保存在
+后端内存中；过期或服务重启后，在“数据管道”重新验证码登录即可。
+
+同一份源数据会生成确定性的批次 SHA-256。成功或仍在解析的批次再次点击时只查询
+既有状态，不会盲目重复上传；每次尝试的非敏感回执和实际批次保存在
+`EXPORT_DIR/<project_id>/platform_delivery/`。
+
+Docker Compose 部署会把 `platform_templates` 只读挂载到后端。NAS 还需要在部署机上
+额外映射为容器内只读目录，例如 `/data/nas`，再将
+`NAS_SOURCE_ROOTS='["/data/nas"]'` 传给后端；不要把 NAS 账号或密码写进该配置。
+
 ## 验证
 
 后端：

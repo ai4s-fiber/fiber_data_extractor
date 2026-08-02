@@ -14,7 +14,14 @@ from app.core.redis_client import close_redis, ping_redis
 from app.core.schema_repair import ensure_runtime_schema
 # Ensure all model tables are registered in Base.metadata for FK resolution
 import app.models  # noqa: F401
-from app.api import candidates, exports, papers, projects, template_projection
+from app.api import (
+    candidates,
+    exports,
+    integrations,
+    papers,
+    projects,
+    template_projection,
+)
 from app.services.extraction_jobs import extraction_job_backend
 from app.services.progress_bus import progress_bus
 
@@ -73,6 +80,7 @@ _API_ROUTERS = [
     (candidates.router, "/api"),
     (exports.router, "/api"),
     (template_projection.router, "/api"),
+    (integrations.router, "/api"),
 ]
 for router, prefix in _API_ROUTERS:
     app.include_router(router, prefix=prefix)

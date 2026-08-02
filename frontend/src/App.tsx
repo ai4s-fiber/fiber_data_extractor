@@ -7,6 +7,7 @@ import PapersPage from './pages/PapersPage';
 import ReviewPage from './pages/ReviewPage';
 import ExportPage from './pages/ExportPage';
 import SettingsPage from './pages/SettingsPage';
+import DataPipelinePage from './pages/DataPipelinePage';
 
 function AppRoutes() {
   return (
@@ -17,6 +18,7 @@ function AppRoutes() {
             <Route index element={<ProjectsPage />} />
             <Route path="projects" element={<ProjectsPage />} />
             <Route path="papers" element={<PapersPage />} />
+            <Route path="pipeline" element={<DataPipelinePage />} />
             <Route path="review" element={<ReviewPage />} />
             <Route path="export" element={<ExportPage />} />
             <Route path="settings" element={<SettingsPage />} />

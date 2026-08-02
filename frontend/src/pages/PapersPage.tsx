@@ -5,7 +5,6 @@ import {
   Empty,
   Space,
   Popconfirm,
-  Modal,
   App,
 } from 'antd';
 import {
@@ -36,7 +35,7 @@ import {
 } from '../components/papers/types';
 
 export default function PapersPage() {
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const { currentProject } = useProject();
   const { state: sseState, startExtraction, cancelExtraction, subscribe, reconnectActive, unsubscribe } = useExtraction();
 
@@ -293,7 +292,7 @@ export default function PapersPage() {
     } catch (err: any) {
       const detail = err.response?.data?.detail;
       if (err.response?.status === 409 && typeof detail === 'string') {
-        Modal.confirm({
+        modal.confirm({
           title: '重新抽取将清空已有候选记录',
           content: detail,
           okText: '确认清空并重新抽取',

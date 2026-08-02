@@ -24,6 +24,50 @@ class Settings(BaseSettings):
     # Export
     EXPORT_DIR: str = "./exports"
 
+    # Controlled NAS ingestion. Configure one or more server-side roots as a
+    # JSON array or semicolon-separated string; the API never accepts an
+    # arbitrary absolute path from the browser.
+    NAS_SOURCE_ROOTS: str = ""
+    NAS_SCAN_MAX_FILES: int = 5_000
+    NAS_MAX_FILE_BYTES: int = 100 * 1024 * 1024
+
+    # New Materials Big Data Center integration. The bundled template binding
+    # is pinned to the private canary dataset created during compatibility
+    # verification. Override all binding values together when the target
+    # dataset or template changes.
+    PLATFORM_BASE_URL: str = "http://192.168.2.101/database-code"
+    PLATFORM_BATCH_TEMPLATE_PATH: str = str(
+        Path(__file__).resolve().parents[3]
+        / "platform_templates"
+        / "canary"
+        / "platform-batch-canary.json"
+    )
+    PLATFORM_EXPECTED_DATASET_ID: int = 2_081_660_157_305_163_778
+    PLATFORM_EXPECTED_TEMPLATE_ID: int = 2_081_658_374_180_704_257
+    PLATFORM_BATCH_TEMPLATE_SHA256: str = (
+        "d001d4d70df42a34644cf8704dd77ede99dc6eb7e89626b8778cd353d34465a2"
+    )
+    # Ordered v0.3.2 material-chain binding.  The legacy MATERIAL_FACT setting
+    # names remain for deployment compatibility, but one platform record now
+    # represents one actual sample and follows the user's original workbook
+    # order: composition → process → structure → performance → evidence.
+    PLATFORM_MATERIAL_FACT_TEMPLATE_PATH: str = str(
+        Path(__file__).resolve().parents[3]
+        / "platform_templates"
+        / "ai4s-material-chain-template-v0.3.2.json"
+    )
+    PLATFORM_MATERIAL_FACT_TEMPLATE_SHA256: str = (
+        "5ca1f62e96681fe30e5936738daed802d67c6fa6034e81cbbd90bab4ac4fa279"
+    )
+    PLATFORM_MATERIAL_FACT_DATASET_ID: int = 2_082_071_264_142_430_210
+    PLATFORM_MATERIAL_FACT_TEMPLATE_ID: int = 2_082_071_243_661_643_777
+    PLATFORM_MATERIAL_FACT_DATASET_NAME: str = (
+        "AI4S材料数据链_成分工艺结构性能_v0.3.2_20260728"
+    )
+    PLATFORM_SESSION_TTL_SECONDS: int = 4 * 60 * 60
+    PLATFORM_PARSE_TIMEOUT_SECONDS: int = 180
+    PLATFORM_POLL_INTERVAL_SECONDS: float = 2.0
+
     # Document parsing (MinerU)
     PARSE_ARTIFACT_DIR: str = "./parse_artifacts"
     MINERU_ENABLED: bool = True

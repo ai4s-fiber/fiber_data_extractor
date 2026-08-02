@@ -19,6 +19,30 @@ def test_canonicalize_dielectric_synonym():
     assert canonicalize_metric_name("loss tangent") == "loss_tangent"
 
 
+def test_toughness_strain_spacing_and_diffusion_units_are_physically_supported():
+    assert normalize_unit("MJ m^-3") == "mj/m3"
+    assert normalize_unit("MJ m−3") == "mj/m3"
+    assert normalize_unit("mm mm^-1") == "dimensionless"
+    assert normalize_unit("cm^2 s^-1") == "cm2/s"
+    assert normalize_unit("g cm⁻²") == "g/cm2"
+    assert normalize_unit("S cm^-1") == "s/cm"
+    assert normalize_unit("S cm⁻¹") == "s/cm"
+    assert canonicalize_metric_name(
+        "fracture_toughness",
+        evidence="The fibers reached a toughness modulus of 146 MJ m^-3.",
+        unit="MJ m^-3",
+    ) == "toughness"
+    assert metric_unit_compatible("toughness", "MJ m^-3")
+    assert metric_unit_compatible("elongation_at_break", "mm mm^-1")
+    assert metric_unit_compatible("d_spacing_1", "nm")
+    assert metric_unit_compatible("fiber_length", "km")
+    assert metric_unit_compatible("water_diffusion_coefficient", "cm^2 s^-1")
+    assert metric_unit_compatible("areal_density", "g cm⁻²")
+    assert metric_unit_compatible("electrical_conductivity", "S cm^-1")
+    assert metric_unit_compatible("electrical_conductivity", "S cm⁻¹")
+    assert metric_unit_compatible("radius_of_curvature", "μm")
+
+
 def test_ph_unit_and_evidence_override_unrelated_metric_label():
     assert canonicalize_metric_name(
         "beta_phase_crystallinity_Xbeta",
@@ -65,6 +89,16 @@ def test_scientific_thermal_headers_and_specific_tensile_metrics_are_canonical()
         canonicalize_metric_name("Specific tensile modulus")
         == "specific_tensile_modulus"
     )
+
+
+def test_crystallization_and_rheology_symbols_are_canonical():
+    assert canonicalize_metric_name("$T_c$") == "crystallization_temperature"
+    assert canonicalize_metric_name("$T_{c1}$") == "crystallization_temperature"
+    assert canonicalize_metric_name("$T_{c2}$") == "crystallization_temperature"
+    assert canonicalize_metric_name("eta_0") == "zero_shear_viscosity"
+    assert canonicalize_metric_name("eta_sp") == "specific_viscosity"
+    assert canonicalize_metric_name("surface max height") == "surface_maximum_height"
+    assert canonicalize_metric_name("Rz") == "surface_maximum_height"
 
 
 def test_raised_tensile_strength_is_a_relative_metric():
@@ -169,6 +203,17 @@ def test_scientific_units_normalize_to_supported_canonical_forms():
     assert normalize_unit("kN m g-1") == "kn·m/g"
     assert normalize_unit("Jg-1") == "j/g"
     assert normalize_unit("Pa·s") == "pa·s"
+    assert normalize_unit("米m") == "μm"
+    assert normalize_unit("～C") == "°c"
+    assert normalize_unit("Pa﹞s") == "pa·s"
+
+
+def test_new_metric_unit_families_are_compatible():
+    assert metric_unit_compatible("crystallization_temperature", "°C")
+    assert metric_unit_compatible("impact_energy", "J")
+    assert metric_unit_compatible("surface_maximum_height", "nm")
+    assert metric_unit_compatible("zero_shear_viscosity", "Pa·s")
+    assert metric_unit_compatible("specific_viscosity", "dimensionless")
 
 
 def test_specific_tensile_units_drive_metric_canonicalization():

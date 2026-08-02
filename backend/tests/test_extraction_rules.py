@@ -36,6 +36,30 @@ def test_explicit_pi200_sample_kept():
     assert "200" in sid.lower() or "pi" in sid.lower()
 
 
+def test_underscored_conditions_move_out_of_sample_id():
+    evidence = (
+        "The PBIA/DMAc solution was measured from 50 to -25 °C, and the "
+        "15CA nanofiber was treated for 60 min."
+    )
+
+    cases = [
+        ("PBIA/DMAc solution_50C", "PBIA/DMAc solution", "50 °C"),
+        ("PBIA/DMAc solution_-25C", "PBIA/DMAc solution", "-25 °C"),
+        (
+            "PBIA/DMAc solution_50C_to_-25C",
+            "PBIA/DMAc solution",
+            "50 °C to -25 °C",
+        ),
+        ("15CA_60min_nanofiber", "15CA_nanofiber", "60 min"),
+    ]
+
+    for raw, expected_sid, expected_condition in cases:
+        sid, condition, notes = sanitize_sample_id(raw, evidence)
+        assert sid == expected_sid
+        assert condition == expected_condition
+        assert "moved_embedded_condition_to_condition" in notes
+
+
 def test_strip_inferred_loading():
     ev = "2MZ-AZINE-PI nanofibers were prepared."
     sid, _, notes = sanitize_sample_id("2MZ-AZINE-PI-20% nanofiber", ev)
@@ -91,6 +115,29 @@ def test_sample_id_strips_anaphoric_and_metric_prefixes():
     )
     assert sid == "PES intercalation composite"
     assert "stripped_metric_prefix_from_sample_id" in notes
+
+
+def test_sample_id_normalizes_comparison_and_property_references():
+    sid, _, notes = sanitize_sample_id(
+        "compared with that of the solid AgNFP-PU fiber",
+        "The conductivity was compared with that of the solid AgNFP-PU fiber.",
+    )
+    assert sid == "solid AgNFP-PU fiber"
+    assert "stripped_comparative_sample_prefix" in notes
+
+    sid, _, notes = sanitize_sample_id(
+        "mechanical strength of the hollow AgNFP-PU fiber",
+        "The mechanical strength of the hollow AgNFP-PU fiber was 29 MPa.",
+    )
+    assert sid == "hollow AgNFP-PU fiber"
+    assert "stripped_property_sample_prefix" in notes
+
+    sid, _, notes = sanitize_sample_id(
+        "initial electrical conductivity",
+        "The initial electrical conductivity was 10,990 S cm-1.",
+    )
+    assert sid == ""
+    assert "sample_id_was_measurement_label" in notes
 
 
 def test_sample_id_rejects_decimal_prefix_hallucination():
